@@ -1,0 +1,10 @@
+# Conventional-commit enforcement via cocogitto (https://docs.cocogitto.io).
+# After cloning, install the hook with: cog install-hook --all
+
+ignore_merge_commits = true
+
+[git_hooks.commit-msg]
+script = """#!/bin/sh
+set -e
+cog verify --file "$1"
+"""
