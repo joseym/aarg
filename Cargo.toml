@@ -1,0 +1,17 @@
+[package]
+name = "aarg"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "The Adversarial Agentic Resume Generator - a local-first CLI that tailors resumes to job descriptions without fabricating experience"
+authors = ["Josey Morton <me@joseymorton.com>"]
+repository = "https://github.com/joseymorton/aarg"
+
+[dependencies]
+
+# Production code may not unwrap, expect, or panic; errors are typed enums
+# propagated with `?`. Test modules opt out locally with #[allow(...)].
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
