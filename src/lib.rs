@@ -4,6 +4,8 @@
 //! is a thin shell that parses arguments and dispatches into here. Keeping
 //! the logic in a library makes every module testable with `cargo test`.
 
+pub mod cli;
+pub mod commands;
 pub mod config;
 pub mod llm;
 pub mod secrets;
