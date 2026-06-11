@@ -5,3 +5,4 @@
 //! the logic in a library makes every module testable with `cargo test`.
 
 pub mod config;
+pub mod secrets;
