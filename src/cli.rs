@@ -68,6 +68,8 @@ pub enum DatasetCommand {
     Show,
     /// Check integrity: unsupported skills, broken references (exits nonzero on problems)
     Validate,
+    /// Open the dataset in $EDITOR, then re-validate and save
+    Edit,
 }
 
 #[derive(Debug, Subcommand)]
@@ -129,6 +131,14 @@ mod tests {
                 .command,
             Command::Dataset {
                 command: DatasetCommand::Validate
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "dataset", "edit"])
+                .unwrap()
+                .command,
+            Command::Dataset {
+                command: DatasetCommand::Edit
             }
         ));
         // Bare `aarg dataset` requires a subcommand.

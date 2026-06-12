@@ -193,4 +193,30 @@ pub enum CliError {
     #[error(transparent)]
     #[diagnostic(help("save the posting text to a file and pass that path (or pipe it with `-`)"))]
     Fetch(#[from] FetchError),
+
+    #[error("no editor configured")]
+    #[diagnostic(help(
+        "set $EDITOR (or $VISUAL) to your editor, e.g. `export EDITOR=nano` or `export EDITOR=\"code --wait\"`"
+    ))]
+    NoEditor,
+
+    #[error("could not launch your editor ({editor})")]
+    EditorLaunch {
+        editor: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("your editor exited with {status}; the dataset is unchanged")]
+    EditorAborted { status: std::process::ExitStatus },
+
+    #[error("the edited draft at {path} is not valid dataset JSON")]
+    #[diagnostic(help(
+        "your edits are preserved in that draft — run `aarg dataset edit` again to resume it (the dataset itself is unchanged)"
+    ))]
+    EditedJsonInvalid {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
 }

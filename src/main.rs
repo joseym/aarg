@@ -18,6 +18,9 @@ async fn main() -> miette::Result<()> {
         Command::Dataset {
             command: DatasetCommand::Validate,
         } => aarg::commands::dataset::validate().await?,
+        Command::Dataset {
+            command: DatasetCommand::Edit,
+        } => aarg::commands::dataset::edit().await?,
         Command::Jd {
             command: JdCommand::Parse { path, json },
         } => aarg::commands::jd::parse(path, json).await?,
