@@ -7,6 +7,7 @@
 //! everywhere below, errors stay module-specific.
 
 pub mod config;
+pub mod dataset;
 pub mod ingest;
 pub mod init;
 pub mod ping;
@@ -61,4 +62,10 @@ pub enum CliError {
         "extract the text first (for example `pdftotext resume.pdf resume.txt`) and ingest that"
     ))]
     PdfInput { path: PathBuf },
+
+    #[error("the dataset has {problems} problem(s)")]
+    #[diagnostic(help(
+        "review the problems above; skills without evidence stay out of tailored resumes until they're backed or removed"
+    ))]
+    DatasetInvalid { problems: usize },
 }

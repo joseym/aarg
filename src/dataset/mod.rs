@@ -6,6 +6,7 @@
 
 pub mod store;
 pub mod types;
+pub mod validate;
 
 pub use store::DatasetError;
 pub use types::{ResumeDataset, SCHEMA_VERSION};

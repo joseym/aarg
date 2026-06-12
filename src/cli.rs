@@ -25,6 +25,11 @@ pub enum Command {
         /// Path to the resume file (for a PDF, extract its text first)
         path: std::path::PathBuf,
     },
+    /// Inspect or check the local dataset
+    Dataset {
+        #[command(subcommand)]
+        command: DatasetCommand,
+    },
     /// Talk to the configured LLM provider directly
     Llm {
         #[command(subcommand)]
@@ -37,6 +42,14 @@ pub enum Command {
 pub enum LlmCommand {
     /// Send a tiny request to verify the key, model, and connectivity
     Ping,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DatasetCommand {
+    /// Summarize what the dataset contains and where it lives
+    Show,
+    /// Check integrity: unsupported skills, broken references (exits nonzero on problems)
+    Validate,
 }
 
 #[cfg(test)]
@@ -68,6 +81,28 @@ mod tests {
             other => panic!("expected ingest, got {other:?}"),
         }
         assert!(Cli::try_parse_from(["aarg", "ingest"]).is_err());
+    }
+
+    #[test]
+    fn dataset_subcommands_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "dataset", "show"])
+                .unwrap()
+                .command,
+            Command::Dataset {
+                command: DatasetCommand::Show
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "dataset", "validate"])
+                .unwrap()
+                .command,
+            Command::Dataset {
+                command: DatasetCommand::Validate
+            }
+        ));
+        // Bare `aarg dataset` requires a subcommand.
+        assert!(Cli::try_parse_from(["aarg", "dataset"]).is_err());
     }
 
     #[test]
