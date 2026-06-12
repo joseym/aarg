@@ -6,29 +6,14 @@
 //! prints the full `JobRequirements` for scripts; progress goes to
 //! stderr so stdout stays clean either way.
 
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::commands::{CliError, configured_client};
+use crate::commands::{CliError, configured_client, read_text_input};
 use crate::dataset::types::SkillCategory;
 use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority, parse_jd};
 
 pub async fn parse(path: PathBuf, json: bool) -> Result<(), CliError> {
-    let text = if path == Path::new("-") {
-        let mut buffer = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buffer)
-            .map_err(|source| CliError::ReadInput {
-                path: path.clone(),
-                source,
-            })?;
-        buffer
-    } else {
-        std::fs::read_to_string(&path).map_err(|source| CliError::ReadInput {
-            path: path.clone(),
-            source,
-        })?
-    };
+    let text = read_text_input(&path)?;
 
     let (client, config) = configured_client().await?;
     let model = &config.anthropic.model;

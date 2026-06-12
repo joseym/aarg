@@ -35,6 +35,14 @@ pub enum Command {
         #[command(subcommand)]
         command: JdCommand,
     },
+    /// Compare your dataset against a job description's requirements
+    Gap {
+        /// Path to the JD text (or `jd parse --json` output), or "-" for stdin
+        jd: std::path::PathBuf,
+        /// Print the report as JSON instead of a summary
+        #[arg(long)]
+        json: bool,
+    },
     /// Talk to the configured LLM provider directly
     Llm {
         #[command(subcommand)]
@@ -142,6 +150,25 @@ mod tests {
                 command: JdCommand::Parse { json: true, .. }
             }
         ));
+    }
+
+    #[test]
+    fn gap_takes_a_jd_path_and_an_optional_json_flag() {
+        let cli = Cli::try_parse_from(["aarg", "gap", "jd.txt"]).unwrap();
+        match cli.command {
+            Command::Gap { jd, json } => {
+                assert_eq!(jd, std::path::PathBuf::from("jd.txt"));
+                assert!(!json);
+            }
+            other => panic!("expected gap, got {other:?}"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "gap", "-", "--json"])
+                .unwrap()
+                .command,
+            Command::Gap { json: true, .. }
+        ));
+        assert!(Cli::try_parse_from(["aarg", "gap"]).is_err());
     }
 
     #[test]

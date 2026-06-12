@@ -21,6 +21,7 @@ async fn main() -> miette::Result<()> {
         Command::Jd {
             command: JdCommand::Parse { path, json },
         } => aarg::commands::jd::parse(path, json).await?,
+        Command::Gap { jd, json } => aarg::commands::gap::run(jd, json).await?,
         Command::Llm {
             command: LlmCommand::Ping,
         } => aarg::commands::ping::run().await?,

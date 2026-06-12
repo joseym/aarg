@@ -8,15 +8,17 @@
 
 pub mod config;
 pub mod dataset;
+pub mod gap;
 pub mod ingest;
 pub mod init;
 pub mod jd;
 pub mod ping;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{Config, ConfigError};
 use crate::dataset::DatasetError;
+use crate::gap::GapError;
 use crate::ingest::IngestError;
 use crate::jd::JdError;
 use crate::llm::{AnthropicClient, LlmError};
@@ -35,6 +37,28 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
             provider: provider.name().to_string(),
         })?;
     Ok((AnthropicClient::new(key), config))
+}
+
+/// Read a text argument that is either a file path or `-` for stdin.
+/// Extracted at its second consumer (`jd parse`, `gap`).
+pub(crate) fn read_text_input(path: &Path) -> Result<String, CliError> {
+    use std::io::Read;
+
+    if path == Path::new("-") {
+        let mut buffer = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buffer)
+            .map_err(|source| CliError::ReadInput {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Ok(buffer)
+    } else {
+        std::fs::read_to_string(path).map_err(|source| CliError::ReadInput {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
 }
 
 /// Everything a command can fail with, unified for the CLI boundary.
@@ -94,4 +118,18 @@ pub enum CliError {
         "the model's output didn't parse; re-running usually helps, and a plainer text version of the JD helps more"
     ))]
     Jd(#[from] JdError),
+
+    #[error(transparent)]
+    #[diagnostic(help("the model's output didn't parse; re-running usually helps"))]
+    Gap(#[from] GapError),
+
+    #[error("{path} is not a parsed-requirements JSON file")]
+    #[diagnostic(help(
+        "a .json argument must be the output of `aarg jd parse <jd> --json`; pass the JD text itself otherwise"
+    ))]
+    BadRequirementsJson {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
 }
