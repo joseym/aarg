@@ -10,7 +10,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 /// The model used for Anthropic requests when the user has not picked one.
-pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
+pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-4-5-20251001";
 
 /// Everything that can go wrong while locating, reading, parsing, or
 /// writing the config file.
