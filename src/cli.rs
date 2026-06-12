@@ -43,6 +43,11 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Tailor your resume to a job description and render the ATS PDF
+    Tailor {
+        /// Path to the JD text (or `jd parse --json` output), or "-" for stdin
+        jd: std::path::PathBuf,
+    },
     /// Talk to the configured LLM provider directly
     Llm {
         #[command(subcommand)]
@@ -169,6 +174,16 @@ mod tests {
             Command::Gap { json: true, .. }
         ));
         assert!(Cli::try_parse_from(["aarg", "gap"]).is_err());
+    }
+
+    #[test]
+    fn tailor_takes_a_jd_path() {
+        let cli = Cli::try_parse_from(["aarg", "tailor", "jd.txt"]).unwrap();
+        match cli.command {
+            Command::Tailor { jd } => assert_eq!(jd, std::path::PathBuf::from("jd.txt")),
+            other => panic!("expected tailor, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["aarg", "tailor"]).is_err());
     }
 
     #[test]

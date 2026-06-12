@@ -13,16 +13,21 @@ pub mod ingest;
 pub mod init;
 pub mod jd;
 pub mod ping;
+pub mod tailor;
 
 use std::path::{Path, PathBuf};
 
+use crate::ats::AtsError;
+use crate::builds::BuildError;
 use crate::config::{Config, ConfigError};
 use crate::dataset::DatasetError;
 use crate::gap::GapError;
 use crate::ingest::IngestError;
 use crate::jd::JdError;
 use crate::llm::{AnthropicClient, LlmError};
+use crate::render::RenderError;
 use crate::secrets::{self, SecretsError};
+use crate::tailor::TailorError;
 
 /// Load the config, fetch the stored API key, and build the provider
 /// client — the preamble every LLM-backed command starts with. Extracted
@@ -132,4 +137,22 @@ pub enum CliError {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "the model's output didn't parse or selected nothing; re-running usually helps"
+    ))]
+    Tailor(#[from] TailorError),
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "typst builds the PDF: install it with `cargo install typst-cli` or from https://github.com/typst/typst/releases; if it IS installed and compilation failed, the message above carries typst's own output"
+    ))]
+    Render(#[from] RenderError),
+
+    #[error(transparent)]
+    Ats(#[from] AtsError),
+
+    #[error(transparent)]
+    Build(#[from] BuildError),
 }
