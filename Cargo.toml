@@ -9,6 +9,7 @@ repository = "https://github.com/joseymorton/aarg"
 
 [dependencies]
 async-trait = "0.1.89"
+chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 directories = "6.0.0"
 futures-util = "0.3.32"
