@@ -48,7 +48,7 @@
 // ----- experience -----
 #section("Experience")
 #for role in data.roles [
-  #block(above: 9pt, below: 0pt)[
+  #block(above: 9pt, below: 4pt)[
     #grid(
       columns: (1fr, auto),
       column-gutter: 8pt,
