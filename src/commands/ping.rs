@@ -4,21 +4,11 @@
 
 use std::time::Instant;
 
-use crate::commands::CliError;
-use crate::config::Config;
-use crate::llm::{AnthropicClient, CompletionRequest, LlmClient, LlmError, Message};
-use crate::secrets;
+use crate::commands::{CliError, configured_client};
+use crate::llm::{CompletionRequest, LlmClient, Message};
 
 pub async fn run() -> Result<(), CliError> {
-    let config = Config::load()?;
-    let provider = config.provider;
-    let key = secrets::load_api_key(provider.name())
-        .await?
-        .ok_or_else(|| LlmError::MissingApiKey {
-            provider: provider.name().to_string(),
-        })?;
-
-    let client = AnthropicClient::new(key);
+    let (client, config) = configured_client().await?;
     let request = CompletionRequest {
         model: config.anthropic.model.clone(),
         max_tokens: 16,

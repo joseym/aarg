@@ -7,12 +7,9 @@
 
 use std::path::PathBuf;
 
-use crate::commands::CliError;
-use crate::config::Config;
+use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::ingest::ingest_resume;
-use crate::llm::{AnthropicClient, LlmError};
-use crate::secrets;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
     if path
@@ -26,14 +23,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         source,
     })?;
 
-    let config = Config::load()?;
-    let provider = config.provider;
-    let key = secrets::load_api_key(provider.name())
-        .await?
-        .ok_or_else(|| LlmError::MissingApiKey {
-            provider: provider.name().to_string(),
-        })?;
-    let client = AnthropicClient::new(key);
+    let (client, config) = configured_client().await?;
     let model = &config.anthropic.model;
 
     println!("ingesting {} with {model}...", path.display());

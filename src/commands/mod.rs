@@ -14,11 +14,26 @@ pub mod ping;
 
 use std::path::PathBuf;
 
-use crate::config::ConfigError;
+use crate::config::{Config, ConfigError};
 use crate::dataset::DatasetError;
 use crate::ingest::IngestError;
-use crate::llm::LlmError;
-use crate::secrets::SecretsError;
+use crate::llm::{AnthropicClient, LlmError};
+use crate::secrets::{self, SecretsError};
+
+/// Load the config, fetch the stored API key, and build the provider
+/// client — the preamble every LLM-backed command starts with. Extracted
+/// once the third consumer appeared (ping, ingest, jd parse); the model
+/// to use comes from the returned config.
+pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), CliError> {
+    let config = Config::load()?;
+    let provider = config.provider;
+    let key = secrets::load_api_key(provider.name())
+        .await?
+        .ok_or_else(|| LlmError::MissingApiKey {
+            provider: provider.name().to_string(),
+        })?;
+    Ok((AnthropicClient::new(key), config))
+}
 
 /// Everything a command can fail with, unified for the CLI boundary.
 /// `#[error(transparent)]` forwards the underlying error's message
