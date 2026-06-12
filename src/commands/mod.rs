@@ -10,6 +10,7 @@ pub mod config;
 pub mod dataset;
 pub mod ingest;
 pub mod init;
+pub mod jd;
 pub mod ping;
 
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ use std::path::PathBuf;
 use crate::config::{Config, ConfigError};
 use crate::dataset::DatasetError;
 use crate::ingest::IngestError;
+use crate::jd::JdError;
 use crate::llm::{AnthropicClient, LlmError};
 use crate::secrets::{self, SecretsError};
 
@@ -83,4 +85,13 @@ pub enum CliError {
         "review the problems above; skills without evidence stay out of tailored resumes until they're backed or removed"
     ))]
     DatasetInvalid { problems: usize },
+
+    #[error("could not serialize the result to JSON")]
+    OutputJson(#[source] serde_json::Error),
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "the model's output didn't parse; re-running usually helps, and a plainer text version of the JD helps more"
+    ))]
+    Jd(#[from] JdError),
 }

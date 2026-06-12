@@ -30,6 +30,11 @@ pub enum Command {
         #[command(subcommand)]
         command: DatasetCommand,
     },
+    /// Work with job descriptions
+    Jd {
+        #[command(subcommand)]
+        command: JdCommand,
+    },
     /// Talk to the configured LLM provider directly
     Llm {
         #[command(subcommand)]
@@ -50,6 +55,18 @@ pub enum DatasetCommand {
     Show,
     /// Check integrity: unsupported skills, broken references (exits nonzero on problems)
     Validate,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum JdCommand {
+    /// Parse a job description into structured requirements
+    Parse {
+        /// Path to the JD text file, or "-" to read stdin
+        path: std::path::PathBuf,
+        /// Print the parsed requirements as JSON instead of a summary
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[cfg(test)]
@@ -103,6 +120,28 @@ mod tests {
         ));
         // Bare `aarg dataset` requires a subcommand.
         assert!(Cli::try_parse_from(["aarg", "dataset"]).is_err());
+    }
+
+    #[test]
+    fn jd_parse_takes_a_path_and_an_optional_json_flag() {
+        let cli = Cli::try_parse_from(["aarg", "jd", "parse", "jd.txt"]).unwrap();
+        match cli.command {
+            Command::Jd {
+                command: JdCommand::Parse { path, json },
+            } => {
+                assert_eq!(path, std::path::PathBuf::from("jd.txt"));
+                assert!(!json);
+            }
+            other => panic!("expected jd parse, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["aarg", "jd", "parse", "-", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Jd {
+                command: JdCommand::Parse { json: true, .. }
+            }
+        ));
     }
 
     #[test]

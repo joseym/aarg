@@ -9,5 +9,6 @@ pub mod commands;
 pub mod config;
 pub mod dataset;
 pub mod ingest;
+pub mod jd;
 pub mod llm;
 pub mod secrets;
