@@ -2,6 +2,8 @@
 name = "aarg"
 version = "0.1.0"
 edition = "2024"
+# File::try_lock in the dataset store needs 1.89's stabilized file locking.
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "The Adversarial Agentic Resume Generator - a local-first CLI that tailors resumes to job descriptions without fabricating experience"
 authors = ["Josey Morton <me@joseymorton.com>"]
