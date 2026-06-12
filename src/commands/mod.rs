@@ -21,9 +21,10 @@ use crate::ats::AtsError;
 use crate::builds::BuildError;
 use crate::config::{Config, ConfigError};
 use crate::dataset::DatasetError;
+use crate::fetch::FetchError;
 use crate::gap::GapError;
 use crate::ingest::IngestError;
-use crate::jd::JdError;
+use crate::jd::{JdError, JobRequirements};
 use crate::llm::{AnthropicClient, LlmError};
 use crate::render::RenderError;
 use crate::secrets::{self, SecretsError};
@@ -42,6 +43,39 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
             provider: provider.name().to_string(),
         })?;
     Ok((AnthropicClient::new(key), config))
+}
+
+/// Turn the JD argument every JD-consuming command accepts — a
+/// Greenhouse/Lever URL, a `.json` file of already-parsed requirements,
+/// a text file, or `-` for stdin — into `JobRequirements`. Extracted at
+/// its third consumer (`jd parse`, `gap`, `tailor`).
+pub(crate) async fn load_requirements(
+    arg: &Path,
+    client: &AnthropicClient,
+    model: &str,
+) -> Result<JobRequirements, CliError> {
+    let arg_str = arg.to_string_lossy();
+    if arg_str.starts_with("https://") || arg_str.starts_with("http://") {
+        eprintln!("fetching {arg_str}...");
+        let text = crate::fetch::fetch_jd(&arg_str).await?;
+        eprintln!("parsing the posting with {model}...");
+        let mut requirements = crate::jd::parse_jd(client, model, &text).await?;
+        requirements.source_url = Some(arg_str.into_owned());
+        Ok(requirements)
+    } else if arg
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    {
+        let text = read_text_input(arg)?;
+        serde_json::from_str(&text).map_err(|source| CliError::BadRequirementsJson {
+            path: arg.to_path_buf(),
+            source,
+        })
+    } else {
+        let text = read_text_input(arg)?;
+        eprintln!("parsing {} with {model}...", arg.display());
+        Ok(crate::jd::parse_jd(client, model, &text).await?)
+    }
 }
 
 /// Read a text argument that is either a file path or `-` for stdin.
@@ -155,4 +189,8 @@ pub enum CliError {
 
     #[error(transparent)]
     Build(#[from] BuildError),
+
+    #[error(transparent)]
+    #[diagnostic(help("save the posting text to a file and pass that path (or pipe it with `-`)"))]
+    Fetch(#[from] FetchError),
 }

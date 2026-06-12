@@ -14,31 +14,18 @@ use chrono::Utc;
 
 use crate::ats::{self, EvidenceStatus, KeywordKind};
 use crate::builds::{self, BuildMeta};
-use crate::commands::{CliError, configured_client, read_text_input};
+use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::store;
 use crate::gap::analyze_gap;
-use crate::jd::{JobRequirements, parse_jd};
 use crate::render;
 use crate::tailor::{JdId, tailor_resume};
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
-    let text = read_text_input(&path)?;
     let dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let model = &config.anthropic.model;
 
-    let requirements: JobRequirements = if path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-    {
-        serde_json::from_str(&text).map_err(|source| CliError::BadRequirementsJson {
-            path: path.clone(),
-            source,
-        })?
-    } else {
-        eprintln!("parsing {} with {model}...", path.display());
-        parse_jd(&client, model, &text).await?
-    };
+    let requirements = load_requirements(&path, &client, model).await?;
 
     eprintln!("analyzing the gap...");
     let gap = analyze_gap(&client, model, &requirements, &dataset).await?;

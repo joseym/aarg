@@ -8,18 +8,15 @@
 
 use std::path::PathBuf;
 
-use crate::commands::{CliError, configured_client, read_text_input};
+use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::types::SkillCategory;
-use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority, parse_jd};
+use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority};
 
 pub async fn parse(path: PathBuf, json: bool) -> Result<(), CliError> {
-    let text = read_text_input(&path)?;
-
     let (client, config) = configured_client().await?;
     let model = &config.anthropic.model;
-    eprintln!("parsing {} with {model}...", path.display());
 
-    let requirements = parse_jd(&client, model, &text).await?;
+    let requirements = load_requirements(&path, &client, model).await?;
 
     if json {
         println!(

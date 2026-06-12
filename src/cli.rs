@@ -37,7 +37,7 @@ pub enum Command {
     },
     /// Compare your dataset against a job description's requirements
     Gap {
-        /// Path to the JD text (or `jd parse --json` output), or "-" for stdin
+        /// JD text file, Greenhouse/Lever URL, `jd parse --json` output, or "-"
         jd: std::path::PathBuf,
         /// Print the report as JSON instead of a summary
         #[arg(long)]
@@ -45,7 +45,7 @@ pub enum Command {
     },
     /// Tailor your resume to a job description and render the ATS PDF
     Tailor {
-        /// Path to the JD text (or `jd parse --json` output), or "-" for stdin
+        /// JD text file, Greenhouse/Lever URL, `jd parse --json` output, or "-"
         jd: std::path::PathBuf,
     },
     /// Talk to the configured LLM provider directly
@@ -74,7 +74,7 @@ pub enum DatasetCommand {
 pub enum JdCommand {
     /// Parse a job description into structured requirements
     Parse {
-        /// Path to the JD text file, or "-" to read stdin
+        /// JD text file, Greenhouse/Lever posting URL, or "-" for stdin
         path: std::path::PathBuf,
         /// Print the parsed requirements as JSON instead of a summary
         #[arg(long)]

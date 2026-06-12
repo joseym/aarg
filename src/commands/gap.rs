@@ -8,29 +8,17 @@
 
 use std::path::PathBuf;
 
-use crate::commands::{CliError, configured_client, read_text_input};
+use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::store;
 use crate::gap::{GapReport, Weakness, analyze_gap};
-use crate::jd::{Importance, JobRequirements, parse_jd};
+use crate::jd::{Importance, JobRequirements};
 
 pub async fn run(path: PathBuf, json: bool) -> Result<(), CliError> {
-    let text = read_text_input(&path)?;
     let dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let model = &config.anthropic.model;
 
-    let requirements: JobRequirements = if path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-    {
-        serde_json::from_str(&text).map_err(|source| CliError::BadRequirementsJson {
-            path: path.clone(),
-            source,
-        })?
-    } else {
-        eprintln!("parsing {} with {model}...", path.display());
-        parse_jd(&client, model, &text).await?
-    };
+    let requirements = load_requirements(&path, &client, model).await?;
 
     eprintln!(
         "comparing against {} recorded skills...",
