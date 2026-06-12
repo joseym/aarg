@@ -11,6 +11,7 @@ async fn main() -> miette::Result<()> {
     match cli.command {
         Command::Init => aarg::commands::init::run().await?,
         Command::Config => aarg::commands::config::run().await?,
+        Command::Ingest { path } => aarg::commands::ingest::run(path).await?,
         Command::Llm {
             command: LlmCommand::Ping,
         } => aarg::commands::ping::run().await?,

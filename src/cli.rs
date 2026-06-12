@@ -20,6 +20,11 @@ pub enum Command {
     Init,
     /// Show the current configuration and where it lives
     Config,
+    /// Build your dataset from an existing resume (text or Markdown)
+    Ingest {
+        /// Path to the resume file (for a PDF, extract its text first)
+        path: std::path::PathBuf,
+    },
     /// Talk to the configured LLM provider directly
     Llm {
         #[command(subcommand)]
@@ -35,7 +40,7 @@ pub enum LlmCommand {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use clap::Parser;
 
@@ -51,6 +56,18 @@ mod tests {
             Cli::try_parse_from(["aarg", "config"]).unwrap().command,
             Command::Config
         ));
+    }
+
+    #[test]
+    fn ingest_takes_a_path_and_requires_one() {
+        let cli = Cli::try_parse_from(["aarg", "ingest", "resume.md"]).unwrap();
+        match cli.command {
+            Command::Ingest { path } => {
+                assert_eq!(path, std::path::PathBuf::from("resume.md"));
+            }
+            other => panic!("expected ingest, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["aarg", "ingest"]).is_err());
     }
 
     #[test]

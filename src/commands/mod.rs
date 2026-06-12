@@ -7,10 +7,15 @@
 //! everywhere below, errors stay module-specific.
 
 pub mod config;
+pub mod ingest;
 pub mod init;
 pub mod ping;
 
+use std::path::PathBuf;
+
 use crate::config::ConfigError;
+use crate::dataset::DatasetError;
+use crate::ingest::IngestError;
 use crate::llm::LlmError;
 use crate::secrets::SecretsError;
 
@@ -34,4 +39,26 @@ pub enum CliError {
         "aarg init needs an interactive terminal; in scripts and CI, configure aarg ahead of time"
     ))]
     Prompt(#[from] inquire::InquireError),
+
+    #[error(transparent)]
+    Dataset(#[from] DatasetError),
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "the model's output didn't parse; re-running usually helps, and a cleaner text export of the resume helps more"
+    ))]
+    Ingest(#[from] IngestError),
+
+    #[error("could not read {path}")]
+    ReadInput {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("{path} looks like a PDF — aarg ingests text, not PDF binaries")]
+    #[diagnostic(help(
+        "extract the text first (for example `pdftotext resume.pdf resume.txt`) and ingest that"
+    ))]
+    PdfInput { path: PathBuf },
 }
