@@ -181,12 +181,15 @@ struct RawLine {
 
 const SUMMARY_ID: &str = "summary";
 
-/// The draft lines that read like AI: the summary and any bullet whose
-/// text trips the deny-list. Deterministic, so a keyless caller still
-/// knows whether a rewrite pass is even worth a model call.
+/// The draft lines that need a voice pass: the summary and any bullet
+/// that either trips the cliché deny-list *or* reads raw — a verbatim,
+/// un-bullet-like line that slipped onto the page (a floor-topped-up
+/// source bullet, or a raw enrichment answer). Deterministic, so a
+/// keyless caller still knows whether a rewrite pass is worth a model
+/// call.
 pub fn flagged_lines(resume: &TailoredResume) -> Vec<Line> {
     let mut lines = Vec::new();
-    if has_cliche(&resume.summary) {
+    if needs_rewrite(&resume.summary) {
         lines.push(Line {
             id: SUMMARY_ID.to_string(),
             text: resume.summary.clone(),
@@ -194,7 +197,7 @@ pub fn flagged_lines(resume: &TailoredResume) -> Vec<Line> {
     }
     for role in &resume.roles {
         for bullet in &role.bullets {
-            if has_cliche(&bullet.text) {
+            if needs_rewrite(&bullet.text) {
                 lines.push(Line {
                     id: bullet.source_id.0.clone(),
                     text: bullet.text.clone(),
@@ -205,9 +208,30 @@ pub fn flagged_lines(resume: &TailoredResume) -> Vec<Line> {
     lines
 }
 
+fn needs_rewrite(text: &str) -> bool {
+    has_cliche(text) || looks_raw(text)
+}
+
 fn has_cliche(text: &str) -> bool {
     let lower = text.to_lowercase();
     DENY_LIST.iter().any(|tell| lower.contains(tell))
+}
+
+/// A line that reads like a raw note rather than a polished résumé bullet:
+/// it starts lowercase, or opens with a first-person subject ("I", "we",
+/// "my", "our"). A real bullet leads with a capitalized action verb. This
+/// is what catches a verbatim line the model never reworded.
+fn looks_raw(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let starts_lowercase = trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() && c.is_lowercase());
+    let lower = trimmed.to_lowercase();
+    let first_person = ["i ", "we ", "my ", "our "]
+        .iter()
+        .any(|opener| lower.starts_with(opener));
+    starts_lowercase || first_person
 }
 
 /// Run a voice pass over a draft: flag the AI-sounding lines, rewrite them
@@ -356,6 +380,23 @@ mod tests {
         let flagged = flagged_lines(&resume);
         let ids: Vec<&str> = flagged.iter().map(|l| l.id.as_str()).collect();
         assert_eq!(ids, vec!["summary", "bullet-1"]); // bullet-2 is clean
+    }
+
+    #[test]
+    fn flagging_catches_raw_un_bullet_like_lines() {
+        let resume = draft(
+            "Built and scaled the team.", // clean summary
+            &[
+                ("bullet-1", "we had weekly check in calls with customers"), // lowercase start
+                ("bullet-2", "I built the trading UI"),                      // first-person
+                ("bullet-3", "Owned the release process"),                   // clean bullet
+            ],
+        );
+        let flagged = flagged_lines(&resume);
+        let ids: Vec<&str> = flagged.iter().map(|l| l.id.as_str()).collect();
+        // The two raw lines are flagged; the proper bullet and clean
+        // summary are left alone.
+        assert_eq!(ids, vec!["bullet-1", "bullet-2"]);
     }
 
     #[tokio::test]
