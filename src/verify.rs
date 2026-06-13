@@ -44,12 +44,16 @@ pub struct VerifyOutcome {
     pub removed: usize,
     pub skipped: usize,
     pub bullets_added: usize,
+    /// Unknown skills the user said they don't have — remembered so they
+    /// aren't re-offered next time.
+    pub declined: usize,
 }
 
 impl VerifyOutcome {
-    /// Whether anything changed that is worth saving.
+    /// Whether anything changed that is worth saving. A recorded decline
+    /// counts: persisting it is the whole point of not re-asking.
     pub fn changed(&self) -> bool {
-        self.verified > 0 || self.removed > 0
+        self.verified > 0 || self.removed > 0 || self.declined > 0
     }
 }
 
@@ -159,14 +163,50 @@ async fn clarify(
     user: &dyn UserHandle,
     ctx: &AgentContext<'_>,
 ) -> Result<(), AskError> {
-    user.notify(&format!(
-        "Ask anything about \"{name}\" — what it means, or describe what you did and I'll help you decide honestly."
-    ));
     let mut history: Vec<GuideTurn> = Vec::new();
+
+    // Lead with a plain-language description, unprompted: the user's
+    // first question is almost always "what even is this?", so answer it
+    // before they have to ask. The opener seeds the conversation history
+    // so follow-ups build on it. If the guide can't be reached, fall back
+    // to a generic invitation and let the user drive.
+    let opener = format!(
+        "In plain terms, what does \"{name}\" usually mean, and what kind of real experience would count as having it?"
+    );
+    match VerificationGuideAgent
+        .run(
+            ctx,
+            GuideInput {
+                skill: name.to_string(),
+                roles: role_options.to_vec(),
+                history: Vec::new(),
+                message: opener.clone(),
+            },
+        )
+        .await
+    {
+        Ok(run) => {
+            user.notify(&run.output);
+            history.push(GuideTurn {
+                from_user: true,
+                text: opener,
+            });
+            history.push(GuideTurn {
+                from_user: false,
+                text: run.output,
+            });
+        }
+        Err(_) => {
+            user.notify(&format!(
+                "Ask anything about \"{name}\" — what it means, or describe what you did and I'll help you decide honestly."
+            ));
+        }
+    }
+
     loop {
         let message = match user
             .ask(Question::Text {
-                prompt: "your question or explanation (blank to go back)".to_string(),
+                prompt: "ask a follow-up, or describe what you did (blank to go back)".to_string(),
             })
             .await?
         {
@@ -346,9 +386,15 @@ pub async fn verify_unknown(
 
     for jd_skill in &gap.unknown {
         let name = jd_skill.name.clone();
+        let key = name.to_lowercase();
         // Defensive: if a prior answer this session already recorded
         // this name, don't ask twice or create a duplicate.
-        if dataset.skills.aliases.contains_key(&name.to_lowercase()) {
+        if dataset.skills.aliases.contains_key(&key) {
+            continue;
+        }
+        // A "no" the user already gave (this run or a past one) stays
+        // settled — never re-ask a skill they've declined.
+        if dataset.metadata.declined_skills.contains(&key) {
             continue;
         }
 
@@ -370,9 +416,14 @@ pub async fn verify_unknown(
                 user.notify(&format!("added {name}"));
                 outcome.verified += 1;
             }
-            // The skill isn't in the dataset, so "no" and "skip" both
-            // simply leave it out — nothing to remove.
-            Verdict::DontHave | Verdict::Skip => {
+            // The skill isn't in the dataset, so there's nothing to
+            // remove — but a "no" is a decision worth keeping so it's
+            // never re-offered. "Skip for now" stays askable.
+            Verdict::DontHave => {
+                dataset.metadata.declined_skills.push(key);
+                outcome.declined += 1;
+            }
+            Verdict::Skip => {
                 outcome.skipped += 1;
             }
         }
@@ -690,9 +741,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_no_on_an_unknown_skill_leaves_it_absent() {
+    async fn a_no_on_an_unknown_skill_leaves_it_absent_but_records_the_decline() {
         let mut dataset = dataset_with_unbacked("TypeScript");
-        let before = dataset.clone();
         let gap = gap_wanting("Kafka");
         let user = ScriptedUser::new();
         user.answer(Answer::Choice(2)); // no, I haven't
@@ -702,10 +752,31 @@ mod tests {
             .unwrap();
 
         assert_eq!(outcome.verified, 0);
-        assert!(!outcome.changed());
-        // Nothing added; the skill the job wanted stays out of the dataset.
-        assert_eq!(dataset, before);
+        assert_eq!(outcome.declined, 1);
+        // The decline is worth persisting so it's never re-asked.
+        assert!(outcome.changed());
+        // The skill the job wanted stays out of the dataset proper...
         assert!(!dataset.skills.aliases.contains_key("kafka"));
+        // ...but the "no" is remembered, lowercased.
+        assert_eq!(dataset.metadata.declined_skills, vec!["kafka".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_declined_skill_is_not_offered_again() {
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        dataset.metadata.declined_skills.push("kafka".into());
+        let before = dataset.clone();
+        let gap = gap_wanting("Kafka");
+        // The user answers nothing — if the skill were offered, the
+        // interview would fail on the missing answer. It must be skipped.
+        let user = ScriptedUser::new();
+
+        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, VerifyOutcome::default());
+        assert_eq!(dataset, before);
     }
 
     #[tokio::test]
@@ -729,16 +800,20 @@ mod tests {
     async fn a_confused_user_consults_the_guide_then_answers() {
         let mut dataset = dataset_with_unbacked("TypeScript");
         let mock = MockLlmClient::default();
+        // Reply 1 is the unprompted opener description; reply 2 answers
+        // the user's follow-up.
         mock.enqueue(
-            r#"{"reply": "TypeScript is a typed superset of JavaScript; typed front-end code counts."}"#,
+            r#"{"reply": "TypeScript is a typed superset of JavaScript; you write JS with type annotations."}"#,
         );
+        mock.enqueue(r#"{"reply": "Yes — typed front-end code counts."}"#);
         let ctx = AgentContext {
             llm: &mock,
             model: "m",
             tracer: &Tracer::DISABLED,
         };
         let user = ScriptedUser::new();
-        // With a guide present, "let me explain" is option 4.
+        // With a guide present, "let me explain" is option 4. Choosing it
+        // shows the description right away, before any question is typed.
         user.answer(Answer::Choice(4));
         user.answer(Answer::Text("does typed front-end code count?".into()));
         user.confirm_with(false); // done explaining
@@ -753,9 +828,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(outcome.verified, 1);
-        // The guide was consulted exactly once, and its reply was shown.
-        assert_eq!(mock.requests().len(), 1);
+        // The guide ran twice: the auto-description, then the follow-up.
+        assert_eq!(mock.requests().len(), 2);
+        // The description was shown without the user asking for it.
         assert!(user.notices().iter().any(|n| n.contains("typed superset")));
+        assert!(
+            user.notices()
+                .iter()
+                .any(|n| n.contains("front-end code counts"))
+        );
     }
 
     #[tokio::test]

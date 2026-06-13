@@ -60,14 +60,25 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     // lacks, offer to verify them now — turning real-but-unrecorded
     // experience into evidence the tailoring can actually use. A piped
     // or CI run skips this silently (no one to ask).
-    if !gap.unknown.is_empty() {
+    // Skills the user has already declined are settled — don't count
+    // them toward the offer or re-ask them.
+    let pending_unknown = gap
+        .unknown
+        .iter()
+        .filter(|s| {
+            !dataset
+                .metadata
+                .declined_skills
+                .contains(&s.name.to_lowercase())
+        })
+        .count();
+    if pending_unknown > 0 {
         let user = auto_user();
         if user.is_interactive() {
             let wants = user
                 .confirm(
                     &format!(
-                        "verify {} skill(s) the job wants but your dataset lacks?",
-                        gap.unknown.len()
+                        "verify {pending_unknown} skill(s) the job wants but your dataset lacks?"
                     ),
                     true,
                 )
@@ -78,11 +89,15 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                 if outcome.changed() {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
-                    eprintln!(
-                        "recorded {} new skill(s); re-analyzing the gap...",
-                        outcome.verified
-                    );
-                    gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+                    // Only a newly added skill changes the gap; a bare
+                    // decline just gets remembered, no re-analysis needed.
+                    if outcome.verified > 0 {
+                        eprintln!(
+                            "recorded {} new skill(s); re-analyzing the gap...",
+                            outcome.verified
+                        );
+                        gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+                    }
                 }
             }
         }

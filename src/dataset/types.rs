@@ -149,6 +149,7 @@ impl ResumeDataset {
                 created_at: now,
                 updated_at: now,
                 source_files: Vec::new(),
+                declined_skills: Vec::new(),
             },
         }
     }
@@ -369,6 +370,11 @@ pub struct DatasetMetadata {
     pub updated_at: DateTime<Utc>,
     /// The files this dataset was ingested from, for provenance.
     pub source_files: Vec<String>,
+    /// Lowercased names of skills a job wanted that the user said they
+    /// don't have. Remembered so verification never re-asks a settled
+    /// "no". `#[serde(default)]` keeps older dataset files loading.
+    #[serde(default)]
+    pub declined_skills: Vec<String>,
 }
 
 #[cfg(test)]
