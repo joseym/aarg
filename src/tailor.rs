@@ -397,7 +397,6 @@ struct RawBulletSelection {
 // Assembly: every claim checked against the dataset
 // ---------------------------------------------------------------------
 
-// EXERCISE(EX-011)
 fn assemble(
     raw: RawSelection,
     build_id: BuildId,
@@ -466,6 +465,16 @@ fn assemble(
                 if bullets.is_empty() {
                     warnings.push(format!(
                         "none of the model's picks for {} were usable; kept its own strongest instead",
+                        role.id.0
+                    ));
+                }
+                // Per-role ceiling: a model that over-selected (ten bullets
+                // on the recent role) is trimmed to its strongest few, so
+                // the resume stays tight instead of running long.
+                let dropped = cap_strongest(&mut bullets, &bullets_by_id, MAX_BULLETS_PER_ROLE);
+                if dropped > 0 {
+                    warnings.push(format!(
+                        "{} kept its {MAX_BULLETS_PER_ROLE} strongest bullets; dropped {dropped}",
                         role.id.0
                     ));
                 }
@@ -603,6 +612,44 @@ fn assemble(
 /// tapers instead of collapsing — one role with six lines and the rest
 /// with one reads lopsided. Capped at what a role actually has.
 const MIN_BULLETS_PER_ROLE: usize = 2;
+
+/// The most bullets any one role may keep. The prompt asks for "4-6 for
+/// the most recent role", but nothing stopped a model from selecting ten
+/// — making the resume run long and lopsided toward the recent job. This
+/// is the hard ceiling that matches the prompt's upper bound.
+const MAX_BULLETS_PER_ROLE: usize = 6;
+
+/// Cap a role's selected bullets at `max`, keeping the strongest by the
+/// dataset's `Strength` rating (ties broken by the model's own ordering),
+/// and keeping the survivors in their original order so the role still
+/// reads in the sequence the model chose. Returns how many were dropped.
+fn cap_strongest(
+    bullets: &mut Vec<TailoredBullet>,
+    by_id: &HashMap<&str, &Bullet>,
+    max: usize,
+) -> usize {
+    if bullets.len() <= max {
+        return 0;
+    }
+    let dropped = bullets.len() - max;
+    let rank = |tb: &TailoredBullet| {
+        by_id
+            .get(tb.source_id.0.as_str())
+            .map_or(3u8, |b| match b.strength {
+                Strength::High => 0,
+                Strength::Medium => 1,
+                Strength::Low => 2,
+            })
+    };
+    // Rank indices by strength (stable → ties keep model order), take the
+    // top `max`, then restore original order for a natural read.
+    let mut order: Vec<usize> = (0..bullets.len()).collect();
+    order.sort_by_key(|&i| rank(&bullets[i]));
+    let mut keep: Vec<usize> = order.into_iter().take(max).collect();
+    keep.sort_unstable();
+    *bullets = keep.into_iter().map(|i| bullets[i].clone()).collect();
+    dropped
+}
 
 /// Top a role's bullets up to `floor` (capped at what it has) from its
 /// strongest *unused* bullets. This is the deterministic half of keeping
@@ -1239,13 +1286,75 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "exercise: the prompt asks for 3-5 bullets per role but nothing enforces it; cap each role at 5 bullets in assemble, preferring the dataset's strength ratings, then finish this test"]
-    fn ex_011_role_bullets_are_capped_at_five() {
-        // Once the cap exists: build a role with 8 bullets of mixed
-        // Strength, have the model select all 8, and assert the five
-        // that survive are the strongest (ties broken by the model's
-        // ordering), with a warning naming the dropped count.
-        let cap_implemented = false;
-        assert!(cap_implemented);
+    fn cap_strongest_keeps_the_strongest_in_original_order() {
+        let b1 = graded("b1", Strength::Low);
+        let b2 = graded("b2", Strength::High);
+        let b3 = graded("b3", Strength::Medium);
+        let b4 = graded("b4", Strength::High);
+        let map: std::collections::HashMap<&str, &Bullet> =
+            [("b1", &b1), ("b2", &b2), ("b3", &b3), ("b4", &b4)]
+                .into_iter()
+                .collect();
+        // The model selected all four, in this order.
+        let mut bullets: Vec<TailoredBullet> = ["b1", "b2", "b3", "b4"]
+            .iter()
+            .map(|id| TailoredBullet {
+                source_id: BulletId((*id).into()),
+                text: "x".into(),
+            })
+            .collect();
+
+        let dropped = cap_strongest(&mut bullets, &map, 3);
+
+        assert_eq!(dropped, 1);
+        // The two High (b2, b4) and the Medium (b3) survive; the Low (b1)
+        // is dropped — and the survivors keep their original sequence.
+        let ids: Vec<&str> = bullets.iter().map(|b| b.source_id.0.as_str()).collect();
+        assert_eq!(ids, vec!["b2", "b3", "b4"]);
+    }
+
+    #[tokio::test]
+    async fn an_over_selected_role_is_capped_to_the_strongest_six() {
+        // The model selects all 17 of Prometheum's bullets; the cap keeps
+        // six and warns about the rest.
+        use std::fmt::Write;
+        let mut dataset = sample_dataset();
+        // Give role-1 eight bullets so it can exceed the cap of six.
+        dataset.roles[0].bullets = (1..=8)
+            .map(|n| graded(&format!("bullet-{n}"), Strength::Medium))
+            .collect();
+        let mut picks = String::from(r#"{"summary":"s","roles":[{"id":"role-1","bullets":["#);
+        for n in 1..=8 {
+            if n > 1 {
+                picks.push(',');
+            }
+            write!(picks, r#"{{"source_id":"bullet-{n}","text":"line {n}"}}"#).unwrap();
+        }
+        picks.push_str(r#"]}],"skills":["Rust"],"projects":[]}"#);
+        let mock = MockLlmClient::default();
+        mock.enqueue(&picks);
+
+        let outcome = tailor_resume(
+            &test_ctx(&mock),
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &dataset,
+            &sample_gap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let role1 = &outcome.resume.roles[0];
+        assert_eq!(role1.bullets.len(), 6);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("strongest bullets; dropped 2")),
+            "got: {:?}",
+            outcome.warnings
+        );
     }
 }
