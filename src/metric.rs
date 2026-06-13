@@ -128,7 +128,7 @@ pub async fn capture_metrics(
         }
         seen.push(target.bullet_id.clone());
 
-        let Some(text) = bullet_text(dataset, &target.bullet_id) else {
+        let Some((role_label, text)) = bullet_context(dataset, &target.bullet_id) else {
             continue; // a phantom id the reviewer invented
         };
         if bullet_has_metric(dataset, &target.bullet_id) {
@@ -151,7 +151,9 @@ pub async fn capture_metrics(
                 .to_string(),
         };
 
-        user.notify(&format!("Bullet: {text}"));
+        // Anchor the user: which role, then the exact line — no guessing
+        // which of several jobs this bullet belongs to.
+        user.notify(&format!("\n— {role_label} —\n  \"{text}\""));
         let answer = match user.ask(Question::Text { prompt: question }).await? {
             Answer::Text(t) if !t.trim().is_empty() => t.trim().to_string(),
             _ => continue, // blank = skip this bullet
@@ -163,14 +165,19 @@ pub async fn capture_metrics(
     Ok(added)
 }
 
-/// The text of the dataset bullet with this id, if it exists.
-fn bullet_text(dataset: &ResumeDataset, id: &BulletId) -> Option<String> {
-    dataset
-        .roles
-        .iter()
-        .flat_map(|role| &role.bullets)
-        .find(|bullet| bullet.id == *id)
-        .map(|bullet| bullet.text.clone())
+/// The role label ("title at company") and text of the bullet with this
+/// id, if it exists. The label is what tells the user *which job* the
+/// flagged line is from.
+fn bullet_context(dataset: &ResumeDataset, id: &BulletId) -> Option<(String, String)> {
+    for role in &dataset.roles {
+        if let Some(bullet) = role.bullets.iter().find(|b| b.id == *id) {
+            return Some((
+                format!("{} at {}", role.title, role.company),
+                bullet.text.clone(),
+            ));
+        }
+    }
+    None
 }
 
 /// Record the user's number on the bullet's `metric` field — cleanly,
@@ -279,11 +286,12 @@ mod tests {
         );
         // ...and the bullet text is left untouched — no "(...)" appended.
         assert_eq!(bullet.text, "Reduced delivery costs");
-        // The leading question reached the user.
+        // The user saw both the role it belongs to and the exact line —
+        // no guessing which job.
         assert!(
             user.notices()
                 .iter()
-                .any(|n| n.contains("Reduced delivery costs"))
+                .any(|n| n.contains("Director at Acme") && n.contains("Reduced delivery costs"))
         );
     }
 
