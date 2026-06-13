@@ -15,6 +15,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod dataset;
+pub mod enrich;
 pub mod fetch;
 pub mod gap;
 pub mod guide;

@@ -21,6 +21,7 @@ use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
+use crate::enrich;
 use crate::gap::{GapReport, analyze_gap};
 use crate::jd::JobRequirements;
 use crate::llm::TokenUsage;
@@ -93,6 +94,46 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                         );
                         gap = analyze_gap(&ctx, &requirements, &dataset).await?;
                     }
+                }
+            }
+        }
+    }
+
+    // History copilot: a role thin on detail shouldn't be stripped or
+    // padded with its own weak lines — offer to flesh it out first, so
+    // tailoring works from a fuller history. The added bullets are the
+    // user's own words (`enrich`), JD-agnostic on purpose. A piped/CI run
+    // skips this silently.
+    let thin = enrich::thin_roles(&dataset);
+    if !thin.is_empty() {
+        let user = auto_user();
+        if user.is_interactive() {
+            let names: Vec<String> = thin
+                .iter()
+                .filter_map(|id| dataset.roles.iter().find(|r| &r.id == id))
+                .map(|r| r.company.clone())
+                .collect();
+            let wants = user
+                .confirm(
+                    &format!(
+                        "{} role(s) are thin on detail ({}) — flesh them out with a few questions?",
+                        thin.len(),
+                        names.join(", ")
+                    ),
+                    true,
+                )
+                .await
+                .unwrap_or(false);
+            if wants {
+                let outcome =
+                    enrich::enrich_roles(&mut dataset, &thin, user.as_ref(), &ctx).await?;
+                if outcome.changed() {
+                    dataset.metadata.updated_at = Utc::now();
+                    store::save(&dataset)?;
+                    eprintln!(
+                        "added {} bullet(s) across {} role(s); tailoring with the fuller history...",
+                        outcome.bullets_added, outcome.roles_touched
+                    );
                 }
             }
         }

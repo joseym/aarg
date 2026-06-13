@@ -29,8 +29,7 @@ use chrono::Utc;
 
 use crate::agent::{Agent, AgentContext};
 use crate::dataset::types::{
-    Bullet, BulletId, EvidenceRef, Proficiency, ResumeDataset, Skill, SkillCategory, SkillId,
-    Strength,
+    Bullet, EvidenceRef, Proficiency, ResumeDataset, Skill, SkillCategory, SkillId, Strength,
 };
 use crate::gap::GapReport;
 use crate::guide::{GuideInput, GuideTurn, VerificationGuideAgent};
@@ -341,7 +340,7 @@ fn attach_evidence(
 ) {
     let role_id = dataset.roles[role_index].id.clone();
     if let Some(text) = sentence {
-        let bullet_id = next_bullet_id(dataset);
+        let bullet_id = dataset.next_bullet_id();
         dataset.roles[role_index].bullets.push(Bullet {
             id: bullet_id,
             text,
@@ -766,18 +765,6 @@ fn parse_years(text: &str) -> Option<f32> {
         .and_then(|word| word.parse().ok())
 }
 
-/// New bullet IDs continue the existing `bullet-N` sequence.
-fn next_bullet_id(dataset: &ResumeDataset) -> BulletId {
-    let highest = dataset
-        .roles
-        .iter()
-        .flat_map(|role| role.bullets.iter())
-        .filter_map(|bullet| bullet.id.0.strip_prefix("bullet-")?.parse::<u32>().ok())
-        .max()
-        .unwrap_or(0);
-    BulletId(format!("bullet-{}", highest + 1))
-}
-
 /// Remove a skill and every reference to it — the alias map and any
 /// bullet/role/project/achievement that lists it. Leaving references
 /// dangling would just hand `dataset validate` a new problem.
@@ -803,7 +790,8 @@ fn remove_skill(dataset: &mut ResumeDataset, id: &SkillId) {
 mod tests {
     use super::*;
     use crate::dataset::types::{
-        Contact, EmploymentType, Proficiency, Role, RoleId, Skill, SkillCategory, YearMonth,
+        BulletId, Contact, EmploymentType, Proficiency, Role, RoleId, Skill, SkillCategory,
+        YearMonth,
     };
     use crate::llm::MockLlmClient;
     use crate::trace::Tracer;

@@ -58,6 +58,11 @@ pub enum Command {
         #[command(subcommand)]
         command: VoiceCommand,
     },
+    /// Flesh out thin roles in your work history
+    Roles {
+        #[command(subcommand)]
+        command: RolesCommand,
+    },
     /// Inspect recorded agent runs
     Trace {
         #[command(subcommand)]
@@ -107,6 +112,15 @@ pub enum VoiceCommand {
     Remove {
         /// The sample id, e.g. "sample-2"
         id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RolesCommand {
+    /// Interview to add detail to thin roles (all of them, or one by id)
+    Enrich {
+        /// A specific role id, e.g. "role-3"; omit to cover every thin role
+        id: Option<String>,
     },
 }
 
@@ -287,6 +301,28 @@ mod tests {
         }
         // remove needs an id.
         assert!(Cli::try_parse_from(["aarg", "voice", "remove"]).is_err());
+    }
+
+    #[test]
+    fn roles_enrich_parses_with_and_without_an_id() {
+        match Cli::try_parse_from(["aarg", "roles", "enrich"])
+            .unwrap()
+            .command
+        {
+            Command::Roles {
+                command: RolesCommand::Enrich { id },
+            } => assert_eq!(id, None),
+            other => panic!("expected roles enrich, got {other:?}"),
+        }
+        match Cli::try_parse_from(["aarg", "roles", "enrich", "role-3"])
+            .unwrap()
+            .command
+        {
+            Command::Roles {
+                command: RolesCommand::Enrich { id },
+            } => assert_eq!(id.as_deref(), Some("role-3")),
+            other => panic!("expected roles enrich role-3, got {other:?}"),
+        }
     }
 
     #[test]

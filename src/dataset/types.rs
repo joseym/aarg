@@ -153,6 +153,20 @@ impl ResumeDataset {
             },
         }
     }
+
+    /// The next `bullet-N` id, continuing the highest one already used
+    /// across every role. Shared by the flows that add bullets
+    /// (verification evidence, role enrichment) so ids never collide.
+    pub fn next_bullet_id(&self) -> BulletId {
+        let highest = self
+            .roles
+            .iter()
+            .flat_map(|role| role.bullets.iter())
+            .filter_map(|bullet| bullet.id.0.strip_prefix("bullet-")?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        BulletId(format!("bullet-{}", highest + 1))
+    }
 }
 
 /// How to reach the person; rendered at the top of every resume.

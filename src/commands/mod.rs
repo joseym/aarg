@@ -13,6 +13,7 @@ pub mod ingest;
 pub mod init;
 pub mod jd;
 pub mod ping;
+pub mod roles;
 pub mod skills;
 pub mod tailor;
 pub mod trace;
@@ -244,6 +245,10 @@ pub enum CliError {
     #[error("no voice sample with id {id:?}")]
     #[diagnostic(help("run `aarg voice list` to see the ids you can remove"))]
     VoiceSampleNotFound { id: String },
+
+    #[error("no role with id {id:?}")]
+    #[diagnostic(help("run `aarg dataset show` to see your roles and their ids"))]
+    RoleNotFound { id: String },
 
     #[error("no editor configured")]
     #[diagnostic(help(

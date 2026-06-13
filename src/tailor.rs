@@ -246,7 +246,8 @@ pub async fn tailor_resume(
 const SYSTEM_PROMPT: &str = r#"You tailor a candidate's recorded work history to one job description. You select and rephrase ONLY from the provided material.
 
 Rules — all of them matter:
-- Include EVERY role, and taper rather than collapse: a resume where one role has six bullets and the rest have one looks lopsided. Budget by relevance — roughly 4-6 bullets for the most recent or most relevant role, about 3 for mid roles, and at least 2 for older or less relevant ones (use a single bullet only for a role that has just one recorded). An unexplained employment gap reads worse to a hiring manager than a lightly covered role.
+- A coherent work history matters in its own right — tenure, range, and progression — not only its overlap with this job. Include EVERY role and give each a fair showing even when it isn't directly relevant; do not reduce the resume to only what mirrors the posting.
+- Taper rather than collapse: a resume where one role has six bullets and the rest have one looks lopsided. Budget by relevance — roughly 4-6 bullets for the most recent or most relevant role, about 3 for mid roles, and at least 2 for older or less relevant ones (use a single bullet only for a role that has just one recorded). An unexplained employment gap reads worse to a hiring manager than a lightly covered role.
 - Keep roles in the order given (most recent first).
 - You may rephrase a bullet to mirror the job description's vocabulary, but every fact, number, technology, and outcome must already be in the source bullet. Never add metrics, scale, team sizes, technologies, or results that the source does not state.
 - Prefer mirroring the JD's exact phrases (the ats_phrases list) when the underlying fact honestly supports them.
