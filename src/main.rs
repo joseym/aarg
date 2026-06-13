@@ -2,7 +2,7 @@
 //! render any error as a diagnostic. All real behavior lives in the
 //! library crate so it stays testable.
 
-use aarg::cli::{Cli, Command, DatasetCommand, JdCommand, LlmCommand};
+use aarg::cli::{Cli, Command, DatasetCommand, JdCommand, LlmCommand, TraceCommand};
 use clap::Parser;
 
 #[tokio::main]
@@ -26,6 +26,12 @@ async fn main() -> miette::Result<()> {
         } => aarg::commands::jd::parse(path, json).await?,
         Command::Gap { jd, json } => aarg::commands::gap::run(jd, json).await?,
         Command::Tailor { jd } => aarg::commands::tailor::run(jd).await?,
+        Command::Trace {
+            command: TraceCommand::Last,
+        } => aarg::commands::trace::last().await?,
+        Command::Trace {
+            command: TraceCommand::Show { id },
+        } => aarg::commands::trace::show(id).await?,
         Command::Llm {
             command: LlmCommand::Ping,
         } => aarg::commands::ping::run().await?,

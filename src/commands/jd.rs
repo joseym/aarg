@@ -8,15 +8,22 @@
 
 use std::path::PathBuf;
 
+use crate::agent::AgentContext;
 use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::types::SkillCategory;
 use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority};
+use crate::trace::Tracer;
 
 pub async fn parse(path: PathBuf, json: bool) -> Result<(), CliError> {
     let (client, config) = configured_client().await?;
-    let model = &config.anthropic.model;
+    let tracer = Tracer::to_default_dir()?;
+    let ctx = AgentContext {
+        llm: &client,
+        model: &config.anthropic.model,
+        tracer: &tracer,
+    };
 
-    let requirements = load_requirements(&path, &client, model).await?;
+    let requirements = load_requirements(&path, &ctx).await?;
 
     if json {
         println!(

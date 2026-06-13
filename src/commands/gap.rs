@@ -8,23 +8,30 @@
 
 use std::path::PathBuf;
 
+use crate::agent::AgentContext;
 use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::store;
 use crate::gap::{GapReport, Weakness, analyze_gap};
 use crate::jd::{Importance, JobRequirements};
+use crate::trace::Tracer;
 
 pub async fn run(path: PathBuf, json: bool) -> Result<(), CliError> {
     let dataset = store::load()?;
     let (client, config) = configured_client().await?;
-    let model = &config.anthropic.model;
+    let tracer = Tracer::to_default_dir()?;
+    let ctx = AgentContext {
+        llm: &client,
+        model: &config.anthropic.model,
+        tracer: &tracer,
+    };
 
-    let requirements = load_requirements(&path, &client, model).await?;
+    let requirements = load_requirements(&path, &ctx).await?;
 
     eprintln!(
         "comparing against {} recorded skills...",
         dataset.skills.skills.len()
     );
-    let report = analyze_gap(&client, model, &requirements, &dataset).await?;
+    let report = analyze_gap(&ctx, &requirements, &dataset).await?;
 
     if json {
         println!(

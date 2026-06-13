@@ -19,3 +19,4 @@ pub mod llm;
 pub mod render;
 pub mod secrets;
 pub mod tailor;
+pub mod trace;

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{Agent, AgentContext};
 use crate::dataset::types::SkillCategory;
-use crate::llm::{LlmClient, LlmError};
+use crate::llm::LlmError;
 
 /// JDs are shorter than resumes; the structured form is too.
 const REPLY_BUDGET: u32 = 4096;
@@ -118,6 +118,9 @@ impl Agent for JdParserAgent {
     type Output = JobRequirements;
     type Error = JdError;
 
+    fn id(&self) -> &'static str {
+        "jd_parser_v1"
+    }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
     }
@@ -137,13 +140,8 @@ impl Agent for JdParserAgent {
 
 /// Parse a job description.
 // EXERCISE(EX-009)
-pub async fn parse_jd(
-    client: &dyn LlmClient,
-    model: &str,
-    jd_text: &str,
-) -> Result<JobRequirements, JdError> {
-    let ctx = AgentContext { llm: client, model };
-    Ok(JdParserAgent.run(&ctx, jd_text.to_string()).await?.output)
+pub async fn parse_jd(ctx: &AgentContext<'_>, jd_text: &str) -> Result<JobRequirements, JdError> {
+    Ok(JdParserAgent.run(ctx, jd_text.to_string()).await?.output)
 }
 
 /// The extraction contract. Same discipline as the resume prompt:
@@ -259,6 +257,14 @@ mod tests {
     use super::*;
     use crate::llm::MockLlmClient;
 
+    fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
+        AgentContext {
+            llm: mock,
+            model: "test-model",
+            tracer: &crate::trace::Tracer::DISABLED,
+        }
+    }
+
     const GOOD_REPLY: &str = r#"{
         "company": "Acme Corp",
         "title": "Director of Engineering",
@@ -285,7 +291,7 @@ mod tests {
         let mock = MockLlmClient::default();
         mock.enqueue(GOOD_REPLY);
 
-        let jd = parse_jd(&mock, "test-model", "the jd text").await.unwrap();
+        let jd = parse_jd(&test_ctx(&mock), "the jd text").await.unwrap();
 
         assert_eq!(jd.company, "Acme Corp");
         assert_eq!(jd.seniority, Seniority::Director);
@@ -314,7 +320,7 @@ mod tests {
         let mock = MockLlmClient::default();
         mock.enqueue(GOOD_REPLY);
 
-        let jd = parse_jd(&mock, "m", "text").await.unwrap();
+        let jd = parse_jd(&test_ctx(&mock), "text").await.unwrap();
 
         // Stated importance survives; omitted importance takes the
         // default its list implies.
@@ -327,7 +333,7 @@ mod tests {
     async fn fenced_replies_are_unwrapped() {
         let mock = MockLlmClient::default();
         mock.enqueue(format!("```json\n{GOOD_REPLY}\n```"));
-        let jd = parse_jd(&mock, "m", "text").await.unwrap();
+        let jd = parse_jd(&test_ctx(&mock), "text").await.unwrap();
         assert_eq!(jd.title, "Director of Engineering");
     }
 
@@ -337,7 +343,7 @@ mod tests {
         // Two bad replies: the spine's validation-retry consumes one.
         mock.enqueue("I'd be happy to help! The job requires...");
         mock.enqueue("I'd be happy to help! The job requires...");
-        let err = parse_jd(&mock, "m", "text").await.unwrap_err();
+        let err = parse_jd(&test_ctx(&mock), "text").await.unwrap_err();
         match err {
             JdError::BadReply { snippet, .. } => assert!(snippet.starts_with("I'd")),
             other => panic!("expected BadReply, got {other:?}"),

@@ -28,7 +28,7 @@ use crate::dataset::types::{
 use async_trait::async_trait;
 
 use crate::agent::{Agent, AgentContext};
-use crate::llm::{LlmClient, LlmError};
+use crate::llm::LlmError;
 
 /// Generous output budget: a long resume serializes to a lot of JSON.
 const REPLY_BUDGET: u32 = 8192;
@@ -68,6 +68,9 @@ impl Agent for IngestResumeAgent {
     type Output = IngestOutcome;
     type Error = IngestError;
 
+    fn id(&self) -> &'static str {
+        "ingest_resume_v1"
+    }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
     }
@@ -87,13 +90,11 @@ impl Agent for IngestResumeAgent {
 
 /// Extract a dataset from resume text.
 pub async fn ingest_resume(
-    client: &dyn LlmClient,
-    model: &str,
+    ctx: &AgentContext<'_>,
     resume_text: &str,
 ) -> Result<IngestOutcome, IngestError> {
-    let ctx = AgentContext { llm: client, model };
     Ok(IngestResumeAgent
-        .run(&ctx, resume_text.to_string())
+        .run(ctx, resume_text.to_string())
         .await?
         .output)
 }
@@ -545,6 +546,14 @@ mod tests {
     use super::*;
     use crate::llm::MockLlmClient;
 
+    fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
+        AgentContext {
+            llm: mock,
+            model: "test-model",
+            tracer: &crate::trace::Tracer::DISABLED,
+        }
+    }
+
     /// A reply exercising every linking path: two roles (one current),
     /// bullet-derived evidence, explicit evidence indices, a project, a
     /// certification, and an alias.
@@ -591,7 +600,7 @@ mod tests {
         let mock = MockLlmClient::default();
         mock.enqueue(GOOD_REPLY);
 
-        let outcome = ingest_resume(&mock, "test-model", "the resume text")
+        let outcome = ingest_resume(&test_ctx(&mock), "the resume text")
             .await
             .unwrap();
         let dataset = outcome.dataset;
@@ -650,7 +659,7 @@ mod tests {
     async fn fenced_replies_are_unwrapped() {
         let mock = MockLlmClient::default();
         mock.enqueue(format!("```json\n{GOOD_REPLY}\n```"));
-        let outcome = ingest_resume(&mock, "m", "text").await.unwrap();
+        let outcome = ingest_resume(&test_ctx(&mock), "text").await.unwrap();
         assert_eq!(outcome.dataset.roles.len(), 2);
     }
 
@@ -660,7 +669,7 @@ mod tests {
         // Two bad replies: the spine's validation-retry consumes one.
         mock.enqueue("Sure! Here is the JSON you asked for: {");
         mock.enqueue("Sure! Here is the JSON you asked for: {");
-        let err = ingest_resume(&mock, "m", "text").await.unwrap_err();
+        let err = ingest_resume(&test_ctx(&mock), "text").await.unwrap_err();
         match err {
             IngestError::BadReply { snippet, .. } => {
                 assert!(snippet.starts_with("Sure!"));
@@ -678,7 +687,7 @@ mod tests {
                            "bullets": [{"text": "Used Rust", "skills": ["Rust"]}]}],
                 "skills": []}"#,
         );
-        let outcome = ingest_resume(&mock, "m", "text").await.unwrap();
+        let outcome = ingest_resume(&test_ctx(&mock), "text").await.unwrap();
         // The mention is reported, not silently turned into a skill entry.
         assert!(outcome.dataset.skills.skills.is_empty());
         assert!(outcome.dataset.roles[0].bullets[0].skill_ids.is_empty());
@@ -696,7 +705,7 @@ mod tests {
                 ],
                 "skills": [{"name": "Rust", "evidence_roles": [1]}]}"#,
         );
-        let outcome = ingest_resume(&mock, "m", "text").await.unwrap();
+        let outcome = ingest_resume(&test_ctx(&mock), "text").await.unwrap();
         // Only the dated role survives — but it keeps the ID its wire
         // position implies, so the model's evidence index still lands.
         assert_eq!(outcome.dataset.roles.len(), 1);

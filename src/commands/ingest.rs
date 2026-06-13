@@ -7,9 +7,11 @@
 
 use std::path::PathBuf;
 
+use crate::agent::AgentContext;
 use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::ingest::ingest_resume;
+use crate::trace::Tracer;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
     if path
@@ -24,10 +26,15 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     })?;
 
     let (client, config) = configured_client().await?;
-    let model = &config.anthropic.model;
+    let tracer = Tracer::to_default_dir()?;
+    let ctx = AgentContext {
+        llm: &client,
+        model: &config.anthropic.model,
+        tracer: &tracer,
+    };
 
-    println!("ingesting {} with {model}...", path.display());
-    let mut outcome = ingest_resume(&client, model, &text).await?;
+    println!("ingesting {} with {}...", path.display(), ctx.model);
+    let mut outcome = ingest_resume(&ctx, &text).await?;
     outcome.dataset.metadata.source_files = vec![path.display().to_string()];
 
     let dataset_path = store::dir()?.join("dataset.json");

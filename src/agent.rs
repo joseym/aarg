@@ -21,19 +21,23 @@
 //! trait until four functions demanded it.
 
 use async_trait::async_trait;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::llm::{CompletionRequest, LlmClient, LlmError, Message, TokenUsage};
+use crate::trace::{Trace, TraceOutcome, Tracer, trace_id};
 
 /// Everything an agent needs from its surroundings. Borrowed, because
-/// today a single command owns the client and the config for exactly
-/// one run at a time; shared ownership can be introduced when something
-/// actually holds an agent across runs.
+/// today a single command owns the client, the config, and the tracer
+/// for exactly one run at a time; shared ownership can be introduced
+/// when something actually holds an agent across runs.
 // EXERCISE(EX-014)
 pub struct AgentContext<'a> {
     pub llm: &'a dyn LlmClient,
     /// The model requests go to, resolved by the caller from config.
     pub model: &'a str,
+    /// Where runs get recorded. Tests pass `&Tracer::DISABLED`.
+    pub tracer: &'a Tracer,
 }
 
 /// What a run produced: the agent's typed output plus the accounting
@@ -52,8 +56,9 @@ pub struct AgentRun<T> {
 #[async_trait]
 pub trait Agent: Send + Sync {
     /// What the agent works from. Owned: a run's input is a value the
-    /// caller hands over, not a window into the caller's state.
-    type Input: Send + Sync;
+    /// caller hands over, not a window into the caller's state — and
+    /// `Serialize` because the trace records it.
+    type Input: Serialize + Send + Sync;
     /// The lenient shape the model replies in — every agent tolerates
     /// missing fields at the wire and enforces strictness in `assemble`.
     type Wire: DeserializeOwned;
@@ -62,6 +67,10 @@ pub trait Agent: Send + Sync {
     /// The agent's own error enum; `From<LlmError>` lets the shared
     /// spine propagate transport failures into it with `?`.
     type Error: std::error::Error + From<LlmError> + Send + Sync + 'static;
+
+    /// Stable identifier for traces (e.g. "jd_parser_v1"). Versioned,
+    /// so a prompt overhaul can be told apart from old runs in history.
+    fn id(&self) -> &'static str;
 
     /// The fixed instructions: a pure function of the agent, never of
     /// the input.
@@ -111,8 +120,32 @@ pub async fn run_agent<A>(
 where
     A: Agent + ?Sized,
 {
+    let started_at = chrono::Utc::now();
+    let timer = std::time::Instant::now();
+    // Serialized up front: `input` is moved into `assemble` later, and
+    // the failure paths still want to record what the run was asked.
+    let input_json = serde_json::to_value(&input).unwrap_or(serde_json::Value::Null);
+
     let mut messages = vec![Message::user(agent.user_message(&input))];
     let mut usage = TokenUsage::default();
+
+    // One trace per run, whatever the ending — failed runs are exactly
+    // the ones worth replaying.
+    let finish = |messages: &[Message], reply: Option<&str>, usage, outcome| {
+        ctx.tracer.record(&Trace {
+            trace_id: trace_id(agent.id(), started_at),
+            agent: agent.id().to_string(),
+            started_at,
+            duration_ms: u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX),
+            model: ctx.model.to_string(),
+            input: input_json.clone(),
+            system: agent.system_prompt().to_string(),
+            messages: messages.to_vec(),
+            reply: reply.map(str::to_string),
+            usage,
+            outcome,
+        });
+    };
 
     let mut attempt = 1;
     loop {
@@ -123,8 +156,20 @@ where
             messages: messages.clone(),
             temperature: None,
         };
-        // `?` converts the transport error via the `From<LlmError>` bound.
-        let response = ctx.llm.complete(request).await?;
+        let response = match ctx.llm.complete(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                finish(
+                    &messages,
+                    None,
+                    usage,
+                    TraceOutcome::Failed {
+                        error: error.to_string(),
+                    },
+                );
+                return Err(error.into());
+            }
+        };
         usage.input_tokens += response.usage.input_tokens;
         usage.output_tokens += response.usage.output_tokens;
 
@@ -135,8 +180,28 @@ where
                 // empty selection), not malformed output — retrying the
                 // same question would burn tokens on a different
                 // problem, so they surface immediately.
-                let output = agent.assemble(wire, input)?;
-                return Ok(AgentRun { output, usage });
+                match agent.assemble(wire, input) {
+                    Ok(output) => {
+                        finish(
+                            &messages,
+                            Some(&response.text),
+                            usage,
+                            TraceOutcome::Succeeded,
+                        );
+                        return Ok(AgentRun { output, usage });
+                    }
+                    Err(error) => {
+                        finish(
+                            &messages,
+                            Some(&response.text),
+                            usage,
+                            TraceOutcome::Failed {
+                                error: error.to_string(),
+                            },
+                        );
+                        return Err(error);
+                    }
+                }
             }
             // Validation-retry: show the model its own reply and the
             // parse error, and ask again — once.
@@ -149,7 +214,18 @@ where
                      originally requested - no commentary, no code fences."
                 )));
             }
-            Err(source) => return Err(agent.bad_reply(snippet(json), source)),
+            Err(source) => {
+                let error = agent.bad_reply(snippet(json), source);
+                finish(
+                    &messages,
+                    Some(&response.text),
+                    usage,
+                    TraceOutcome::Failed {
+                        error: error.to_string(),
+                    },
+                );
+                return Err(error);
+            }
         }
     }
 }
@@ -211,6 +287,9 @@ mod tests {
         type Output = i64;
         type Error = EchoError;
 
+        fn id(&self) -> &'static str {
+            "echo_test"
+        }
         fn system_prompt(&self) -> &str {
             "Reply with {\"value\": <the number>}."
         }
@@ -236,6 +315,7 @@ mod tests {
         let ctx = AgentContext {
             llm: &mock,
             model: "test-model",
+            tracer: &Tracer::DISABLED,
         };
 
         let run = EchoAgent.run(&ctx, 2).await.unwrap();
@@ -260,6 +340,7 @@ mod tests {
         let ctx = AgentContext {
             llm: &mock,
             model: "m",
+            tracer: &Tracer::DISABLED,
         };
 
         let run = EchoAgent.run(&ctx, 2).await.unwrap();
@@ -287,6 +368,7 @@ mod tests {
         let ctx = AgentContext {
             llm: &mock,
             model: "m",
+            tracer: &Tracer::DISABLED,
         };
 
         match EchoAgent.run(&ctx, 1).await.unwrap_err() {
@@ -296,6 +378,32 @@ mod tests {
             other => panic!("expected BadReply, got {other:?}"),
         }
         assert_eq!(mock.requests().len(), 2, "exactly one retry, then stop");
+    }
+
+    #[tokio::test]
+    async fn every_run_lands_in_the_trace_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let tracer = Tracer::to_dir(dir.path());
+        let mock = MockLlmClient::default();
+        mock.enqueue("not json at all");
+        mock.enqueue("{\"value\": 40}");
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+            tracer: &tracer,
+        };
+
+        EchoAgent.run(&ctx, 2).await.unwrap();
+
+        let trace = crate::trace::latest_in(dir.path()).unwrap();
+        assert_eq!(trace.agent, "echo_test");
+        assert!(matches!(trace.outcome, TraceOutcome::Succeeded));
+        // The retry conversation is preserved: ask, bad reply, correction.
+        assert_eq!(trace.messages.len(), 3);
+        assert_eq!(trace.input, serde_json::json!(2));
+        assert_eq!(trace.reply.as_deref(), Some("{\"value\": 40}"));
+        // Usage in the trace is the summed cost of both attempts.
+        assert!(trace.usage.output_tokens >= 2);
     }
 
     #[test]

@@ -33,7 +33,7 @@ use crate::jd::JobRequirements;
 use async_trait::async_trait;
 
 use crate::agent::{Agent, AgentContext};
-use crate::llm::{LlmClient, LlmError, TokenUsage};
+use crate::llm::{LlmError, TokenUsage};
 
 /// Selection output is compact (IDs + reworded lines), but resumes with
 /// many roles need room.
@@ -133,6 +133,7 @@ pub struct TailorOutcome {
 
 /// Everything one tailoring run works from. Owned: a run's input is a
 /// value handed over whole, which is also what tracing will serialize.
+#[derive(serde::Serialize)]
 pub struct TailorInput {
     pub build_id: BuildId,
     pub jd_id: JdId,
@@ -151,6 +152,9 @@ impl Agent for TailoringAgent {
     type Output = (TailoredResume, Vec<String>);
     type Error = TailorError;
 
+    fn id(&self) -> &'static str {
+        "tailoring_v1"
+    }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
     }
@@ -180,15 +184,13 @@ impl Agent for TailoringAgent {
 
 /// Tailor the dataset to one JD.
 pub async fn tailor_resume(
-    client: &dyn LlmClient,
-    model: &str,
+    ctx: &AgentContext<'_>,
     build_id: BuildId,
     jd_id: JdId,
     jd: &JobRequirements,
     dataset: &ResumeDataset,
     gap: &GapReport,
 ) -> Result<TailorOutcome, TailorError> {
-    let ctx = AgentContext { llm: client, model };
     let input = TailorInput {
         build_id,
         jd_id,
@@ -196,7 +198,7 @@ pub async fn tailor_resume(
         dataset: dataset.clone(),
         gap: gap.clone(),
     };
-    let run = TailoringAgent.run(&ctx, input).await?;
+    let run = TailoringAgent.run(ctx, input).await?;
     let (resume, warnings) = run.output;
     Ok(TailorOutcome {
         resume,
@@ -568,6 +570,14 @@ mod tests {
     use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority};
     use crate::llm::MockLlmClient;
 
+    fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
+        AgentContext {
+            llm: mock,
+            model: "test-model",
+            tracer: &crate::trace::Tracer::DISABLED,
+        }
+    }
+
     fn bullet(id: &str, text: &str) -> Bullet {
         Bullet {
             id: BulletId(id.into()),
@@ -710,8 +720,7 @@ mod tests {
         let mock = MockLlmClient::default();
         mock.enqueue(reply);
         tailor_resume(
-            &mock,
-            "m",
+            &test_ctx(&mock),
             BuildId("001".into()),
             JdId("amplo-senior-engineering-manager".into()),
             &sample_jd(),
@@ -886,8 +895,7 @@ mod tests {
                 "skills": ["Rust"], "projects": []}"#,
         );
         tailor_resume(
-            &mock,
-            "m",
+            &test_ctx(&mock),
             BuildId("001".into()),
             JdId("jd".into()),
             &sample_jd(),
@@ -916,8 +924,7 @@ mod tests {
         mock.enqueue("Here's a great resume for you!");
         mock.enqueue("Here's a great resume for you!");
         let err = tailor_resume(
-            &mock,
-            "m",
+            &test_ctx(&mock),
             BuildId("001".into()),
             JdId("jd".into()),
             &sample_jd(),

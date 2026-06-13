@@ -14,9 +14,11 @@ pub mod init;
 pub mod jd;
 pub mod ping;
 pub mod tailor;
+pub mod trace;
 
 use std::path::{Path, PathBuf};
 
+use crate::agent::AgentContext;
 use crate::ats::AtsError;
 use crate::builds::BuildError;
 use crate::config::{Config, ConfigError};
@@ -29,6 +31,7 @@ use crate::llm::{AnthropicClient, LlmError};
 use crate::render::RenderError;
 use crate::secrets::{self, SecretsError};
 use crate::tailor::TailorError;
+use crate::trace::TraceError;
 
 /// Load the config, fetch the stored API key, and build the provider
 /// client — the preamble every LLM-backed command starts with. Extracted
@@ -51,15 +54,14 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
 /// its third consumer (`jd parse`, `gap`, `tailor`).
 pub(crate) async fn load_requirements(
     arg: &Path,
-    client: &AnthropicClient,
-    model: &str,
+    ctx: &AgentContext<'_>,
 ) -> Result<JobRequirements, CliError> {
     let arg_str = arg.to_string_lossy();
     if arg_str.starts_with("https://") || arg_str.starts_with("http://") {
         eprintln!("fetching {arg_str}...");
         let text = crate::fetch::fetch_jd(&arg_str).await?;
-        eprintln!("parsing the posting with {model}...");
-        let mut requirements = crate::jd::parse_jd(client, model, &text).await?;
+        eprintln!("parsing the posting with {}...", ctx.model);
+        let mut requirements = crate::jd::parse_jd(ctx, &text).await?;
         requirements.source_url = Some(arg_str.into_owned());
         Ok(requirements)
     } else if arg
@@ -73,8 +75,8 @@ pub(crate) async fn load_requirements(
         })
     } else {
         let text = read_text_input(arg)?;
-        eprintln!("parsing {} with {model}...", arg.display());
-        Ok(crate::jd::parse_jd(client, model, &text).await?)
+        eprintln!("parsing {} with {}...", arg.display(), ctx.model);
+        Ok(crate::jd::parse_jd(ctx, &text).await?)
     }
 }
 
@@ -209,6 +211,9 @@ pub enum CliError {
 
     #[error("your editor exited with {status}; the dataset is unchanged")]
     EditorAborted { status: std::process::ExitStatus },
+
+    #[error(transparent)]
+    Trace(#[from] TraceError),
 
     #[error("the edited draft at {path} is not valid dataset JSON")]
     #[diagnostic(help(

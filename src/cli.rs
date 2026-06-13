@@ -48,6 +48,11 @@ pub enum Command {
         /// JD text file, Greenhouse/Lever URL, `jd parse --json` output, or "-"
         jd: std::path::PathBuf,
     },
+    /// Inspect recorded agent runs
+    Trace {
+        #[command(subcommand)]
+        command: TraceCommand,
+    },
     /// Talk to the configured LLM provider directly
     Llm {
         #[command(subcommand)]
@@ -70,6 +75,17 @@ pub enum DatasetCommand {
     Validate,
     /// Open the dataset in $EDITOR, then re-validate and save
     Edit,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TraceCommand {
+    /// Show the most recent agent run
+    Last,
+    /// Show one run by its trace id (the filename also works)
+    Show {
+        /// Trace id, e.g. 2026-06-12T18-30-00_tailoring_v1_1a2b3
+        id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -194,6 +210,28 @@ mod tests {
             other => panic!("expected tailor, got {other:?}"),
         }
         assert!(Cli::try_parse_from(["aarg", "tailor"]).is_err());
+    }
+
+    #[test]
+    fn trace_subcommands_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "trace", "last"])
+                .unwrap()
+                .command,
+            Command::Trace {
+                command: TraceCommand::Last
+            }
+        ));
+        match Cli::try_parse_from(["aarg", "trace", "show", "some-id"])
+            .unwrap()
+            .command
+        {
+            Command::Trace {
+                command: TraceCommand::Show { id },
+            } => assert_eq!(id, "some-id"),
+            other => panic!("expected trace show, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["aarg", "trace"]).is_err());
     }
 
     #[test]

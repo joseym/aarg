@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext, AgentRun, run_agent};
 use crate::dataset::types::{Proficiency, ResumeDataset, Skill, SkillId};
 use crate::jd::{JdSkill, JobRequirements};
-use crate::llm::{LlmClient, LlmError, TokenUsage};
+use crate::llm::{LlmError, TokenUsage};
 
 /// The reply is a small name-to-name mapping.
 const REPLY_BUDGET: u32 = 2048;
@@ -94,6 +94,7 @@ pub enum Weakness {
 
 /// What gap analysis works from: the parsed JD and the dataset to
 /// compare it against.
+#[derive(serde::Serialize)]
 pub struct GapInput {
     pub jd: JobRequirements,
     pub dataset: ResumeDataset,
@@ -111,6 +112,9 @@ impl Agent for GapAnalyzerAgent {
     type Output = GapReport;
     type Error = GapError;
 
+    fn id(&self) -> &'static str {
+        "gap_analyzer_v1"
+    }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
     }
@@ -168,17 +172,15 @@ impl Agent for GapAnalyzerAgent {
 /// Compare a JD against the dataset. Deterministic matching first; the
 /// model only sees what the alias map could not resolve.
 pub async fn analyze_gap(
-    client: &dyn LlmClient,
-    model: &str,
+    ctx: &AgentContext<'_>,
     jd: &JobRequirements,
     dataset: &ResumeDataset,
 ) -> Result<GapReport, GapError> {
-    let ctx = AgentContext { llm: client, model };
     let input = GapInput {
         jd: jd.clone(),
         dataset: dataset.clone(),
     };
-    Ok(GapAnalyzerAgent.run(&ctx, input).await?.output)
+    Ok(GapAnalyzerAgent.run(ctx, input).await?.output)
 }
 
 /// Pass 1: dedup the JD's asks (required side wins) and resolve what
@@ -313,6 +315,14 @@ mod tests {
     use crate::jd::{Importance, RemotePolicy, Seniority};
     use crate::llm::MockLlmClient;
 
+    fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
+        AgentContext {
+            llm: mock,
+            model: "test-model",
+            tracer: &crate::trace::Tracer::DISABLED,
+        }
+    }
+
     fn skill(
         id: &str,
         name: &str,
@@ -396,7 +406,7 @@ mod tests {
         )]);
         let jd = jd_with(vec![jd_skill("k8s", Importance::Required)], vec![]);
 
-        let report = analyze_gap(&mock, "m", &jd, &dataset).await.unwrap();
+        let report = analyze_gap(&test_ctx(&mock), &jd, &dataset).await.unwrap();
 
         assert_eq!(report.matched.len(), 1);
         assert_eq!(report.matched[0].dataset_name, "Kubernetes");
@@ -436,7 +446,7 @@ mod tests {
             vec![],
         );
 
-        let report = analyze_gap(&mock, "m", &jd, &dataset).await.unwrap();
+        let report = analyze_gap(&test_ctx(&mock), &jd, &dataset).await.unwrap();
 
         // Rust matched by alias; container orchestration by the model.
         assert_eq!(report.matched.len(), 2);
@@ -476,7 +486,7 @@ mod tests {
             vec![],
         );
 
-        let report = analyze_gap(&mock, "m", &jd, &dataset).await.unwrap();
+        let report = analyze_gap(&test_ctx(&mock), &jd, &dataset).await.unwrap();
 
         assert_eq!(report.matched.len(), 1);
         assert_eq!(report.matched[0].dataset_name, "Rust");
@@ -507,7 +517,7 @@ mod tests {
             vec![jd_skill("rust", Importance::Preferred)],
         );
 
-        let report = analyze_gap(&mock, "m", &jd, &dataset).await.unwrap();
+        let report = analyze_gap(&test_ctx(&mock), &jd, &dataset).await.unwrap();
 
         assert_eq!(report.matched.len(), 1);
         assert_eq!(report.matched[0].jd_skill.importance, Importance::Critical);
@@ -519,7 +529,7 @@ mod tests {
         let dataset = dataset_with(Vec::new());
         let jd = jd_with(vec![jd_skill("Rust", Importance::Required)], vec![]);
 
-        let report = analyze_gap(&mock, "m", &jd, &dataset).await.unwrap();
+        let report = analyze_gap(&test_ctx(&mock), &jd, &dataset).await.unwrap();
 
         assert_eq!(report.unknown.len(), 1);
         assert!(mock.requests().is_empty(), "nothing to match against");
@@ -540,7 +550,9 @@ mod tests {
         )]);
         let jd = jd_with(vec![jd_skill("Kafka", Importance::Required)], vec![]);
 
-        let err = analyze_gap(&mock, "m", &jd, &dataset).await.unwrap_err();
+        let err = analyze_gap(&test_ctx(&mock), &jd, &dataset)
+            .await
+            .unwrap_err();
         match err {
             GapError::BadReply { snippet, .. } => assert!(snippet.starts_with("The best")),
             other => panic!("expected BadReply, got {other:?}"),

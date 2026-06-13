@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
+use crate::agent::AgentContext;
 use crate::ats::{self, EvidenceStatus, KeywordKind};
 use crate::builds::{self, BuildMeta};
 use crate::commands::{CliError, configured_client, load_requirements};
@@ -19,16 +20,23 @@ use crate::dataset::store;
 use crate::gap::analyze_gap;
 use crate::render;
 use crate::tailor::{JdId, tailor_resume};
+use crate::trace::Tracer;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let dataset = store::load()?;
     let (client, config) = configured_client().await?;
-    let model = &config.anthropic.model;
+    let tracer = Tracer::to_default_dir()?;
+    let ctx = AgentContext {
+        llm: &client,
+        model: &config.anthropic.model,
+        tracer: &tracer,
+    };
+    let model = ctx.model;
 
-    let requirements = load_requirements(&path, &client, model).await?;
+    let requirements = load_requirements(&path, &ctx).await?;
 
     eprintln!("analyzing the gap...");
-    let gap = analyze_gap(&client, model, &requirements, &dataset).await?;
+    let gap = analyze_gap(&ctx, &requirements, &dataset).await?;
 
     let build = builds::create_next()?;
     let jd_id = JdId(slug(&requirements.company, &requirements.title));
@@ -36,16 +44,8 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         "build {}: tailoring for {} @ {} with {model}...",
         build.id.0, requirements.title, requirements.company
     );
-    let outcome = tailor_resume(
-        &client,
-        model,
-        build.id.clone(),
-        jd_id,
-        &requirements,
-        &dataset,
-        &gap,
-    )
-    .await?;
+    let outcome =
+        tailor_resume(&ctx, build.id.clone(), jd_id, &requirements, &dataset, &gap).await?;
     for warning in &outcome.warnings {
         eprintln!("warning: {warning}");
     }
@@ -65,7 +65,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         "meta.json",
         &BuildMeta {
             created_at: Utc::now(),
-            model: model.clone(),
+            model: model.to_string(),
             template: "ats/classic".into(),
             tailor_usage: outcome.usage,
         },
