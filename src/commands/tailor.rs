@@ -24,6 +24,7 @@ use crate::dataset::types::ResumeDataset;
 use crate::gap::{GapReport, analyze_gap};
 use crate::jd::JobRequirements;
 use crate::llm::TokenUsage;
+use crate::metric::{self, MetricTarget};
 use crate::render;
 use crate::review::{
     AdversarialReport, AdversarialReviewerAgent, Objection, ObjectionKind, ObjectionTarget,
@@ -140,6 +141,72 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         best.report.objections.len(),
         best.ats_report.coverage * 100.0
     );
+
+    // Metric capture: the reviewer flags bullets that state an outcome
+    // without a number, but the loop can't invent one (the digit-runs
+    // guard reverts it). So ask the person — a leading question per
+    // flagged bullet — and re-tailor with their real figures folded in.
+    let metric_targets: Vec<MetricTarget> = best
+        .report
+        .objections
+        .iter()
+        .filter(|o| o.kind == ObjectionKind::NoMetric)
+        .filter_map(|o| match &o.target {
+            ObjectionTarget::Bullet(id) => Some(MetricTarget {
+                bullet_id: id.clone(),
+                hint: o.suggestion.clone().or_else(|| Some(o.message.clone())),
+            }),
+            _ => None,
+        })
+        .collect();
+    if !metric_targets.is_empty() {
+        let user = auto_user();
+        if user.is_interactive() {
+            let wants = user
+                .confirm(
+                    &format!(
+                        "the reviewer flagged {} bullet(s) that would land harder with a real number — answer a few quick questions?",
+                        metric_targets.len()
+                    ),
+                    true,
+                )
+                .await
+                .unwrap_or(false);
+            if wants {
+                let added =
+                    metric::capture_metrics(&mut dataset, &metric_targets, user.as_ref(), &ctx)
+                        .await?;
+                if added > 0 {
+                    dataset.metadata.updated_at = Utc::now();
+                    store::save(&dataset)?;
+                    eprintln!("added {added} metric(s); re-tailoring with them...");
+                    let retailored = tailor_resume(
+                        &ctx,
+                        build.id.clone(),
+                        jd_id.clone(),
+                        &requirements,
+                        &dataset,
+                        &gap,
+                        None,
+                    )
+                    .await?;
+                    add_usage(&mut total, retailored.usage);
+                    best = evaluate(
+                        &ctx,
+                        &build.dir,
+                        0,
+                        retailored.resume,
+                        &requirements,
+                        &dataset,
+                        &gap,
+                    )
+                    .await?;
+                    add_usage(&mut total, best.review_usage);
+                    eprintln!("iteration 0 (with metrics): score {:.2}", best.score);
+                }
+            }
+        }
+    }
 
     for iteration in 1..=MAX_REVISIONS {
         // Stop early when the draft is good enough or has nothing major

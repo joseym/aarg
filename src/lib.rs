@@ -21,6 +21,7 @@ pub mod guide;
 pub mod ingest;
 pub mod jd;
 pub mod keywords;
+pub mod metric;
 pub mod mirror;
 pub mod render;
 pub mod review;
