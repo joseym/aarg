@@ -77,6 +77,12 @@ pub struct TailoredResume {
     pub jd_id: JdId,
     pub generated_at: DateTime<Utc>,
     pub contact: Contact,
+    /// The role being applied for, shown as a headline under the name.
+    /// It's the JD's title, not a claim of having held it — the work
+    /// history below still carries the real titles. `serde(default)`
+    /// keeps older build artifacts deserializing.
+    #[serde(default)]
+    pub target_title: Option<String>,
     /// 2-3 sentences, the one free-prose field (prompt-held until the
     /// Phase 3 reviewer).
     pub summary: String,
@@ -199,6 +205,7 @@ impl Agent for TailoringAgent {
             wire,
             input.build_id,
             input.jd_id,
+            input.jd.title.clone(),
             &input.dataset,
             &input.gap,
         )
@@ -386,6 +393,7 @@ fn assemble(
     raw: RawSelection,
     build_id: BuildId,
     jd_id: JdId,
+    target_title: String,
     dataset: &ResumeDataset,
     gap: &GapReport,
 ) -> Result<(TailoredResume, Vec<String>), TailorError> {
@@ -545,6 +553,7 @@ fn assemble(
             jd_id,
             generated_at: Utc::now(),
             contact: dataset.contact.clone(),
+            target_title: Some(target_title),
             summary,
             roles,
             education: dataset.education.clone(),
@@ -791,6 +800,12 @@ mod tests {
         );
         // Contact and education come from the dataset, not the model.
         assert_eq!(resume.contact.full_name, "Ada Lovelace");
+        // The headline is the JD's title, derived — not a hardcoded or
+        // model-chosen value.
+        assert_eq!(
+            resume.target_title.as_deref(),
+            Some(sample_jd().title.as_str())
+        );
         assert_eq!(
             resume.skills_section.skills,
             vec!["Engineering management", "Rust"]

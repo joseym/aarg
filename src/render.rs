@@ -107,6 +107,7 @@ mod tests {
                 location: None,
                 links: Vec::new(),
             },
+            target_title: Some("Senior Engineer".into()),
             summary: "Engineering leader.".into(),
             roles: vec![TailoredRole {
                 id: crate::dataset::types::RoleId("role-1".into()),
@@ -152,6 +153,8 @@ mod tests {
         assert_eq!(pdf, dir.path().join("resume.ats.pdf"));
         let payload = std::fs::read_to_string(dir.path().join("ats_payload.json")).unwrap();
         assert!(payload.contains("Ada Lovelace"));
+        // The target-title headline rides along in the payload.
+        assert!(payload.contains("Senior Engineer"));
         let template = std::fs::read_to_string(dir.path().join("classic.typ")).unwrap();
         assert!(template.contains("json(sys.inputs.data)"));
     }

@@ -32,6 +32,9 @@
 #align(center)[
   #text(size: 17pt, weight: "bold")[#data.contact.full_name]
 ]
+#if "target_title" in data and data.target_title != none [
+  #align(center)[#text(size: 12pt)[#data.target_title]]
+]
 #{
   let bits = (data.contact.email, data.contact.phone, data.contact.location)
     .filter(x => x != none)

@@ -415,6 +415,7 @@ mod tests {
                 location: None,
                 links: Vec::new(),
             },
+            target_title: Some("Engineering Manager".into()),
             summary: "Engineering leader.".into(),
             roles: vec![TailoredRole {
                 id: crate::dataset::types::RoleId("role-1".into()),
