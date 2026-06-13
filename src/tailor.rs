@@ -246,7 +246,7 @@ pub async fn tailor_resume(
 const SYSTEM_PROMPT: &str = r#"You tailor a candidate's recorded work history to one job description. You select and rephrase ONLY from the provided material.
 
 Rules — all of them matter:
-- Include EVERY role: an unexplained employment gap reads worse to a hiring manager than a lightly covered role. Budget bullets by relevance instead — roughly 3-5 for recent or highly relevant roles, 1-2 for older or less relevant ones.
+- Include EVERY role, and taper rather than collapse: a resume where one role has six bullets and the rest have one looks lopsided. Budget by relevance — roughly 4-6 bullets for the most recent or most relevant role, about 3 for mid roles, and at least 2 for older or less relevant ones (use a single bullet only for a role that has just one recorded). An unexplained employment gap reads worse to a hiring manager than a lightly covered role.
 - Keep roles in the order given (most recent first).
 - You may rephrase a bullet to mirror the job description's vocabulary, but every fact, number, technology, and outcome must already be in the source bullet. Never add metrics, scale, team sizes, technologies, or results that the source does not state.
 - Prefer mirroring the JD's exact phrases (the ats_phrases list) when the underlying fact honestly supports them.
@@ -415,12 +415,14 @@ fn assemble(
     let mut roles = Vec::new();
     for role in &dataset.roles {
         let mut bullets: Vec<TailoredBullet> = Vec::new();
+        // Tracks which of the role's bullets are already on the page, so
+        // the floor top-up below never duplicates one.
+        let mut used: HashSet<String> = HashSet::new();
         match picks.remove(role.id.0.as_str()) {
             Some(selection) => {
                 selected_any = true;
                 let bullets_by_id: HashMap<&str, &Bullet> =
                     role.bullets.iter().map(|b| (b.id.0.as_str(), b)).collect();
-                let mut used: HashSet<String> = HashSet::new();
                 for picked in selection.bullets {
                     let Some(source) = bullets_by_id.get(picked.source_id.as_str()) else {
                         warnings.push(format!(
@@ -446,28 +448,27 @@ fn assemble(
                         text,
                     });
                 }
-                if bullets.is_empty()
-                    && let Some(fallback) = strongest_bullet(role)
-                {
+                if bullets.is_empty() {
                     warnings.push(format!(
-                        "none of the model's picks for {} were usable; kept its strongest bullet",
+                        "none of the model's picks for {} were usable; kept its own strongest instead",
                         role.id.0
                     ));
-                    bullets.push(fallback);
                 }
             }
             None => {
-                // The model omitted this role entirely; keep it with its
-                // strongest bullet so the work history stays continuous.
-                if let Some(fallback) = strongest_bullet(role) {
-                    bullets.push(fallback);
-                }
+                // The model omitted this role entirely; the floor below
+                // keeps it on the page so the work history stays continuous.
                 warnings.push(format!(
                     "the model omitted {} ({}); kept it to avoid an employment gap",
                     role.id.0, role.company
                 ));
             }
         }
+        // Per-role floor: top up to MIN_BULLETS_PER_ROLE from the role's
+        // strongest unused bullets. This is what stops the resume going
+        // lopsided when the model lavishes the recent role and leaves the
+        // older ones a single line each.
+        top_up(role, &mut bullets, &mut used, MIN_BULLETS_PER_ROLE);
         roles.push(TailoredRole {
             id: role.id.clone(),
             company: role.company.clone(),
@@ -583,22 +584,48 @@ fn assemble(
     ))
 }
 
-/// The role's best line by the dataset's own strength rating — the
-/// continuity fallback for roles the model omitted or fumbled. Ties
-/// keep dataset order (`min_by_key` returns the first minimum); a role
-/// with no bullets at all renders title-only, which still beats a gap.
-fn strongest_bullet(role: &Role) -> Option<TailoredBullet> {
-    role.bullets
+/// The fewest bullets any included role should carry, so the resume
+/// tapers instead of collapsing — one role with six lines and the rest
+/// with one reads lopsided. Capped at what a role actually has.
+const MIN_BULLETS_PER_ROLE: usize = 2;
+
+/// Top a role's bullets up to `floor` (capped at what it has) from its
+/// strongest *unused* bullets. This is the deterministic half of keeping
+/// the resume balanced: whatever the model selected (or omitted), no role
+/// on the page drops below the floor while it still has lines to show.
+/// Strongest first; ties keep dataset order (`sort_by_key` is stable). A
+/// role with no bullets at all renders title-only, which still beats a
+/// gap. The topped-up lines are the user's verbatim source text — no
+/// rewrite, so nothing to fabricate.
+fn top_up(
+    role: &Role,
+    bullets: &mut Vec<TailoredBullet>,
+    used: &mut HashSet<String>,
+    floor: usize,
+) {
+    if bullets.len() >= floor {
+        return;
+    }
+    let mut unused: Vec<&Bullet> = role
+        .bullets
         .iter()
-        .min_by_key(|b| match b.strength {
-            Strength::High => 0u8,
-            Strength::Medium => 1,
-            Strength::Low => 2,
-        })
-        .map(|b| TailoredBullet {
-            source_id: b.id.clone(),
-            text: b.text.clone(),
-        })
+        .filter(|b| !used.contains(&b.id.0))
+        .collect();
+    unused.sort_by_key(|b| match b.strength {
+        Strength::High => 0u8,
+        Strength::Medium => 1,
+        Strength::Low => 2,
+    });
+    for bullet in unused {
+        if bullets.len() >= floor {
+            break;
+        }
+        used.insert(bullet.id.0.clone());
+        bullets.push(TailoredBullet {
+            source_id: bullet.id.clone(),
+            text: bullet.text.clone(),
+        });
+    }
 }
 
 /// The maximal runs of consecutive digits in a string — "cut p99 by 40%"
@@ -946,7 +973,15 @@ mod tests {
         // bullet-3 belongs to role-2, role-9 and project-7 don't exist —
         // and role-2, which the model skipped, is kept for continuity.
         assert_eq!(outcome.resume.roles.len(), 2);
-        assert_eq!(outcome.resume.roles[0].bullets.len(), 1);
+        // role-1 kept its one valid pick (bullet-1) and the floor topped
+        // it up with the role's other bullet (bullet-2) — never the
+        // wrong-role bullet-3.
+        let role1_ids: Vec<&str> = outcome.resume.roles[0]
+            .bullets
+            .iter()
+            .map(|b| b.source_id.0.as_str())
+            .collect();
+        assert_eq!(role1_ids, vec!["bullet-1", "bullet-2"]);
         assert_eq!(
             outcome.resume.roles[1].bullets[0].source_id,
             BulletId("bullet-3".into())
@@ -971,7 +1006,13 @@ mod tests {
         // dataset (chronological) order, carrying its strongest bullet.
         let resume = outcome.resume;
         assert_eq!(resume.roles.len(), 2);
+        // role-1 was given a single bullet but has two — the floor tops
+        // it up so it doesn't sit at one line.
+        assert_eq!(resume.roles[0].bullets.len(), 2);
         assert_eq!(resume.roles[1].id, RoleId("role-2".into()));
+        // role-2 has only one recorded bullet, so the floor can't pad it
+        // past what it has.
+        assert_eq!(resume.roles[1].bullets.len(), 1);
         assert_eq!(
             resume.roles[1].bullets[0].source_id,
             BulletId("bullet-3".into())
@@ -984,6 +1025,83 @@ mod tests {
             "got: {:?}",
             outcome.warnings
         );
+    }
+
+    fn role_of(bullets: Vec<Bullet>) -> Role {
+        Role {
+            id: RoleId("role-1".into()),
+            company: "Acme".into(),
+            title: "Eng".into(),
+            start: YearMonth {
+                year: 2020,
+                month: 1,
+            },
+            end: None,
+            location: None,
+            employment_type: EmploymentType::FullTime,
+            bullets,
+            skill_ids: Vec::new(),
+            context: None,
+        }
+    }
+
+    fn graded(id: &str, strength: Strength) -> Bullet {
+        Bullet {
+            strength,
+            ..bullet(id, "text")
+        }
+    }
+
+    #[test]
+    fn top_up_fills_to_the_floor_strongest_first_without_reusing() {
+        let role = role_of(vec![
+            graded("b-weak", Strength::Low),
+            graded("b-strong", Strength::High),
+            graded("b-mid", Strength::Medium),
+        ]);
+        // b-strong is already on the page; the floor adds exactly one
+        // more — the strongest of what's left (b-mid over b-weak).
+        let mut bullets = vec![TailoredBullet {
+            source_id: BulletId("b-strong".into()),
+            text: "x".into(),
+        }];
+        let mut used: std::collections::HashSet<String> =
+            ["b-strong".to_string()].into_iter().collect();
+
+        top_up(&role, &mut bullets, &mut used, 2);
+
+        let ids: Vec<&str> = bullets.iter().map(|b| b.source_id.0.as_str()).collect();
+        assert_eq!(ids, vec!["b-strong", "b-mid"]);
+    }
+
+    #[test]
+    fn top_up_caps_at_what_the_role_actually_has() {
+        let role = role_of(vec![graded("only", Strength::Medium)]);
+        let mut bullets = Vec::new();
+        let mut used = std::collections::HashSet::new();
+
+        // Floor of 2, but the role has one bullet — it can't be padded.
+        top_up(&role, &mut bullets, &mut used, 2);
+
+        assert_eq!(bullets.len(), 1);
+        assert_eq!(bullets[0].source_id, BulletId("only".into()));
+    }
+
+    #[test]
+    fn top_up_leaves_a_role_already_at_the_floor_untouched() {
+        let role = role_of(vec![
+            graded("a", Strength::High),
+            graded("b", Strength::High),
+        ]);
+        let mut bullets = vec![TailoredBullet {
+            source_id: BulletId("a".into()),
+            text: "x".into(),
+        }];
+        let mut used: std::collections::HashSet<String> = ["a".to_string()].into_iter().collect();
+
+        top_up(&role, &mut bullets, &mut used, 1); // already at floor 1
+
+        assert_eq!(bullets.len(), 1); // unchanged
     }
 
     #[tokio::test]
