@@ -9,10 +9,12 @@
 //! from whatever the three working functions genuinely share, and that
 //! judgment needs honest material to work from.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{Agent, AgentContext};
 use crate::dataset::types::SkillCategory;
-use crate::llm::{CompletionRequest, LlmClient, LlmError, Message};
+use crate::llm::{LlmClient, LlmError};
 
 /// JDs are shorter than resumes; the structured form is too.
 const REPLY_BUDGET: u32 = 4096;
@@ -105,28 +107,43 @@ pub enum Importance {
     Preferred,
 }
 
-/// Parse a job description. The model classifies; this code fills in
-/// what only it can know (the raw text, defaults for omitted fields).
+/// The JD parser as an agent: the model classifies; assembly fills in
+/// what only code can know (the raw text, defaults for omitted fields).
+pub struct JdParserAgent;
+
+#[async_trait]
+impl Agent for JdParserAgent {
+    type Input = String;
+    type Wire = RawJd;
+    type Output = JobRequirements;
+    type Error = JdError;
+
+    fn system_prompt(&self) -> &str {
+        SYSTEM_PROMPT
+    }
+    fn reply_budget(&self) -> u32 {
+        REPLY_BUDGET
+    }
+    fn user_message(&self, input: &String) -> String {
+        input.clone()
+    }
+    fn bad_reply(&self, snippet: String, source: serde_json::Error) -> JdError {
+        JdError::BadReply { snippet, source }
+    }
+    fn assemble(&self, wire: RawJd, input: String) -> Result<JobRequirements, JdError> {
+        Ok(assemble(wire, &input))
+    }
+}
+
+/// Parse a job description.
 // EXERCISE(EX-009)
 pub async fn parse_jd(
     client: &dyn LlmClient,
     model: &str,
     jd_text: &str,
 ) -> Result<JobRequirements, JdError> {
-    let request = CompletionRequest {
-        model: model.to_string(),
-        max_tokens: REPLY_BUDGET,
-        system: Some(SYSTEM_PROMPT.to_string()),
-        messages: vec![Message::user(jd_text)],
-        temperature: None,
-    };
-    let response = client.complete(request).await?;
-    let json = strip_fences(&response.text);
-    let raw: RawJd = serde_json::from_str(json).map_err(|source| JdError::BadReply {
-        snippet: json.chars().take(120).collect(),
-        source,
-    })?;
-    Ok(assemble(raw, jd_text))
+    let ctx = AgentContext { llm: client, model };
+    Ok(JdParserAgent.run(&ctx, jd_text.to_string()).await?.output)
 }
 
 /// The extraction contract. Same discipline as the resume prompt:
@@ -157,28 +174,12 @@ The JSON object:
   "ats_phrases": ["..."]
 }"#;
 
-/// Models often wrap JSON in ```fences``` despite instructions; strip
-/// one outer fence pair (and its info string) if present.
-/// (Duplicated from ingest.rs on purpose — Phase 1 keeps its three LLM
-/// functions self-contained so the later extraction has honest input.)
-fn strip_fences(text: &str) -> &str {
-    let trimmed = text.trim();
-    let Some(rest) = trimmed.strip_prefix("```") else {
-        return trimmed;
-    };
-    let body = match rest.split_once('\n') {
-        Some((_info_string, body)) => body,
-        None => rest,
-    };
-    body.trim_end().strip_suffix("```").unwrap_or(body).trim()
-}
-
 // ---------------------------------------------------------------------
 // The wire shape the model replies with: lenient, no raw_text
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-struct RawJd {
+pub struct RawJd {
     #[serde(default)]
     company: Option<String>,
     #[serde(default)]

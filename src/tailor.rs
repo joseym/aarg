@@ -30,7 +30,10 @@ use crate::dataset::types::{
 };
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
-use crate::llm::{CompletionRequest, LlmClient, LlmError, Message, TokenUsage};
+use async_trait::async_trait;
+
+use crate::agent::{Agent, AgentContext};
+use crate::llm::{LlmClient, LlmError, TokenUsage};
 
 /// Selection output is compact (IDs + reworded lines), but resumes with
 /// many roles need room.
@@ -128,7 +131,54 @@ pub struct TailorOutcome {
     pub usage: TokenUsage,
 }
 
-/// Tailor the dataset to one JD. The model proposes; the guards dispose.
+/// Everything one tailoring run works from. Owned: a run's input is a
+/// value handed over whole, which is also what tracing will serialize.
+pub struct TailorInput {
+    pub build_id: BuildId,
+    pub jd_id: JdId,
+    pub jd: JobRequirements,
+    pub dataset: ResumeDataset,
+    pub gap: GapReport,
+}
+
+/// The tailoring agent: the model proposes; the guards dispose.
+pub struct TailoringAgent;
+
+#[async_trait]
+impl Agent for TailoringAgent {
+    type Input = TailorInput;
+    type Wire = RawSelection;
+    type Output = (TailoredResume, Vec<String>);
+    type Error = TailorError;
+
+    fn system_prompt(&self) -> &str {
+        SYSTEM_PROMPT
+    }
+    fn reply_budget(&self) -> u32 {
+        REPLY_BUDGET
+    }
+    fn user_message(&self, input: &TailorInput) -> String {
+        build_user_message(&input.jd, &input.dataset, &input.gap)
+    }
+    fn bad_reply(&self, snippet: String, source: serde_json::Error) -> TailorError {
+        TailorError::BadReply { snippet, source }
+    }
+    fn assemble(
+        &self,
+        wire: RawSelection,
+        input: TailorInput,
+    ) -> Result<(TailoredResume, Vec<String>), TailorError> {
+        assemble(
+            wire,
+            input.build_id,
+            input.jd_id,
+            &input.dataset,
+            &input.gap,
+        )
+    }
+}
+
+/// Tailor the dataset to one JD.
 pub async fn tailor_resume(
     client: &dyn LlmClient,
     model: &str,
@@ -138,24 +188,20 @@ pub async fn tailor_resume(
     dataset: &ResumeDataset,
     gap: &GapReport,
 ) -> Result<TailorOutcome, TailorError> {
-    let request = CompletionRequest {
-        model: model.to_string(),
-        max_tokens: REPLY_BUDGET,
-        system: Some(SYSTEM_PROMPT.to_string()),
-        messages: vec![Message::user(build_user_message(jd, dataset, gap))],
-        temperature: None,
+    let ctx = AgentContext { llm: client, model };
+    let input = TailorInput {
+        build_id,
+        jd_id,
+        jd: jd.clone(),
+        dataset: dataset.clone(),
+        gap: gap.clone(),
     };
-    let response = client.complete(request).await?;
-    let json = strip_fences(&response.text);
-    let raw: RawSelection = serde_json::from_str(json).map_err(|source| TailorError::BadReply {
-        snippet: json.chars().take(120).collect(),
-        source,
-    })?;
-    let (resume, warnings) = assemble(raw, build_id, jd_id, dataset, gap)?;
+    let run = TailoringAgent.run(&ctx, input).await?;
+    let (resume, warnings) = run.output;
     Ok(TailorOutcome {
         resume,
         warnings,
-        usage: response.usage,
+        usage: run.usage,
     })
 }
 
@@ -274,28 +320,12 @@ fn build_user_message(jd: &JobRequirements, dataset: &ResumeDataset, gap: &GapRe
     text
 }
 
-/// Models often wrap JSON in ```fences``` despite instructions; strip
-/// one outer fence pair (and its info string) if present.
-/// (Duplicated across the Phase 1 LLM functions on purpose — each stays
-/// self-contained so the Phase 2 extraction has honest input.)
-fn strip_fences(text: &str) -> &str {
-    let trimmed = text.trim();
-    let Some(rest) = trimmed.strip_prefix("```") else {
-        return trimmed;
-    };
-    let body = match rest.split_once('\n') {
-        Some((_info_string, body)) => body,
-        None => rest,
-    };
-    body.trim_end().strip_suffix("```").unwrap_or(body).trim()
-}
-
 // ---------------------------------------------------------------------
 // The wire shape the model replies with
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-struct RawSelection {
+pub struct RawSelection {
     #[serde(default)]
     summary: Option<String>,
     #[serde(default)]

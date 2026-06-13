@@ -23,11 +23,13 @@
 
 use std::collections::HashSet;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{Agent, AgentContext, AgentRun, run_agent};
 use crate::dataset::types::{Proficiency, ResumeDataset, Skill, SkillId};
 use crate::jd::{JdSkill, JobRequirements};
-use crate::llm::{CompletionRequest, LlmClient, LlmError, Message};
+use crate::llm::{LlmClient, LlmError, TokenUsage};
 
 /// The reply is a small name-to-name mapping.
 const REPLY_BUDGET: u32 = 2048;
@@ -90,6 +92,79 @@ pub enum Weakness {
     LowProficiency,
 }
 
+/// What gap analysis works from: the parsed JD and the dataset to
+/// compare it against.
+pub struct GapInput {
+    pub jd: JobRequirements,
+    pub dataset: ResumeDataset,
+}
+
+/// The gap analyzer as an agent — the one with nonstandard control
+/// flow: it overrides `run` so a JD the alias map fully resolves never
+/// reaches the model at all.
+pub struct GapAnalyzerAgent;
+
+#[async_trait]
+impl Agent for GapAnalyzerAgent {
+    type Input = GapInput;
+    type Wire = RawMatches;
+    type Output = GapReport;
+    type Error = GapError;
+
+    fn system_prompt(&self) -> &str {
+        SYSTEM_PROMPT
+    }
+    fn reply_budget(&self) -> u32 {
+        REPLY_BUDGET
+    }
+    /// Only the leftovers go to the model. `deterministic_pass` is pure
+    /// and cheap, so recomputing it here (and again in `assemble`)
+    /// keeps these methods stateless rather than threading a cache
+    /// through the trait.
+    fn user_message(&self, input: &GapInput) -> String {
+        let (_, unresolved) = deterministic_pass(&input.jd, &input.dataset);
+        semantic_message(&unresolved, &input.dataset)
+    }
+    fn bad_reply(&self, snippet: String, source: serde_json::Error) -> GapError {
+        GapError::BadReply { snippet, source }
+    }
+    fn assemble(&self, wire: RawMatches, input: GapInput) -> Result<GapReport, GapError> {
+        let (mut resolved, unresolved) = deterministic_pass(&input.jd, &input.dataset);
+        let mut unknown = Vec::new();
+        for jd_skill in unresolved {
+            let proposal = wire
+                .matches
+                .iter()
+                .find(|m| m.jd_skill.eq_ignore_ascii_case(&jd_skill.name))
+                .and_then(|m| m.dataset_skill.as_deref());
+            // The gate: a proposal only counts if the proposed name
+            // really resolves to a recorded skill.
+            match proposal.and_then(|name| lookup(&input.dataset, name)) {
+                Some(id) => resolved.push((jd_skill, id, true)),
+                None => unknown.push(jd_skill),
+            }
+        }
+        Ok(bucket(resolved, unknown, &input.dataset))
+    }
+
+    /// The override: skip the model when there is nothing to ask it.
+    async fn run(
+        &self,
+        ctx: &AgentContext<'_>,
+        input: GapInput,
+    ) -> Result<AgentRun<GapReport>, GapError> {
+        let (resolved, unresolved) = deterministic_pass(&input.jd, &input.dataset);
+        if unresolved.is_empty() || input.dataset.skills.skills.is_empty() {
+            // Fully covered (or nothing to match against): zero tokens.
+            return Ok(AgentRun {
+                output: bucket(resolved, unresolved, &input.dataset),
+                usage: TokenUsage::default(),
+            });
+        }
+        run_agent(self, ctx, input).await
+    }
+}
+
 /// Compare a JD against the dataset. Deterministic matching first; the
 /// model only sees what the alias map could not resolve.
 pub async fn analyze_gap(
@@ -98,56 +173,43 @@ pub async fn analyze_gap(
     jd: &JobRequirements,
     dataset: &ResumeDataset,
 ) -> Result<GapReport, GapError> {
-    // Required first so that when a JD lists a skill in both sections,
-    // the dedup below keeps the stricter occurrence.
+    let ctx = AgentContext { llm: client, model };
+    let input = GapInput {
+        jd: jd.clone(),
+        dataset: dataset.clone(),
+    };
+    Ok(GapAnalyzerAgent.run(&ctx, input).await?.output)
+}
+
+/// Pass 1: dedup the JD's asks (required side wins) and resolve what
+/// the alias map can. Pure, so the agent can recompute it freely.
+fn deterministic_pass(
+    jd: &JobRequirements,
+    dataset: &ResumeDataset,
+) -> (Vec<(JdSkill, SkillId, bool)>, Vec<JdSkill>) {
     let mut seen = HashSet::new();
-    let jd_skills: Vec<&JdSkill> = jd
+    let mut resolved = Vec::new();
+    let mut unresolved = Vec::new();
+    for jd_skill in jd
         .required_skills
         .iter()
         .chain(jd.preferred_skills.iter())
         .filter(|s| seen.insert(s.name.to_lowercase()))
-        .collect();
-
-    // Pass 1: the alias map.
-    let mut resolved: Vec<(JdSkill, SkillId, bool)> = Vec::new();
-    let mut unresolved: Vec<JdSkill> = Vec::new();
-    for jd_skill in jd_skills {
+    {
         match lookup(dataset, &jd_skill.name) {
             Some(id) => resolved.push((jd_skill.clone(), id, false)),
             None => unresolved.push(jd_skill.clone()),
         }
     }
+    (resolved, unresolved)
+}
 
-    // Pass 2: semantic matching, only if anything is left and there are
-    // recorded skills to match against.
-    let mut unknown = Vec::new();
-    if !unresolved.is_empty() && !dataset.skills.skills.is_empty() {
-        let request = semantic_request(model, &unresolved, dataset);
-        let response = client.complete(request).await?;
-        let json = strip_fences(&response.text);
-        let raw: RawMatches = serde_json::from_str(json).map_err(|source| GapError::BadReply {
-            snippet: json.chars().take(120).collect(),
-            source,
-        })?;
-
-        for jd_skill in unresolved {
-            let proposal = raw
-                .matches
-                .iter()
-                .find(|m| m.jd_skill.eq_ignore_ascii_case(&jd_skill.name))
-                .and_then(|m| m.dataset_skill.as_deref());
-            // The gate: a proposal only counts if the proposed name
-            // really resolves to a recorded skill.
-            match proposal.and_then(|name| lookup(dataset, name)) {
-                Some(id) => resolved.push((jd_skill, id, true)),
-                None => unknown.push(jd_skill),
-            }
-        }
-    } else {
-        unknown = unresolved;
-    }
-
-    // Bucketing: pure code over dataset facts.
+/// Bucketing: pure code over dataset facts.
+fn bucket(
+    resolved: Vec<(JdSkill, SkillId, bool)>,
+    mut unknown: Vec<JdSkill>,
+    dataset: &ResumeDataset,
+) -> GapReport {
     let mut matched = Vec::new();
     let mut weak = Vec::new();
     for (jd_skill, skill_id, semantic) in resolved {
@@ -171,12 +233,11 @@ pub async fn analyze_gap(
             }),
         }
     }
-
-    Ok(GapReport {
+    GapReport {
         matched,
         weak,
         unknown,
-    })
+    }
 }
 
 /// Case-insensitive lookup through the dataset's alias map.
@@ -209,11 +270,9 @@ Rules — all of them matter:
 The JSON object:
 {"matches": [{"jd_skill": "<name from the requirements list>", "dataset_skill": "<name from the recorded-skills list, or null>"}]}"#;
 
-fn semantic_request(
-    model: &str,
-    unresolved: &[JdSkill],
-    dataset: &ResumeDataset,
-) -> CompletionRequest {
+/// The user message for the semantic pass: the unresolved requirements
+/// and the recorded skills (with aliases) to match them against.
+fn semantic_message(unresolved: &[JdSkill], dataset: &ResumeDataset) -> String {
     let mut text = String::from("JD requirements:\n");
     for skill in unresolved {
         text.push_str(&format!("- {}\n", skill.name));
@@ -230,34 +289,12 @@ fn semantic_request(
             ));
         }
     }
-    CompletionRequest {
-        model: model.to_string(),
-        max_tokens: REPLY_BUDGET,
-        system: Some(SYSTEM_PROMPT.to_string()),
-        messages: vec![Message::user(text)],
-        temperature: None,
-    }
-}
-
-/// Models often wrap JSON in ```fences``` despite instructions; strip
-/// one outer fence pair (and its info string) if present.
-/// (Duplicated across the three Phase 1 LLM functions on purpose — each
-/// stays self-contained so the Phase 2 extraction has honest input.)
-fn strip_fences(text: &str) -> &str {
-    let trimmed = text.trim();
-    let Some(rest) = trimmed.strip_prefix("```") else {
-        return trimmed;
-    };
-    let body = match rest.split_once('\n') {
-        Some((_info_string, body)) => body,
-        None => rest,
-    };
-    body.trim_end().strip_suffix("```").unwrap_or(body).trim()
+    text
 }
 
 /// The wire shape of the model's reply.
 #[derive(Debug, Deserialize)]
-struct RawMatches {
+pub struct RawMatches {
     #[serde(default)]
     matches: Vec<RawMatch>,
 }

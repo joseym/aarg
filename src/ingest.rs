@@ -25,7 +25,10 @@ use crate::dataset::types::{
     Project, ProjectId, Publication, ResumeDataset, Role, RoleId, Skill, SkillCategory, SkillId,
     Strength, Theme, YearMonth,
 };
-use crate::llm::{CompletionRequest, LlmClient, LlmError, Message};
+use async_trait::async_trait;
+
+use crate::agent::{Agent, AgentContext};
+use crate::llm::{LlmClient, LlmError};
 
 /// Generous output budget: a long resume serializes to a lot of JSON.
 const REPLY_BUDGET: u32 = 8192;
@@ -53,27 +56,46 @@ pub struct IngestOutcome {
     pub warnings: Vec<String>,
 }
 
-/// Extract a dataset from resume text. The model transcribes; this code
-/// assigns IDs, links evidence, and reports what didn't resolve.
+/// The resume transcriber as an agent: the model only reports what the
+/// resume says; assembly assigns IDs, links evidence, and reports what
+/// didn't resolve.
+pub struct IngestResumeAgent;
+
+#[async_trait]
+impl Agent for IngestResumeAgent {
+    type Input = String;
+    type Wire = RawResume;
+    type Output = IngestOutcome;
+    type Error = IngestError;
+
+    fn system_prompt(&self) -> &str {
+        SYSTEM_PROMPT
+    }
+    fn reply_budget(&self) -> u32 {
+        REPLY_BUDGET
+    }
+    fn user_message(&self, input: &String) -> String {
+        input.clone()
+    }
+    fn bad_reply(&self, snippet: String, source: serde_json::Error) -> IngestError {
+        IngestError::BadReply { snippet, source }
+    }
+    fn assemble(&self, wire: RawResume, _input: String) -> Result<IngestOutcome, IngestError> {
+        Ok(assemble(wire))
+    }
+}
+
+/// Extract a dataset from resume text.
 pub async fn ingest_resume(
     client: &dyn LlmClient,
     model: &str,
     resume_text: &str,
 ) -> Result<IngestOutcome, IngestError> {
-    let request = CompletionRequest {
-        model: model.to_string(),
-        max_tokens: REPLY_BUDGET,
-        system: Some(SYSTEM_PROMPT.to_string()),
-        messages: vec![Message::user(resume_text)],
-        temperature: None,
-    };
-    let response = client.complete(request).await?;
-    let json = strip_fences(&response.text);
-    let raw: RawResume = serde_json::from_str(json).map_err(|source| IngestError::BadReply {
-        snippet: json.chars().take(120).collect(),
-        source,
-    })?;
-    Ok(assemble(raw))
+    let ctx = AgentContext { llm: client, model };
+    Ok(IngestResumeAgent
+        .run(&ctx, resume_text.to_string())
+        .await?
+        .output)
 }
 
 /// The extraction contract sent as the system prompt. The never-invent
@@ -105,20 +127,6 @@ The JSON object:
   "languages": [{"name": "...", "fluency": "professional"}]
 }"#;
 
-/// Models often wrap JSON in ```fences``` despite instructions; strip one
-/// outer fence pair (and its info string, e.g. ```json) if present.
-fn strip_fences(text: &str) -> &str {
-    let trimmed = text.trim();
-    let Some(rest) = trimmed.strip_prefix("```") else {
-        return trimmed;
-    };
-    let body = match rest.split_once('\n') {
-        Some((_info_string, body)) => body,
-        None => rest,
-    };
-    body.trim_end().strip_suffix("```").unwrap_or(body).trim()
-}
-
 // ---------------------------------------------------------------------
 // The wire shape the model replies with
 //
@@ -129,7 +137,7 @@ fn strip_fences(text: &str) -> &str {
 // ---------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-struct RawResume {
+pub struct RawResume {
     #[serde(default)]
     contact: RawContact,
     #[serde(default)]
@@ -696,14 +704,6 @@ mod tests {
             vec![EvidenceRef::Role(RoleId("role-2".into()))]
         );
         assert!(outcome.warnings.iter().any(|w| w.contains("NoDates")));
-    }
-
-    #[test]
-    fn strip_fences_handles_the_common_shapes() {
-        assert_eq!(strip_fences("{\"a\": 1}"), "{\"a\": 1}");
-        assert_eq!(strip_fences("```json\n{\"a\": 1}\n```"), "{\"a\": 1}");
-        assert_eq!(strip_fences("```\n{\"a\": 1}\n```"), "{\"a\": 1}");
-        assert_eq!(strip_fences("  {\"a\": 1}  "), "{\"a\": 1}");
     }
 
     #[test]
