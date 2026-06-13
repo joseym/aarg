@@ -30,6 +30,7 @@ use crate::dataset::types::{
 };
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
+use crate::keywords::keyword_key;
 use crate::mirror;
 use async_trait::async_trait;
 
@@ -550,6 +551,16 @@ fn assemble(
         }
     }
 
+    // Tidy the *recorded* skills first: collapse normalized duplicates
+    // ("data engineering" vs "Data Engineering") and cap the count,
+    // keeping the most JD-relevant (skills arrive relevance-ordered). A
+    // 40-item skills wall reads worse than a curated dozen. This runs
+    // before mirroring on purpose — mirrored phrases are *deliberate* ATS
+    // wording variants ("managing engineering" for "Engineering
+    // management"), and the normalized dedup would collapse exactly those.
+    let mut skills = dedup_and_cap_skills(skills, MAX_SKILLS);
+    let mut seen: HashSet<String> = skills.iter().cloned().collect();
+
     // Evidence-gated phrase mirroring: add the JD's wording for any
     // keyword a recorded skill already backs, so a literal ATS scan
     // credits a concept the user genuinely has but words differently.
@@ -618,6 +629,33 @@ const MIN_BULLETS_PER_ROLE: usize = 2;
 /// — making the resume run long and lopsided toward the recent job. This
 /// is the hard ceiling that matches the prompt's upper bound.
 const MAX_BULLETS_PER_ROLE: usize = 6;
+
+/// The most skills the section should list. Verification and mirroring
+/// accrete entries over time; past a point the section is a keyword wall
+/// that reads worse than a curated list.
+const MAX_SKILLS: usize = 18;
+
+/// Collapse normalized-duplicate skills (keeping the first, which is the
+/// most JD-relevant since skills arrive relevance-ordered) and cap the
+/// list at `max`. "data engineering" and "Data Engineering" share a
+/// `keyword_key`, so only the first survives; a phrase with no
+/// distinguishing tokens (rare) is left as-is rather than risk merging it.
+fn dedup_and_cap_skills(skills: Vec<String>, max: usize) -> Vec<String> {
+    let mut seen: Vec<Vec<String>> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    for skill in skills {
+        let key = keyword_key(&skill);
+        if !key.is_empty() {
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+        }
+        out.push(skill);
+    }
+    out.truncate(max);
+    out
+}
 
 /// Cap a role's selected bullets at `max`, keeping the strongest by the
 /// dataset's `Strength` rating (ties broken by the model's own ordering),
@@ -1283,6 +1321,20 @@ mod tests {
             runs,
             ["99", "40", "2024"].iter().map(|s| s.to_string()).collect()
         );
+    }
+
+    #[test]
+    fn skills_dedup_collapses_normalized_dupes_and_caps() {
+        let skills = vec![
+            "Data Engineering".to_string(),
+            "data engineering".to_string(), // normalized dupe of the above
+            "Kubernetes".to_string(),
+            "Rust".to_string(),
+            "Go".to_string(),
+        ];
+        // First survives the dupe; cap of 3 keeps the first three distinct.
+        let out = dedup_and_cap_skills(skills, 3);
+        assert_eq!(out, vec!["Data Engineering", "Kubernetes", "Rust"]);
     }
 
     #[test]
