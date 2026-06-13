@@ -29,3 +29,4 @@ pub mod secrets;
 pub mod tailor;
 pub mod terminal;
 pub mod verify;
+pub mod voice;

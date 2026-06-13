@@ -34,6 +34,7 @@ use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
 use crate::verify::{unbacked_keywords, verify_keywords};
+use crate::voice;
 
 /// How many revision passes the loop may take past the first draft.
 const MAX_REVISIONS: usize = 2;
@@ -252,6 +253,59 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         } else {
             eprintln!("that revision didn't improve the draft; keeping the best one");
             break;
+        }
+    }
+
+    // Voice pass: rewrite the AI-sounding lines of the best draft toward
+    // the user's own writing samples, then re-score. Voice only changes
+    // phrasing — facts are held by the same digit-runs guard tailoring
+    // uses — but a non-numeric inflation would slip that guard, so the
+    // voiced draft is run back through `evaluate`: the reviewer vets it
+    // and it's adopted only if it doesn't score worse. That keeps voice
+    // honest (no rewrite ships unreviewed) and from ever unseating a
+    // stronger draft. Skipped without samples to anchor to.
+    if !dataset.voice_samples.is_empty() {
+        let samples: Vec<String> = dataset
+            .voice_samples
+            .iter()
+            .map(|s| s.text.clone())
+            .collect();
+        match voice::rewrite_to_voice(&ctx, &best.resume, &samples).await {
+            Ok((voiced, stats)) => {
+                add_usage(&mut total, stats.usage);
+                if stats.rewritten > 0 {
+                    let reverted = if stats.reverted > 0 {
+                        format!(" ({} reverted for drifting from the facts)", stats.reverted)
+                    } else {
+                        String::new()
+                    };
+                    let voiced_eval = evaluate(
+                        &ctx,
+                        &build.dir,
+                        MAX_REVISIONS + 1,
+                        voiced,
+                        &requirements,
+                        &dataset,
+                        &gap,
+                    )
+                    .await?;
+                    add_usage(&mut total, voiced_eval.review_usage);
+                    if voiced_eval.score >= best.score {
+                        eprintln!(
+                            "voice: rewrote {} line(s) toward your samples{reverted}",
+                            stats.rewritten
+                        );
+                        best = voiced_eval;
+                    } else {
+                        eprintln!(
+                            "voice: the rewrite scored lower ({:.2} < {:.2}); kept the un-voiced draft",
+                            voiced_eval.score, best.score
+                        );
+                    }
+                }
+            }
+            // Voice is a finish, not a gate: if it fails, ship the draft.
+            Err(e) => eprintln!("voice: skipped ({e})"),
         }
     }
 

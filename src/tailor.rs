@@ -603,8 +603,10 @@ fn strongest_bullet(role: &Role) -> Option<TailoredBullet> {
 
 /// The maximal runs of consecutive digits in a string — "cut p99 by 40%"
 /// yields {"99", "40"}. The fabrication guard compares these sets: a
-/// rewrite may drop or repeat numbers, but never introduce one.
-fn digit_runs(text: &str) -> HashSet<String> {
+/// rewrite may drop or repeat numbers, but never introduce one. Shared
+/// with the voice rewriter, which applies the same no-invented-numbers
+/// check to its phrasing changes.
+pub(crate) fn digit_runs(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_ascii_digit())
         .filter(|run| !run.is_empty())
         .map(str::to_string)
