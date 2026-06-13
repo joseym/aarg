@@ -131,6 +131,14 @@ pub struct TailorOutcome {
     pub usage: TokenUsage,
 }
 
+/// A revision pass's marching orders: the reviewer's objections,
+/// pre-formatted into one human line each by the caller (so this module
+/// needs no dependency on the reviewer's types).
+#[derive(serde::Serialize)]
+pub struct RevisionContext {
+    pub objections: Vec<String>,
+}
+
 /// Everything one tailoring run works from. Owned: a run's input is a
 /// value handed over whole, which is also what tracing will serialize.
 #[derive(serde::Serialize)]
@@ -140,6 +148,8 @@ pub struct TailorInput {
     pub jd: JobRequirements,
     pub dataset: ResumeDataset,
     pub gap: GapReport,
+    /// Present on a revision pass; absent on the first draft.
+    pub revision: Option<RevisionContext>,
 }
 
 /// The tailoring agent: the model proposes; the guards dispose.
@@ -162,7 +172,20 @@ impl Agent for TailoringAgent {
         REPLY_BUDGET
     }
     fn user_message(&self, input: &TailorInput) -> String {
-        build_user_message(&input.jd, &input.dataset, &input.gap)
+        let mut text = build_user_message(&input.jd, &input.dataset, &input.gap);
+        if let Some(revision) = &input.revision {
+            text.push_str(
+                "\nREVISION — a skeptical reviewer flagged your previous draft. \
+                 Address each objection by choosing a different bullet, rephrasing \
+                 your selection, sharpening a weak verb, or cutting the line. NEVER \
+                 invent a metric, technology, scale, or outcome the work history does \
+                 not already state. Keep the lines that were strong.\n",
+            );
+            for line in &revision.objections {
+                text.push_str(&format!("- {line}\n"));
+            }
+        }
+        text
     }
     fn bad_reply(&self, snippet: String, source: serde_json::Error) -> TailorError {
         TailorError::BadReply { snippet, source }
@@ -182,7 +205,8 @@ impl Agent for TailoringAgent {
     }
 }
 
-/// Tailor the dataset to one JD.
+/// Tailor the dataset to one JD. `revision` carries a prior draft's
+/// objections on a revision pass, and is `None` for the first draft.
 pub async fn tailor_resume(
     ctx: &AgentContext<'_>,
     build_id: BuildId,
@@ -190,6 +214,7 @@ pub async fn tailor_resume(
     jd: &JobRequirements,
     dataset: &ResumeDataset,
     gap: &GapReport,
+    revision: Option<RevisionContext>,
 ) -> Result<TailorOutcome, TailorError> {
     let input = TailorInput {
         build_id,
@@ -197,6 +222,7 @@ pub async fn tailor_resume(
         jd: jd.clone(),
         dataset: dataset.clone(),
         gap: gap.clone(),
+        revision,
     };
     let run = TailoringAgent.run(ctx, input).await?;
     let (resume, warnings) = run.output;
@@ -726,6 +752,7 @@ mod tests {
             &sample_jd(),
             &sample_dataset(),
             &sample_gap(),
+            None,
         )
         .await
     }
@@ -901,6 +928,7 @@ mod tests {
             &sample_jd(),
             &sample_dataset(),
             &sample_gap(),
+            None,
         )
         .await
         .unwrap();
@@ -930,6 +958,7 @@ mod tests {
             &sample_jd(),
             &sample_dataset(),
             &sample_gap(),
+            None,
         )
         .await
         .unwrap_err();
