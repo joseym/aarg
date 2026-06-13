@@ -31,6 +31,11 @@ pub enum Question {
         prompt: String,
         options: Vec<String>,
     },
+    /// Pick any number of options by index — including none.
+    MultiSelect {
+        prompt: String,
+        options: Vec<String>,
+    },
     /// Free text; empty is a valid answer.
     Text { prompt: String },
 }
@@ -39,7 +44,9 @@ impl Question {
     /// The prompt text, whatever the kind — used in error messages.
     pub fn prompt(&self) -> &str {
         match self {
-            Question::Select { prompt, .. } | Question::Text { prompt } => prompt,
+            Question::Select { prompt, .. }
+            | Question::MultiSelect { prompt, .. }
+            | Question::Text { prompt } => prompt,
         }
     }
 }
@@ -49,6 +56,8 @@ impl Question {
 pub enum Answer {
     /// Index into the `Select` options.
     Choice(usize),
+    /// Indexes into the `MultiSelect` options; may be empty.
+    Choices(Vec<usize>),
     Text(String),
 }
 

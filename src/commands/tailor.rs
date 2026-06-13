@@ -32,7 +32,7 @@ use crate::review::{
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
-use crate::verify::verify_unknown;
+use crate::verify::{unbacked_keywords, verify_keywords};
 
 /// How many revision passes the loop may take past the first draft.
 const MAX_REVISIONS: usize = 2;
@@ -56,41 +56,33 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     eprintln!("analyzing the gap...");
     let mut gap = analyze_gap(&ctx, &requirements, &dataset).await?;
 
-    // When a person is driving and the job wants skills the dataset
-    // lacks, offer to verify them now — turning real-but-unrecorded
-    // experience into evidence the tailoring can actually use. A piped
-    // or CI run skips this silently (no one to ask).
-    // Skills the user has already declined are settled — don't count
-    // them toward the offer or re-ask them.
-    let pending_unknown = gap
-        .unknown
-        .iter()
-        .filter(|s| {
-            !dataset
-                .metadata
-                .declined_skills
-                .contains(&s.name.to_lowercase())
-        })
-        .count();
-    if pending_unknown > 0 {
+    // When a person is driving, offer to back the JD keywords the
+    // dataset can't yet support — unmatched skills *and* ATS phrases the
+    // user might genuinely have. This turns real-but-unrecorded
+    // experience into evidence the tailoring can use. Already-declined
+    // keywords are excluded by `unbacked_keywords`, so the list shrinks
+    // each run; a piped or CI run skips the whole detour (no one to ask).
+    let candidates = unbacked_keywords(&dataset, &requirements, &gap);
+    if !candidates.is_empty() {
         let user = auto_user();
         if user.is_interactive() {
             let wants = user
                 .confirm(
                     &format!(
-                        "verify {pending_unknown} skill(s) the job wants but your dataset lacks?"
+                        "review {} job keyword(s) you might be able to back?",
+                        candidates.len()
                     ),
                     true,
                 )
                 .await
                 .unwrap_or(false);
             if wants {
-                let outcome = verify_unknown(&mut dataset, &gap, user.as_ref(), Some(&ctx)).await?;
+                let outcome = verify_keywords(&mut dataset, &candidates, user.as_ref()).await?;
                 if outcome.changed() {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
-                    // Only a newly added skill changes the gap; a bare
-                    // decline just gets remembered, no re-analysis needed.
+                    // Only a newly added skill changes the gap; bare
+                    // declines just get remembered, no re-analysis needed.
                     if outcome.verified > 0 {
                         eprintln!(
                             "recorded {} new skill(s); re-analyzing the gap...",

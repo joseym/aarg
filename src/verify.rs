@@ -30,6 +30,7 @@ use crate::dataset::types::{
 };
 use crate::gap::GapReport;
 use crate::guide::{GuideInput, GuideTurn, VerificationGuideAgent};
+use crate::jd::JobRequirements;
 use crate::user::{Answer, AskError, Question, UserHandle};
 
 /// How many guide exchanges before nudging the user back to the
@@ -104,37 +105,8 @@ async fn interview_skill(
 
         match answer {
             Answer::Choice(0) | Answer::Choice(1) => {
-                let role_index = match user
-                    .ask(Question::Select {
-                        prompt: format!("Which role best demonstrates {name}?"),
-                        options: role_options.to_vec(),
-                    })
-                    .await?
-                {
-                    Answer::Choice(index) if index < role_options.len() => index,
-                    _ => 0,
-                };
-                let years = match user
-                    .ask(Question::Text {
-                        prompt: "Roughly how many years? (blank to skip)".to_string(),
-                    })
-                    .await?
-                {
-                    Answer::Text(text) => parse_years(&text),
-                    _ => None,
-                };
-                let sentence = match user
-                    .ask(Question::Text {
-                        prompt: format!("One sentence on what you did with {name} (blank to skip)"),
-                    })
-                    .await?
-                {
-                    Answer::Text(text) => {
-                        let text = text.trim().to_string();
-                        (!text.is_empty()).then_some(text)
-                    }
-                    _ => None,
-                };
+                let (role_index, years, sentence) =
+                    collect_evidence(name, role_options, user).await?;
                 return Ok(Verdict::Have {
                     role_index,
                     years,
@@ -253,6 +225,49 @@ async fn clarify(
     Ok(())
 }
 
+/// The questions behind a "yes": which role best shows the skill,
+/// roughly how many years, and an optional one-sentence description.
+/// Shared by the per-skill interview and the keyword triage, which
+/// reach the same point — "the user has this" — by different routes.
+async fn collect_evidence(
+    name: &str,
+    role_options: &[String],
+    user: &dyn UserHandle,
+) -> Result<(usize, Option<f32>, Option<String>), AskError> {
+    let role_index = match user
+        .ask(Question::Select {
+            prompt: format!("Which role best demonstrates {name}?"),
+            options: role_options.to_vec(),
+        })
+        .await?
+    {
+        Answer::Choice(index) if index < role_options.len() => index,
+        _ => 0,
+    };
+    let years = match user
+        .ask(Question::Text {
+            prompt: "Roughly how many years? (blank to skip)".to_string(),
+        })
+        .await?
+    {
+        Answer::Text(text) => parse_years(&text),
+        _ => None,
+    };
+    let sentence = match user
+        .ask(Question::Text {
+            prompt: format!("One sentence on what you did with {name} (blank to skip)"),
+        })
+        .await?
+    {
+        Answer::Text(text) => {
+            let text = text.trim().to_string();
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    };
+    Ok((role_index, years, sentence))
+}
+
 /// Attach evidence for a skill that already exists in the dataset: a
 /// role reference, optional years, and (if the user wrote one) a
 /// bullet. Used by both flows once a skill id is in hand.
@@ -364,17 +379,75 @@ pub async fn verify_unbacked(
     Ok(outcome)
 }
 
-/// Interview the user about JD requirements that aren't in the dataset
-/// — the gap's "unknown" bucket — and add the ones they genuinely have.
-/// A new skill is created only on a "yes" backed by a real role.
-pub async fn verify_unknown(
-    dataset: &mut ResumeDataset,
+/// A JD keyword nothing in the dataset backs yet — a candidate for the
+/// triage checklist. The category is what the skill is created with if
+/// the user claims it.
+pub struct KeywordCandidate {
+    pub name: String,
+    pub category: SkillCategory,
+}
+
+/// Every JD keyword the dataset can't yet support: the gap's unknown
+/// skills, plus any ATS phrase that doesn't already resolve to a
+/// recorded skill. Keywords the user has already declined are left out —
+/// a settled "no" isn't a candidate — and duplicates are collapsed
+/// case-insensitively (the JD often lists a skill and a near-identical
+/// phrase). This is what the triage checklist offers.
+pub fn unbacked_keywords(
+    dataset: &ResumeDataset,
+    jd: &JobRequirements,
     gap: &GapReport,
+) -> Vec<KeywordCandidate> {
+    let declined = &dataset.metadata.declined_skills;
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<KeywordCandidate> = Vec::new();
+
+    let mut consider = |name: &str, category: SkillCategory| {
+        let key = name.to_lowercase();
+        if declined.contains(&key) || seen.contains(&key) {
+            return;
+        }
+        seen.push(key);
+        out.push(KeywordCandidate {
+            name: name.to_string(),
+            category,
+        });
+    };
+
+    // Unmatched JD skills carry their own category.
+    for skill in &gap.unknown {
+        consider(&skill.name, skill.category);
+    }
+    // ATS phrases are keywords too. Skip any that a recorded skill
+    // already covers (by alias or canonical name) — that's backed, not a
+    // gap. A bare phrase has no category, so call it domain knowledge.
+    for phrase in &jd.ats_phrases {
+        let backed = dataset.skills.aliases.contains_key(&phrase.to_lowercase())
+            || dataset
+                .skills
+                .skills
+                .iter()
+                .any(|s| s.canonical_name.eq_ignore_ascii_case(phrase));
+        if !backed {
+            consider(phrase, SkillCategory::Domain);
+        }
+    }
+    out
+}
+
+/// Triage the unbacked JD keywords: the user checks the ones they
+/// genuinely have, and only those get the evidence interview. A checked
+/// keyword becomes a recorded skill backed by a real role (and optional
+/// user-written sentence); an unchecked one is remembered as declined so
+/// it isn't offered again. Like the per-skill interview, this invents
+/// nothing — the user affirms each claim and points it at a role.
+pub async fn verify_keywords(
+    dataset: &mut ResumeDataset,
+    candidates: &[KeywordCandidate],
     user: &dyn UserHandle,
-    guide: Option<&AgentContext<'_>>,
 ) -> Result<VerifyOutcome, AskError> {
     let mut outcome = VerifyOutcome::default();
-    if gap.unknown.is_empty() {
+    if candidates.is_empty() {
         return Ok(outcome);
     }
     if dataset.roles.is_empty() {
@@ -382,50 +455,46 @@ pub async fn verify_unknown(
         return Ok(outcome);
     }
 
+    let options: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
+    let checked = match user
+        .ask(Question::MultiSelect {
+            prompt: "Check the job keywords you genuinely have — the rest are set aside and \
+                     won't be offered again"
+                .to_string(),
+            options,
+        })
+        .await?
+    {
+        Answer::Choices(indexes) => indexes,
+        _ => Vec::new(),
+    };
+
+    // role_options is owned, so the evidence interview can borrow it
+    // while the loop also mutates the dataset to add skills.
     let role_options = role_options(dataset);
-
-    for jd_skill in &gap.unknown {
-        let name = jd_skill.name.clone();
-        let key = name.to_lowercase();
-        // Defensive: if a prior answer this session already recorded
-        // this name, don't ask twice or create a duplicate.
-        if dataset.skills.aliases.contains_key(&key) {
-            continue;
-        }
-        // A "no" the user already gave (this run or a past one) stays
-        // settled — never re-ask a skill they've declined.
-        if dataset.metadata.declined_skills.contains(&key) {
-            continue;
-        }
-
-        match interview_skill(&name, "No, I haven't", &role_options, user, guide).await? {
-            Verdict::Have {
+    for (index, candidate) in candidates.iter().enumerate() {
+        if checked.contains(&index) {
+            let (role_index, years, sentence) =
+                collect_evidence(&candidate.name, &role_options, user).await?;
+            let skill_id = add_skill(dataset, &candidate.name, candidate.category);
+            attach_evidence(
+                dataset,
+                &skill_id,
                 role_index,
                 years,
                 sentence,
-            } => {
-                let skill_id = add_skill(dataset, &name, jd_skill.category);
-                attach_evidence(
-                    dataset,
-                    &skill_id,
-                    role_index,
-                    years,
-                    sentence,
-                    &mut outcome,
-                );
-                user.notify(&format!("added {name}"));
-                outcome.verified += 1;
-            }
-            // The skill isn't in the dataset, so there's nothing to
-            // remove — but a "no" is a decision worth keeping so it's
-            // never re-offered. "Skip for now" stays askable.
-            Verdict::DontHave => {
+                &mut outcome,
+            );
+            user.notify(&format!("added {}", candidate.name));
+            outcome.verified += 1;
+        } else {
+            // Unchecked means "not me" — remember it so the checklist
+            // shrinks instead of re-offering the same keyword every run.
+            let key = candidate.name.to_lowercase();
+            if !dataset.metadata.declined_skills.contains(&key) {
                 dataset.metadata.declined_skills.push(key);
-                outcome.declined += 1;
             }
-            Verdict::Skip => {
-                outcome.skipped += 1;
-            }
+            outcome.declined += 1;
         }
     }
 
@@ -695,27 +764,74 @@ mod tests {
         }
     }
 
+    /// A JD whose only meaningful field for keyword candidacy is its ATS
+    /// phrases (the function reads skills from the gap, not the JD).
+    fn jd_with_phrases(phrases: &[&str]) -> JobRequirements {
+        use crate::jd::{RemotePolicy, Seniority};
+        JobRequirements {
+            company: "amplo".into(),
+            title: "Senior Engineering Manager".into(),
+            seniority: Seniority::Senior,
+            location: None,
+            remote: RemotePolicy::Unspecified,
+            domain_keywords: Vec::new(),
+            required_skills: Vec::new(),
+            preferred_skills: Vec::new(),
+            responsibilities: Vec::new(),
+            ats_phrases: phrases.iter().map(|p| (*p).to_string()).collect(),
+            raw_text: String::new(),
+            source_url: None,
+        }
+    }
+
+    #[test]
+    fn unbacked_keywords_gathers_skills_and_phrases_minus_backed_and_declined() {
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        // The user already said "no" to insurtech once.
+        dataset.metadata.declined_skills.push("insurtech".into());
+        let gap = gap_wanting("Kafka"); // unmatched JD skill
+        // "TypeScript" resolves to a recorded skill (backed); "insurtech"
+        // is declined; "team management" is a genuine candidate.
+        let jd = jd_with_phrases(&["TypeScript", "team management", "insurtech"]);
+
+        let names: Vec<String> = unbacked_keywords(&dataset, &jd, &gap)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+
+        assert_eq!(names, vec!["Kafka", "team management"]);
+    }
+
     #[tokio::test]
-    async fn a_yes_on_an_unknown_jd_skill_adds_it_with_evidence() {
+    async fn verify_keywords_records_checked_and_declines_the_rest() {
         let mut dataset = dataset_with_unbacked("TypeScript");
         let before_skills = dataset.skills.skills.len();
-        let gap = gap_wanting("Data Engineering");
+        let candidates = vec![
+            KeywordCandidate {
+                name: "Data Engineering".into(),
+                category: SkillCategory::Hard,
+            },
+            KeywordCandidate {
+                name: "people manager".into(),
+                category: SkillCategory::Domain,
+            },
+        ];
         let user = ScriptedUser::new();
-        user.answer(Answer::Choice(0)); // yes, professionally
-        user.answer(Answer::Choice(0)); // role-1
+        user.answer(Answer::Choices(vec![0])); // only the first is "me"
+        user.answer(Answer::Choice(0)); // role-1 for Data Engineering
         user.answer(Answer::Text("3".into()));
         user.answer(Answer::Text(
             "Built the trade-settlement data pipeline".into(),
         ));
 
-        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
+        let outcome = verify_keywords(&mut dataset, &candidates, &user)
             .await
             .unwrap();
 
         assert_eq!(outcome.verified, 1);
+        assert_eq!(outcome.declined, 1);
         assert!(outcome.changed());
-        // A brand-new skill exists, verified, with role evidence and the
-        // sentence recorded as a bullet.
+        // The checked keyword became a real, verified, role-backed skill.
         assert_eq!(dataset.skills.skills.len(), before_skills + 1);
         let added = dataset
             .skills
@@ -728,70 +844,57 @@ mod tests {
             added.evidence,
             vec![EvidenceRef::Role(RoleId("role-1".into()))]
         );
-        assert_eq!(
-            dataset.skills.aliases.get("data engineering"),
-            Some(&added.id)
-        );
         assert!(
             dataset.roles[0]
                 .bullets
                 .iter()
                 .any(|b| b.text.contains("data pipeline"))
         );
+        // The unchecked keyword is remembered so it isn't re-offered.
+        assert_eq!(
+            dataset.metadata.declined_skills,
+            vec!["people manager".to_string()]
+        );
     }
 
     #[tokio::test]
-    async fn a_no_on_an_unknown_skill_leaves_it_absent_but_records_the_decline() {
+    async fn verify_keywords_with_nothing_checked_declines_everything() {
         let mut dataset = dataset_with_unbacked("TypeScript");
-        let gap = gap_wanting("Kafka");
+        let candidates = vec![
+            KeywordCandidate {
+                name: "SaaS environment".into(),
+                category: SkillCategory::Domain,
+            },
+            KeywordCandidate {
+                name: "engineering excellence".into(),
+                category: SkillCategory::Domain,
+            },
+        ];
         let user = ScriptedUser::new();
-        user.answer(Answer::Choice(2)); // no, I haven't
+        user.answer(Answer::Choices(Vec::new())); // checked nothing
 
-        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
+        let outcome = verify_keywords(&mut dataset, &candidates, &user)
             .await
             .unwrap();
 
         assert_eq!(outcome.verified, 0);
-        assert_eq!(outcome.declined, 1);
-        // The decline is worth persisting so it's never re-asked.
+        assert_eq!(outcome.declined, 2);
         assert!(outcome.changed());
-        // The skill the job wanted stays out of the dataset proper...
-        assert!(!dataset.skills.aliases.contains_key("kafka"));
-        // ...but the "no" is remembered, lowercased.
-        assert_eq!(dataset.metadata.declined_skills, vec!["kafka".to_string()]);
+        assert_eq!(
+            dataset.metadata.declined_skills,
+            vec![
+                "saas environment".to_string(),
+                "engineering excellence".to_string()
+            ]
+        );
     }
 
     #[tokio::test]
-    async fn a_declined_skill_is_not_offered_again() {
+    async fn verify_keywords_on_no_candidates_changes_nothing() {
         let mut dataset = dataset_with_unbacked("TypeScript");
-        dataset.metadata.declined_skills.push("kafka".into());
-        let before = dataset.clone();
-        let gap = gap_wanting("Kafka");
-        // The user answers nothing — if the skill were offered, the
-        // interview would fail on the missing answer. It must be skipped.
         let user = ScriptedUser::new();
 
-        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
-            .await
-            .unwrap();
-
-        assert_eq!(outcome, VerifyOutcome::default());
-        assert_eq!(dataset, before);
-    }
-
-    #[tokio::test]
-    async fn an_empty_unknown_bucket_changes_nothing() {
-        let mut dataset = dataset_with_unbacked("TypeScript");
-        let gap = GapReport {
-            matched: Vec::new(),
-            weak: Vec::new(),
-            unknown: Vec::new(),
-        };
-        let user = ScriptedUser::new();
-
-        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
-            .await
-            .unwrap();
+        let outcome = verify_keywords(&mut dataset, &[], &user).await.unwrap();
 
         assert_eq!(outcome, VerifyOutcome::default());
     }

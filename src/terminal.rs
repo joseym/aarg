@@ -57,6 +57,20 @@ impl UserHandle for InteractiveUser {
                     .unwrap_or_default();
                 Ok(Answer::Choice(index))
             }
+            Question::MultiSelect { prompt, options } => {
+                let chosen = inquire::MultiSelect::new(&prompt, options.clone())
+                    .prompt()
+                    .map_err(|e| io_err(&prompt, e))?;
+                // Map the chosen strings back to their positions, in the
+                // options' original order — callers branch on index.
+                let indexes = options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, option)| chosen.contains(*option))
+                    .map(|(index, _)| index)
+                    .collect();
+                Ok(Answer::Choices(indexes))
+            }
             Question::Text { prompt } => {
                 let text = inquire::Text::new(&prompt)
                     .prompt()
