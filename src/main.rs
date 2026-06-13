@@ -2,7 +2,9 @@
 //! render any error as a diagnostic. All real behavior lives in the
 //! library crate so it stays testable.
 
-use aarg::cli::{Cli, Command, DatasetCommand, JdCommand, LlmCommand, SkillsCommand, TraceCommand};
+use aarg::cli::{
+    Cli, Command, DatasetCommand, JdCommand, LlmCommand, SkillsCommand, TraceCommand, VoiceCommand,
+};
 use clap::Parser;
 
 #[tokio::main]
@@ -29,6 +31,12 @@ async fn main() -> miette::Result<()> {
         Command::Skills {
             command: SkillsCommand::Verify,
         } => aarg::commands::skills::verify().await?,
+        Command::Voice {
+            command: VoiceCommand::Add { context },
+        } => aarg::commands::voice::add(context).await?,
+        Command::Voice {
+            command: VoiceCommand::List,
+        } => aarg::commands::voice::list().await?,
         Command::Trace {
             command: TraceCommand::Last,
         } => aarg::commands::trace::last().await?,

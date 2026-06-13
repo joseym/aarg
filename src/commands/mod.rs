@@ -16,6 +16,7 @@ pub mod ping;
 pub mod skills;
 pub mod tailor;
 pub mod trace;
+pub mod voice;
 
 use std::path::{Path, PathBuf};
 
@@ -202,6 +203,12 @@ pub enum CliError {
     #[error(transparent)]
     #[diagnostic(help("save the posting text to a file and pass that path (or pipe it with `-`)"))]
     Fetch(#[from] FetchError),
+
+    #[error("no writing sample was provided")]
+    #[diagnostic(help(
+        "pipe a file (`aarg voice add < sample.txt`) or type the text and press Ctrl-D"
+    ))]
+    EmptyVoiceSample,
 
     #[error("no editor configured")]
     #[diagnostic(help(

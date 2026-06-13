@@ -53,6 +53,11 @@ pub enum Command {
         #[command(subcommand)]
         command: SkillsCommand,
     },
+    /// Capture writing samples that anchor voice rewrites
+    Voice {
+        #[command(subcommand)]
+        command: VoiceCommand,
+    },
     /// Inspect recorded agent runs
     Trace {
         #[command(subcommand)]
@@ -86,6 +91,18 @@ pub enum DatasetCommand {
 pub enum SkillsCommand {
     /// Interview: back unverified skills with evidence (or remove them)
     Verify,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VoiceCommand {
+    /// Add a writing sample (read from stdin: pipe a file or type then Ctrl-D)
+    Add {
+        /// A short label for where it came from, e.g. "blog post"
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// List the captured writing samples
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -233,6 +250,27 @@ mod tests {
                 command: SkillsCommand::Verify
             }
         ));
+    }
+
+    #[test]
+    fn voice_subcommands_parse() {
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "voice", "list"])
+                .unwrap()
+                .command,
+            Command::Voice {
+                command: VoiceCommand::List
+            }
+        ));
+        match Cli::try_parse_from(["aarg", "voice", "add", "--context", "blog post"])
+            .unwrap()
+            .command
+        {
+            Command::Voice {
+                command: VoiceCommand::Add { context },
+            } => assert_eq!(context.as_deref(), Some("blog post")),
+            other => panic!("expected voice add, got {other:?}"),
+        }
     }
 
     #[test]
