@@ -129,24 +129,7 @@ pub async fn edit() -> Result<(), CliError> {
         })?;
     }
 
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .map_err(|_| CliError::NoEditor)?;
-    // $EDITOR may carry arguments ("code --wait"): first token is the
-    // program, the rest pass through.
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().ok_or(CliError::NoEditor)?;
-    let status = std::process::Command::new(program)
-        .args(parts)
-        .arg(&draft_path)
-        .status()
-        .map_err(|source| CliError::EditorLaunch {
-            editor: editor.clone(),
-            source,
-        })?;
-    if !status.success() {
-        return Err(CliError::EditorAborted { status });
-    }
+    crate::commands::launch_editor(&draft_path)?;
 
     let text = std::fs::read_to_string(&draft_path).map_err(|source| CliError::ReadInput {
         path: draft_path.clone(),

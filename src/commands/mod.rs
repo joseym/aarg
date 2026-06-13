@@ -106,6 +106,37 @@ pub(crate) fn read_text_input(path: &Path) -> Result<String, CliError> {
     }
 }
 
+/// Open `path` in the user's `$VISUAL`/`$EDITOR` and wait for it to
+/// close. Shared by `dataset edit` and `voice add` — the two commands
+/// that hand the user a file to write into. `$EDITOR` may carry
+/// arguments ("code --wait"): the first token is the program, the rest
+/// pass through.
+pub(crate) fn launch_editor(path: &Path) -> Result<(), CliError> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .map_err(|_| CliError::NoEditor)?;
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().ok_or(CliError::NoEditor)?;
+    let status = std::process::Command::new(program)
+        .args(parts)
+        .arg(path)
+        .status()
+        .map_err(|source| CliError::EditorLaunch {
+            editor: editor.clone(),
+            source,
+        })?;
+    if !status.success() {
+        return Err(CliError::EditorAborted { status });
+    }
+    Ok(())
+}
+
+/// Whether a `$VISUAL`/`$EDITOR` is configured — lets a command choose
+/// the editor flow only when it would actually work.
+pub(crate) fn editor_available() -> bool {
+    std::env::var_os("VISUAL").is_some() || std::env::var_os("EDITOR").is_some()
+}
+
 /// Everything a command can fail with, unified for the CLI boundary.
 /// `#[error(transparent)]` forwards the underlying error's message
 /// unchanged — this type adds routing, not wording.
