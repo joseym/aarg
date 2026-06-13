@@ -670,14 +670,19 @@ fn cap_strongest(
         return 0;
     }
     let dropped = bullets.len() - max;
+    // Rank: keep metric-bearing bullets first (a quantified result is the
+    // strongest thing a resume line can carry, and the user took the
+    // trouble to capture it), then by the dataset's strength rating.
     let rank = |tb: &TailoredBullet| {
-        by_id
-            .get(tb.source_id.0.as_str())
-            .map_or(3u8, |b| match b.strength {
+        by_id.get(tb.source_id.0.as_str()).map_or((1u8, 3u8), |b| {
+            let has_metric = if b.metric.is_some() { 0 } else { 1 };
+            let strength = match b.strength {
                 Strength::High => 0,
                 Strength::Medium => 1,
                 Strength::Low => 2,
-            })
+            };
+            (has_metric, strength)
+        })
     };
     // Rank indices by strength (stable → ties keep model order), take the
     // top `max`, then restore original order for a natural read.
@@ -1363,6 +1368,43 @@ mod tests {
         // is dropped — and the survivors keep their original sequence.
         let ids: Vec<&str> = bullets.iter().map(|b| b.source_id.0.as_str()).collect();
         assert_eq!(ids, vec!["b2", "b3", "b4"]);
+    }
+
+    #[test]
+    fn cap_keeps_a_metric_bearing_bullet_over_a_stronger_bare_one() {
+        // High strength but no number...
+        let bare = Bullet {
+            strength: Strength::High,
+            metric: None,
+            ..bullet("bare", "x")
+        };
+        // ...vs Low strength but a captured metric.
+        let quantified = Bullet {
+            strength: Strength::Low,
+            metric: Some(Metric("40% faster".into())),
+            ..bullet("metric", "x")
+        };
+        let map: std::collections::HashMap<&str, &Bullet> =
+            [("bare", &bare), ("metric", &quantified)]
+                .into_iter()
+                .collect();
+        let mut bullets = vec![
+            TailoredBullet {
+                source_id: BulletId("bare".into()),
+                text: "x".into(),
+            },
+            TailoredBullet {
+                source_id: BulletId("metric".into()),
+                text: "x".into(),
+            },
+        ];
+
+        cap_strongest(&mut bullets, &map, 1);
+
+        // The quantified line wins, even though it's the weaker rating —
+        // a captured number shouldn't be thrown away by the cap.
+        assert_eq!(bullets.len(), 1);
+        assert_eq!(bullets[0].source_id, BulletId("metric".into()));
     }
 
     #[tokio::test]
