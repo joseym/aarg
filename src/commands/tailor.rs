@@ -30,7 +30,9 @@ use crate::review::{
     ReviewInput, Severity,
 };
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
+use crate::terminal::auto_user;
 use crate::trace::Tracer;
+use crate::verify::verify_unknown;
 
 /// How many revision passes the loop may take past the first draft.
 const MAX_REVISIONS: usize = 2;
@@ -39,7 +41,7 @@ const MAX_REVISIONS: usize = 2;
 const ACCEPTABLE_SCORE: f32 = 0.85;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
-    let dataset = store::load()?;
+    let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = Tracer::to_default_dir()?;
     let ctx = AgentContext {
@@ -52,7 +54,39 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let requirements = load_requirements(&path, &ctx).await?;
 
     eprintln!("analyzing the gap...");
-    let gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+    let mut gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+
+    // When a person is driving and the job wants skills the dataset
+    // lacks, offer to verify them now — turning real-but-unrecorded
+    // experience into evidence the tailoring can actually use. A piped
+    // or CI run skips this silently (no one to ask).
+    if !gap.unknown.is_empty() {
+        let user = auto_user();
+        if user.is_interactive() {
+            let wants = user
+                .confirm(
+                    &format!(
+                        "verify {} skill(s) the job wants but your dataset lacks?",
+                        gap.unknown.len()
+                    ),
+                    true,
+                )
+                .await
+                .unwrap_or(false);
+            if wants {
+                let outcome = verify_unknown(&mut dataset, &gap, user.as_ref()).await?;
+                if outcome.changed() {
+                    dataset.metadata.updated_at = Utc::now();
+                    store::save(&dataset)?;
+                    eprintln!(
+                        "recorded {} new skill(s); re-analyzing the gap...",
+                        outcome.verified
+                    );
+                    gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+                }
+            }
+        }
+    }
 
     let build = builds::create_next()?;
     let jd_id = JdId(slug(&requirements.company, &requirements.title));

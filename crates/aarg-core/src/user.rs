@@ -80,6 +80,14 @@ pub trait UserHandle: Send + Sync {
 
     /// Tell the user something; never fails, never blocks on input.
     fn notify(&self, message: &str);
+
+    /// Whether a real person is driving. Lets callers offer an optional
+    /// interactive step only when someone can actually answer it,
+    /// instead of offering it and failing the `ask`. Defaults to false;
+    /// the interactive implementation overrides it.
+    fn is_interactive(&self) -> bool {
+        false
+    }
 }
 
 /// A `UserHandle` for tests: queued answers in, recorded notifications
@@ -133,6 +141,12 @@ impl UserHandle for ScriptedUser {
 
     fn notify(&self, message: &str) {
         lock(&self.notices).push(message.to_string());
+    }
+
+    /// A scripted user stands in for a present person, so flows gated on
+    /// interactivity run in tests.
+    fn is_interactive(&self) -> bool {
+        true
     }
 }
 

@@ -76,6 +76,10 @@ impl UserHandle for InteractiveUser {
     fn notify(&self, message: &str) {
         println!("{message}");
     }
+
+    fn is_interactive(&self) -> bool {
+        true
+    }
 }
 
 /// The world without a person in it: scripts, pipes, CI.
