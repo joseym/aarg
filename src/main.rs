@@ -37,6 +37,9 @@ async fn main() -> miette::Result<()> {
         Command::Voice {
             command: VoiceCommand::List,
         } => aarg::commands::voice::list().await?,
+        Command::Voice {
+            command: VoiceCommand::Remove { id },
+        } => aarg::commands::voice::remove(id).await?,
         Command::Trace {
             command: TraceCommand::Last,
         } => aarg::commands::trace::last().await?,

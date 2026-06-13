@@ -118,6 +118,29 @@ pub async fn list() -> Result<(), CliError> {
     Ok(())
 }
 
+/// Remove a sample by id; errors if no sample carries that id.
+pub async fn remove(id: String) -> Result<(), CliError> {
+    let mut dataset = store::load()?;
+    if !remove_sample(&mut dataset, &id) {
+        return Err(CliError::VoiceSampleNotFound { id });
+    }
+    dataset.metadata.updated_at = Utc::now();
+    store::save(&dataset)?;
+    println!(
+        "removed {id} · {} sample(s) remaining (previous version backed up)",
+        dataset.voice_samples.len()
+    );
+    Ok(())
+}
+
+/// Drop the sample with this id from the dataset; returns whether one was
+/// actually removed (so the caller can distinguish a bad id from a no-op).
+fn remove_sample(dataset: &mut crate::dataset::types::ResumeDataset, id: &str) -> bool {
+    let before = dataset.voice_samples.len();
+    dataset.voice_samples.retain(|sample| sample.id.0 != id);
+    dataset.voice_samples.len() != before
+}
+
 /// A single-line, length-capped preview: collapse whitespace, then clip.
 fn preview(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -168,6 +191,25 @@ mod tests {
             context: None,
         });
         assert_eq!(next_sample_id(&dataset), SampleId("sample-5".into()));
+    }
+
+    #[test]
+    fn remove_sample_drops_the_match_and_reports_whether_it_did() {
+        let mut dataset = empty_dataset();
+        for id in ["sample-1", "sample-2"] {
+            dataset.voice_samples.push(VoiceSample {
+                id: SampleId(id.into()),
+                text: "x".into(),
+                captured_at: Utc::now(),
+                context: None,
+            });
+        }
+        assert!(remove_sample(&mut dataset, "sample-1"));
+        assert_eq!(dataset.voice_samples.len(), 1);
+        assert_eq!(dataset.voice_samples[0].id, SampleId("sample-2".into()));
+        // A miss changes nothing and reports false.
+        assert!(!remove_sample(&mut dataset, "sample-9"));
+        assert_eq!(dataset.voice_samples.len(), 1);
     }
 
     #[test]

@@ -103,6 +103,11 @@ pub enum VoiceCommand {
     },
     /// List the captured writing samples
     List,
+    /// Remove a sample by its id (see `aarg voice list`)
+    Remove {
+        /// The sample id, e.g. "sample-2"
+        id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -271,6 +276,17 @@ mod tests {
             } => assert_eq!(context.as_deref(), Some("blog post")),
             other => panic!("expected voice add, got {other:?}"),
         }
+        match Cli::try_parse_from(["aarg", "voice", "remove", "sample-2"])
+            .unwrap()
+            .command
+        {
+            Command::Voice {
+                command: VoiceCommand::Remove { id },
+            } => assert_eq!(id, "sample-2"),
+            other => panic!("expected voice remove, got {other:?}"),
+        }
+        // remove needs an id.
+        assert!(Cli::try_parse_from(["aarg", "voice", "remove"]).is_err());
     }
 
     #[test]

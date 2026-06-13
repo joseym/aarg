@@ -241,6 +241,10 @@ pub enum CliError {
     ))]
     EmptyVoiceSample,
 
+    #[error("no voice sample with id {id:?}")]
+    #[diagnostic(help("run `aarg voice list` to see the ids you can remove"))]
+    VoiceSampleNotFound { id: String },
+
     #[error("no editor configured")]
     #[diagnostic(help(
         "set $EDITOR (or $VISUAL) to your editor, e.g. `export EDITOR=nano` or `export EDITOR=\"code --wait\"`"
