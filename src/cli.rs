@@ -48,6 +48,11 @@ pub enum Command {
         /// JD text file, Greenhouse/Lever URL, `jd parse --json` output, or "-"
         jd: std::path::PathBuf,
     },
+    /// Maintain the skills in your dataset
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommand,
+    },
     /// Inspect recorded agent runs
     Trace {
         #[command(subcommand)]
@@ -75,6 +80,12 @@ pub enum DatasetCommand {
     Validate,
     /// Open the dataset in $EDITOR, then re-validate and save
     Edit,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillsCommand {
+    /// Interview: back unverified skills with evidence (or remove them)
+    Verify,
 }
 
 #[derive(Debug, Subcommand)]
@@ -210,6 +221,18 @@ mod tests {
             other => panic!("expected tailor, got {other:?}"),
         }
         assert!(Cli::try_parse_from(["aarg", "tailor"]).is_err());
+    }
+
+    #[test]
+    fn skills_verify_parses() {
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "skills", "verify"])
+                .unwrap()
+                .command,
+            Command::Skills {
+                command: SkillsCommand::Verify
+            }
+        ));
     }
 
     #[test]

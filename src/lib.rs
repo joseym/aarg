@@ -7,7 +7,7 @@
 // The agent runtime lives in its own crate (the Phase 2 split);
 // re-exporting its modules keeps every `crate::agent::...` path in
 // this crate working unchanged.
-pub use aarg_core::{agent, llm, trace};
+pub use aarg_core::{agent, llm, trace, user};
 
 pub mod ats;
 pub mod builds;
@@ -22,3 +22,5 @@ pub mod jd;
 pub mod render;
 pub mod secrets;
 pub mod tailor;
+pub mod terminal;
+pub mod verify;

@@ -13,6 +13,7 @@ pub mod ingest;
 pub mod init;
 pub mod jd;
 pub mod ping;
+pub mod skills;
 pub mod tailor;
 pub mod trace;
 
@@ -32,6 +33,7 @@ use crate::render::RenderError;
 use crate::secrets::{self, SecretsError};
 use crate::tailor::TailorError;
 use crate::trace::TraceError;
+use crate::user::AskError;
 
 /// Load the config, fetch the stored API key, and build the provider
 /// client — the preamble every LLM-backed command starts with. Extracted
@@ -214,6 +216,12 @@ pub enum CliError {
 
     #[error(transparent)]
     Trace(#[from] TraceError),
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "this step needs a person; run it in a terminal, or pre-edit the dataset with `aarg dataset edit`"
+    ))]
+    Ask(#[from] AskError),
 
     #[error("the edited draft at {path} is not valid dataset JSON")]
     #[diagnostic(help(

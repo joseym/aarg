@@ -15,3 +15,4 @@
 pub mod agent;
 pub mod llm;
 pub mod trace;
+pub mod user;
