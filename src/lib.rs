@@ -17,6 +17,7 @@ pub mod config;
 pub mod dataset;
 pub mod fetch;
 pub mod gap;
+pub mod guide;
 pub mod ingest;
 pub mod jd;
 pub mod render;

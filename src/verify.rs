@@ -23,12 +23,19 @@
 
 use chrono::Utc;
 
+use crate::agent::{Agent, AgentContext};
 use crate::dataset::types::{
     Bullet, BulletId, EvidenceRef, Proficiency, ResumeDataset, Skill, SkillCategory, SkillId,
     Strength,
 };
 use crate::gap::GapReport;
+use crate::guide::{GuideInput, GuideTurn, VerificationGuideAgent};
 use crate::user::{Answer, AskError, Question, UserHandle};
+
+/// How many guide exchanges before nudging the user back to the
+/// question — a confused user shouldn't loop forever, and each exchange
+/// is an LLM call.
+const MAX_GUIDE_EXCHANGES: usize = 4;
 
 /// What an interview session accomplished.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -68,61 +75,142 @@ async fn interview_skill(
     no_label: &str,
     role_options: &[String],
     user: &dyn UserHandle,
+    guide: Option<&AgentContext<'_>>,
 ) -> Result<Verdict, AskError> {
-    let answer = user
-        .ask(Question::Select {
-            prompt: format!("Have you used {name} in any role?"),
-            options: vec![
-                "Yes, professionally".to_string(),
-                "Yes, in a side project".to_string(),
-                no_label.to_string(),
-                "Skip for now".to_string(),
-            ],
-        })
-        .await?;
-
-    match answer {
-        Answer::Choice(0) | Answer::Choice(1) => {
-            let role_index = match user
-                .ask(Question::Select {
-                    prompt: format!("Which role best demonstrates {name}?"),
-                    options: role_options.to_vec(),
-                })
-                .await?
-            {
-                Answer::Choice(index) if index < role_options.len() => index,
-                _ => 0,
-            };
-            let years = match user
-                .ask(Question::Text {
-                    prompt: "Roughly how many years? (blank to skip)".to_string(),
-                })
-                .await?
-            {
-                Answer::Text(text) => parse_years(&text),
-                _ => None,
-            };
-            let sentence = match user
-                .ask(Question::Text {
-                    prompt: format!("One sentence on what you did with {name} (blank to skip)"),
-                })
-                .await?
-            {
-                Answer::Text(text) => {
-                    let text = text.trim().to_string();
-                    (!text.is_empty()).then_some(text)
-                }
-                _ => None,
-            };
-            Ok(Verdict::Have {
-                role_index,
-                years,
-                sentence,
-            })
+    // The question can re-appear: choosing "let me explain" runs a
+    // guide conversation and then asks again, so the user can decide
+    // with help. Every other answer returns.
+    loop {
+        let mut options = vec![
+            "Yes, professionally".to_string(),
+            "Yes, in a side project".to_string(),
+            no_label.to_string(),
+            "Skip for now".to_string(),
+        ];
+        if guide.is_some() {
+            options.push("I'm not sure - let me explain".to_string());
         }
-        Answer::Choice(2) => Ok(Verdict::DontHave),
-        _ => Ok(Verdict::Skip),
+
+        let answer = user
+            .ask(Question::Select {
+                prompt: format!("Have you used {name} in any role?"),
+                options,
+            })
+            .await?;
+
+        match answer {
+            Answer::Choice(0) | Answer::Choice(1) => {
+                let role_index = match user
+                    .ask(Question::Select {
+                        prompt: format!("Which role best demonstrates {name}?"),
+                        options: role_options.to_vec(),
+                    })
+                    .await?
+                {
+                    Answer::Choice(index) if index < role_options.len() => index,
+                    _ => 0,
+                };
+                let years = match user
+                    .ask(Question::Text {
+                        prompt: "Roughly how many years? (blank to skip)".to_string(),
+                    })
+                    .await?
+                {
+                    Answer::Text(text) => parse_years(&text),
+                    _ => None,
+                };
+                let sentence = match user
+                    .ask(Question::Text {
+                        prompt: format!("One sentence on what you did with {name} (blank to skip)"),
+                    })
+                    .await?
+                {
+                    Answer::Text(text) => {
+                        let text = text.trim().to_string();
+                        (!text.is_empty()).then_some(text)
+                    }
+                    _ => None,
+                };
+                return Ok(Verdict::Have {
+                    role_index,
+                    years,
+                    sentence,
+                });
+            }
+            Answer::Choice(2) => return Ok(Verdict::DontHave),
+            Answer::Choice(3) => return Ok(Verdict::Skip),
+            // The "let me explain" option — present only when a guide is
+            // available. Run the conversation, then re-ask.
+            _ => match guide {
+                Some(ctx) => clarify(name, role_options, user, ctx).await?,
+                None => return Ok(Verdict::Skip),
+            },
+        }
     }
+}
+
+/// The clarification conversation: the user asks or explains, an honest
+/// guide responds, repeat until they're ready to answer. The guide
+/// records nothing — it only helps the user decide. A guide that can't
+/// be reached degrades to a note rather than failing the interview.
+async fn clarify(
+    name: &str,
+    role_options: &[String],
+    user: &dyn UserHandle,
+    ctx: &AgentContext<'_>,
+) -> Result<(), AskError> {
+    user.notify(&format!(
+        "Ask anything about \"{name}\" — what it means, or describe what you did and I'll help you decide honestly."
+    ));
+    let mut history: Vec<GuideTurn> = Vec::new();
+    loop {
+        let message = match user
+            .ask(Question::Text {
+                prompt: "your question or explanation (blank to go back)".to_string(),
+            })
+            .await?
+        {
+            Answer::Text(text) if !text.trim().is_empty() => text,
+            _ => break,
+        };
+
+        let reply = match VerificationGuideAgent
+            .run(
+                ctx,
+                GuideInput {
+                    skill: name.to_string(),
+                    roles: role_options.to_vec(),
+                    history: history.clone(),
+                    message: message.clone(),
+                },
+            )
+            .await
+        {
+            Ok(run) => run.output,
+            Err(_) => {
+                user.notify("(couldn't reach the guide right now — answer as best you can)");
+                break;
+            }
+        };
+        user.notify(&reply);
+
+        history.push(GuideTurn {
+            from_user: true,
+            text: message,
+        });
+        history.push(GuideTurn {
+            from_user: false,
+            text: reply,
+        });
+        if history.len() >= 2 * MAX_GUIDE_EXCHANGES {
+            user.notify("Let's come back to the question.");
+            break;
+        }
+        if !user.confirm("ask something else?", false).await? {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Attach evidence for a skill that already exists in the dataset: a
@@ -164,9 +252,12 @@ fn attach_evidence(
 }
 
 /// Interview the user about every skill with no evidence behind it.
+/// `guide`, when present, offers an LLM clarification conversation on
+/// any question the user is unsure about.
 pub async fn verify_unbacked(
     dataset: &mut ResumeDataset,
     user: &dyn UserHandle,
+    guide: Option<&AgentContext<'_>>,
 ) -> Result<VerifyOutcome, AskError> {
     let unbacked: Vec<SkillId> = dataset
         .skills
@@ -199,6 +290,7 @@ pub async fn verify_unbacked(
             "No - remove it from the dataset",
             &role_options,
             user,
+            guide,
         )
         .await?
         {
@@ -239,6 +331,7 @@ pub async fn verify_unknown(
     dataset: &mut ResumeDataset,
     gap: &GapReport,
     user: &dyn UserHandle,
+    guide: Option<&AgentContext<'_>>,
 ) -> Result<VerifyOutcome, AskError> {
     let mut outcome = VerifyOutcome::default();
     if gap.unknown.is_empty() {
@@ -259,7 +352,7 @@ pub async fn verify_unknown(
             continue;
         }
 
-        match interview_skill(&name, "No, I haven't", &role_options, user).await? {
+        match interview_skill(&name, "No, I haven't", &role_options, user, guide).await? {
             Verdict::Have {
                 role_index,
                 years,
@@ -381,6 +474,8 @@ mod tests {
     use crate::dataset::types::{
         Contact, EmploymentType, Proficiency, Role, RoleId, Skill, SkillCategory, YearMonth,
     };
+    use crate::llm::MockLlmClient;
+    use crate::trace::Tracer;
     use crate::user::ScriptedUser;
 
     fn dataset_with_unbacked(name: &str) -> ResumeDataset {
@@ -446,7 +541,7 @@ mod tests {
         user.answer(Answer::Text("4 years".into()));
         user.answer(Answer::Text("Built the trading UI in TypeScript".into()));
 
-        let outcome = verify_unbacked(&mut dataset, &user).await.unwrap();
+        let outcome = verify_unbacked(&mut dataset, &user, None).await.unwrap();
 
         assert_eq!(outcome.verified, 1);
         assert_eq!(outcome.bullets_added, 1);
@@ -483,7 +578,7 @@ mod tests {
         let user = ScriptedUser::new();
         user.answer(Answer::Choice(2)); // no - remove
 
-        let outcome = verify_unbacked(&mut dataset, &user).await.unwrap();
+        let outcome = verify_unbacked(&mut dataset, &user, None).await.unwrap();
 
         assert_eq!(outcome.removed, 1);
         assert!(dataset.skills.skills.is_empty());
@@ -499,7 +594,7 @@ mod tests {
         let user = ScriptedUser::new();
         user.answer(Answer::Choice(3)); // skip
 
-        let outcome = verify_unbacked(&mut dataset, &user).await.unwrap();
+        let outcome = verify_unbacked(&mut dataset, &user, None).await.unwrap();
 
         assert_eq!(outcome.skipped, 1);
         assert!(!outcome.changed());
@@ -513,7 +608,7 @@ mod tests {
         user.answer(Answer::Choice(0)); // yes...
         // ...but the script ends before "which role" — like Esc mid-flow.
 
-        let result = verify_unbacked(&mut dataset, &user).await;
+        let result = verify_unbacked(&mut dataset, &user, None).await;
         assert!(matches!(result, Err(AskError::NotInteractive { .. })));
     }
 
@@ -525,7 +620,7 @@ mod tests {
             .push(EvidenceRef::Role(RoleId("role-1".into())));
         let user = ScriptedUser::new();
 
-        let outcome = verify_unbacked(&mut dataset, &user).await.unwrap();
+        let outcome = verify_unbacked(&mut dataset, &user, None).await.unwrap();
 
         assert_eq!(outcome, VerifyOutcome::default());
         assert!(
@@ -562,7 +657,9 @@ mod tests {
             "Built the trade-settlement data pipeline".into(),
         ));
 
-        let outcome = verify_unknown(&mut dataset, &gap, &user).await.unwrap();
+        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
+            .await
+            .unwrap();
 
         assert_eq!(outcome.verified, 1);
         assert!(outcome.changed());
@@ -600,7 +697,9 @@ mod tests {
         let user = ScriptedUser::new();
         user.answer(Answer::Choice(2)); // no, I haven't
 
-        let outcome = verify_unknown(&mut dataset, &gap, &user).await.unwrap();
+        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
+            .await
+            .unwrap();
 
         assert_eq!(outcome.verified, 0);
         assert!(!outcome.changed());
@@ -619,9 +718,44 @@ mod tests {
         };
         let user = ScriptedUser::new();
 
-        let outcome = verify_unknown(&mut dataset, &gap, &user).await.unwrap();
+        let outcome = verify_unknown(&mut dataset, &gap, &user, None)
+            .await
+            .unwrap();
 
         assert_eq!(outcome, VerifyOutcome::default());
+    }
+
+    #[tokio::test]
+    async fn a_confused_user_consults_the_guide_then_answers() {
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"reply": "TypeScript is a typed superset of JavaScript; typed front-end code counts."}"#,
+        );
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+            tracer: &Tracer::DISABLED,
+        };
+        let user = ScriptedUser::new();
+        // With a guide present, "let me explain" is option 4.
+        user.answer(Answer::Choice(4));
+        user.answer(Answer::Text("does typed front-end code count?".into()));
+        user.confirm_with(false); // done explaining
+        // Re-asked, the user now answers yes and completes the interview.
+        user.answer(Answer::Choice(0));
+        user.answer(Answer::Choice(0));
+        user.answer(Answer::Text(String::new()));
+        user.answer(Answer::Text(String::new()));
+
+        let outcome = verify_unbacked(&mut dataset, &user, Some(&ctx))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.verified, 1);
+        // The guide was consulted exactly once, and its reply was shown.
+        assert_eq!(mock.requests().len(), 1);
+        assert!(user.notices().iter().any(|n| n.contains("typed superset")));
     }
 
     #[tokio::test]

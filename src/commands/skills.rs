@@ -6,16 +6,31 @@
 //! something — an abandoned session leaves the file untouched, which
 //! is the transactional half of the feature's promise.
 
-use crate::commands::CliError;
+use crate::agent::AgentContext;
+use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::terminal::auto_user;
+use crate::trace::Tracer;
 use crate::verify::verify_unbacked;
 
 pub async fn verify() -> Result<(), CliError> {
     let mut dataset = store::load()?;
     let user = auto_user();
 
-    let outcome = verify_unbacked(&mut dataset, user.as_ref()).await?;
+    // The clarification guide is optional: offered when a provider is
+    // configured, but the interview itself is keyless and deterministic.
+    let provider = configured_client().await.ok();
+    let tracer = Tracer::to_default_dir().ok();
+    let ctx = match (&provider, &tracer) {
+        (Some((client, config)), Some(tracer)) => Some(AgentContext {
+            llm: client,
+            model: &config.anthropic.model,
+            tracer,
+        }),
+        _ => None,
+    };
+
+    let outcome = verify_unbacked(&mut dataset, user.as_ref(), ctx.as_ref()).await?;
 
     if outcome.changed() {
         dataset.metadata.updated_at = chrono::Utc::now();

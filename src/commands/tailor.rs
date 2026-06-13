@@ -74,7 +74,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                 .await
                 .unwrap_or(false);
             if wants {
-                let outcome = verify_unknown(&mut dataset, &gap, user.as_ref()).await?;
+                let outcome = verify_unknown(&mut dataset, &gap, user.as_ref(), Some(&ctx)).await?;
                 if outcome.changed() {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
