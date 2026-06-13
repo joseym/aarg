@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dataset::types::{
     Bullet, BulletId, Certification, Contact, Education, ProjectId, ResumeDataset, Role, RoleId,
-    YearMonth,
+    Strength, YearMonth,
 };
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
@@ -164,7 +164,7 @@ pub async fn tailor_resume(
 const SYSTEM_PROMPT: &str = r#"You tailor a candidate's recorded work history to one job description. You select and rephrase ONLY from the provided material.
 
 Rules — all of them matter:
-- Select the bullets most relevant to this job: roughly 3-5 for recent or highly relevant roles, 1-3 for older ones. Omit roles that add nothing.
+- Include EVERY role: an unexplained employment gap reads worse to a hiring manager than a lightly covered role. Budget bullets by relevance instead — roughly 3-5 for recent or highly relevant roles, 1-2 for older or less relevant ones.
 - Keep roles in the order given (most recent first).
 - You may rephrase a bullet to mirror the job description's vocabulary, but every fact, number, technology, and outcome must already be in the source bullet. Never add metrics, scale, team sizes, technologies, or results that the source does not state.
 - Prefer mirroring the JD's exact phrases (the ats_phrases list) when the underlying fact honestly supports them.
@@ -333,55 +333,73 @@ fn assemble(
 ) -> Result<(TailoredResume, Vec<String>), TailorError> {
     let mut warnings = Vec::new();
 
-    let roles_by_id: HashMap<&str, &Role> =
-        dataset.roles.iter().map(|r| (r.id.0.as_str(), r)).collect();
+    // Index the model's picks by role ID, then walk the DATASET's roles
+    // in order. Two guarantees fall out: chronology is the dataset's
+    // (the model cannot reorder a work history), and every role appears
+    // on the page — an unexplained employment gap invites worse
+    // questions from a hiring manager than a lightly covered role.
+    let mut picks: HashMap<String, RawRoleSelection> = raw
+        .roles
+        .into_iter()
+        .map(|selection| (selection.id.clone(), selection))
+        .collect();
 
+    let mut selected_any = false;
     let mut roles = Vec::new();
-    for selection in raw.roles {
-        let Some(role) = roles_by_id.get(selection.id.as_str()) else {
-            warnings.push(format!(
-                "the model selected role {:?}, which is not in the dataset; dropped",
-                selection.id
-            ));
-            continue;
-        };
-        let bullets_by_id: HashMap<&str, &Bullet> =
-            role.bullets.iter().map(|b| (b.id.0.as_str(), b)).collect();
-
+    for role in &dataset.roles {
         let mut bullets: Vec<TailoredBullet> = Vec::new();
-        let mut used: HashSet<&str> = HashSet::new();
-        for picked in &selection.bullets {
-            let Some(source) = bullets_by_id.get(picked.source_id.as_str()) else {
-                warnings.push(format!(
-                    "the model cited bullet {:?} under {}, but that bullet is not in that role; dropped",
-                    picked.source_id, role.id.0
-                ));
-                continue;
-            };
-            if !used.insert(picked.source_id.as_str()) {
-                continue; // same source selected twice; keep the first
+        match picks.remove(role.id.0.as_str()) {
+            Some(selection) => {
+                selected_any = true;
+                let bullets_by_id: HashMap<&str, &Bullet> =
+                    role.bullets.iter().map(|b| (b.id.0.as_str(), b)).collect();
+                let mut used: HashSet<String> = HashSet::new();
+                for picked in selection.bullets {
+                    let Some(source) = bullets_by_id.get(picked.source_id.as_str()) else {
+                        warnings.push(format!(
+                            "the model cited bullet {:?} under {}, but that bullet is not in that role; dropped",
+                            picked.source_id, role.id.0
+                        ));
+                        continue;
+                    };
+                    if !used.insert(picked.source_id.clone()) {
+                        continue; // same source selected twice; keep the first
+                    }
+                    let text = if digit_runs(&picked.text).is_subset(&digit_runs(&source.text)) {
+                        picked.text
+                    } else {
+                        warnings.push(format!(
+                            "a rewrite of {} added numbers its source doesn't state; kept the original wording",
+                            picked.source_id
+                        ));
+                        source.text.clone()
+                    };
+                    bullets.push(TailoredBullet {
+                        source_id: source.id.clone(),
+                        text,
+                    });
+                }
+                if bullets.is_empty()
+                    && let Some(fallback) = strongest_bullet(role)
+                {
+                    warnings.push(format!(
+                        "none of the model's picks for {} were usable; kept its strongest bullet",
+                        role.id.0
+                    ));
+                    bullets.push(fallback);
+                }
             }
-            let text = if digit_runs(&picked.text).is_subset(&digit_runs(&source.text)) {
-                picked.text.clone()
-            } else {
+            None => {
+                // The model omitted this role entirely; keep it with its
+                // strongest bullet so the work history stays continuous.
+                if let Some(fallback) = strongest_bullet(role) {
+                    bullets.push(fallback);
+                }
                 warnings.push(format!(
-                    "a rewrite of {} added numbers its source doesn't state; kept the original wording",
-                    picked.source_id
+                    "the model omitted {} ({}); kept it to avoid an employment gap",
+                    role.id.0, role.company
                 ));
-                source.text.clone()
-            };
-            bullets.push(TailoredBullet {
-                source_id: source.id.clone(),
-                text,
-            });
-        }
-
-        if bullets.is_empty() {
-            warnings.push(format!(
-                "role {} ended up with no usable bullets; dropped",
-                role.id.0
-            ));
-            continue;
+            }
         }
         roles.push(TailoredRole {
             id: role.id.clone(),
@@ -393,7 +411,15 @@ fn assemble(
             bullets,
         });
     }
-    if roles.is_empty() {
+    // Whatever's left in the map cited roles that don't exist.
+    for id in picks.into_keys() {
+        warnings.push(format!(
+            "the model selected role {id:?}, which is not in the dataset; dropped"
+        ));
+    }
+    // The continuity guarantee can fill bullets, but it must not paper
+    // over a reply that selected nothing real — that's a failed run.
+    if !selected_any || roles.is_empty() {
         return Err(TailorError::EmptySelection);
     }
 
@@ -470,6 +496,24 @@ fn assemble(
         },
         warnings,
     ))
+}
+
+/// The role's best line by the dataset's own strength rating — the
+/// continuity fallback for roles the model omitted or fumbled. Ties
+/// keep dataset order (`min_by_key` returns the first minimum); a role
+/// with no bullets at all renders title-only, which still beats a gap.
+fn strongest_bullet(role: &Role) -> Option<TailoredBullet> {
+    role.bullets
+        .iter()
+        .min_by_key(|b| match b.strength {
+            Strength::High => 0u8,
+            Strength::Medium => 1,
+            Strength::Low => 2,
+        })
+        .map(|b| TailoredBullet {
+            source_id: b.id.clone(),
+            text: b.text.clone(),
+        })
 }
 
 /// The maximal runs of consecutive digits in a string — "cut p99 by 40%"
@@ -750,11 +794,47 @@ mod tests {
         .await
         .unwrap();
 
-        // bullet-3 belongs to role-2, role-9 and project-7 don't exist.
-        assert_eq!(outcome.resume.roles.len(), 1);
+        // bullet-3 belongs to role-2, role-9 and project-7 don't exist —
+        // and role-2, which the model skipped, is kept for continuity.
+        assert_eq!(outcome.resume.roles.len(), 2);
         assert_eq!(outcome.resume.roles[0].bullets.len(), 1);
+        assert_eq!(
+            outcome.resume.roles[1].bullets[0].source_id,
+            BulletId("bullet-3".into())
+        );
         assert!(outcome.resume.projects.is_empty());
-        assert_eq!(outcome.warnings.len(), 3, "got: {:?}", outcome.warnings);
+        assert_eq!(outcome.warnings.len(), 4, "got: {:?}", outcome.warnings);
+    }
+
+    #[tokio::test]
+    async fn omitted_roles_are_kept_to_avoid_employment_gaps() {
+        let outcome = run_tailor(
+            r#"{"summary": "s",
+                "roles": [{"id": "role-1", "bullets": [
+                  {"source_id": "bullet-1", "text": "Led a team of 12 engineers across 3 squads"}
+                ]}],
+                "skills": ["Rust"], "projects": []}"#,
+        )
+        .await
+        .unwrap();
+
+        // The model only selected role-1; role-2 still appears, in
+        // dataset (chronological) order, carrying its strongest bullet.
+        let resume = outcome.resume;
+        assert_eq!(resume.roles.len(), 2);
+        assert_eq!(resume.roles[1].id, RoleId("role-2".into()));
+        assert_eq!(
+            resume.roles[1].bullets[0].source_id,
+            BulletId("bullet-3".into())
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("employment gap")),
+            "got: {:?}",
+            outcome.warnings
+        );
     }
 
     #[tokio::test]
