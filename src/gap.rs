@@ -528,6 +528,8 @@ mod tests {
     #[tokio::test]
     async fn a_malformed_reply_is_a_typed_error_with_a_snippet() {
         let mock = MockLlmClient::default();
+        // Two bad replies: the spine's validation-retry consumes one.
+        mock.enqueue("The best match would probably be...");
         mock.enqueue("The best match would probably be...");
         let dataset = dataset_with(vec![skill(
             "skill-1",

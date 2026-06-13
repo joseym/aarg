@@ -911,9 +911,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_malformed_reply_is_a_typed_error_with_a_snippet() {
-        let err = run_tailor("Here's a great resume for you!")
-            .await
-            .unwrap_err();
+        // Two bad replies: the spine's validation-retry consumes one.
+        let mock = MockLlmClient::default();
+        mock.enqueue("Here's a great resume for you!");
+        mock.enqueue("Here's a great resume for you!");
+        let err = tailor_resume(
+            &mock,
+            "m",
+            BuildId("001".into()),
+            JdId("jd".into()),
+            &sample_jd(),
+            &sample_dataset(),
+            &sample_gap(),
+        )
+        .await
+        .unwrap_err();
         match err {
             TailorError::BadReply { snippet, .. } => assert!(snippet.starts_with("Here's")),
             other => panic!("expected BadReply, got {other:?}"),

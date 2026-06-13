@@ -334,6 +334,8 @@ mod tests {
     #[tokio::test]
     async fn a_malformed_reply_is_a_typed_error_with_a_snippet() {
         let mock = MockLlmClient::default();
+        // Two bad replies: the spine's validation-retry consumes one.
+        mock.enqueue("I'd be happy to help! The job requires...");
         mock.enqueue("I'd be happy to help! The job requires...");
         let err = parse_jd(&mock, "m", "text").await.unwrap_err();
         match err {

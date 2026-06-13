@@ -94,6 +94,12 @@ pub trait Agent: Send + Sync {
     }
 }
 
+/// Attempts at getting parseable output before the typed error
+/// surfaces: the first ask plus one corrective retry. A retry resends
+/// the whole conversation, so each one roughly doubles the cost — one
+/// is the honest default until per-agent config exists.
+const PARSE_ATTEMPTS: u32 = 2;
+
 /// The default `run` body as a free function, so an agent that
 /// overrides `run` for control flow can still delegate to the spine
 /// (trait default methods have no `super` to call).
@@ -105,23 +111,47 @@ pub async fn run_agent<A>(
 where
     A: Agent + ?Sized,
 {
-    let request = CompletionRequest {
-        model: ctx.model.to_string(),
-        max_tokens: agent.reply_budget(),
-        system: Some(agent.system_prompt().to_string()),
-        messages: vec![Message::user(agent.user_message(&input))],
-        temperature: None,
-    };
-    // `?` converts the transport error via the `From<LlmError>` bound.
-    let response = ctx.llm.complete(request).await?;
-    let json = strip_fences(&response.text);
-    let wire: A::Wire =
-        serde_json::from_str(json).map_err(|source| agent.bad_reply(snippet(json), source))?;
-    let output = agent.assemble(wire, input)?;
-    Ok(AgentRun {
-        output,
-        usage: response.usage,
-    })
+    let mut messages = vec![Message::user(agent.user_message(&input))];
+    let mut usage = TokenUsage::default();
+
+    let mut attempt = 1;
+    loop {
+        let request = CompletionRequest {
+            model: ctx.model.to_string(),
+            max_tokens: agent.reply_budget(),
+            system: Some(agent.system_prompt().to_string()),
+            messages: messages.clone(),
+            temperature: None,
+        };
+        // `?` converts the transport error via the `From<LlmError>` bound.
+        let response = ctx.llm.complete(request).await?;
+        usage.input_tokens += response.usage.input_tokens;
+        usage.output_tokens += response.usage.output_tokens;
+
+        let json = strip_fences(&response.text);
+        match serde_json::from_str::<A::Wire>(json) {
+            Ok(wire) => {
+                // Assembly failures are semantic verdicts (bad IDs, an
+                // empty selection), not malformed output — retrying the
+                // same question would burn tokens on a different
+                // problem, so they surface immediately.
+                let output = agent.assemble(wire, input)?;
+                return Ok(AgentRun { output, usage });
+            }
+            // Validation-retry: show the model its own reply and the
+            // parse error, and ask again — once.
+            Err(source) if attempt < PARSE_ATTEMPTS => {
+                attempt += 1;
+                messages.push(Message::assistant(response.text.clone()));
+                messages.push(Message::user(format!(
+                    "That reply did not parse as the required JSON ({source}). \
+                     Reply again with exactly one JSON object in the shape \
+                     originally requested - no commentary, no code fences."
+                )));
+            }
+            Err(source) => return Err(agent.bad_reply(snippet(json), source)),
+        }
+    }
 }
 
 /// Models often wrap JSON in ```fences``` despite instructions; strip
@@ -223,18 +253,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unparseable_replies_become_the_agents_own_error() {
+    async fn a_parse_failure_is_retried_once_with_the_error_shown() {
+        let mock = MockLlmClient::default();
+        mock.enqueue("Sure! Here's your JSON: {\"value\":");
+        mock.enqueue("{\"value\": 40}");
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+        };
+
+        let run = EchoAgent.run(&ctx, 2).await.unwrap();
+
+        assert_eq!(run.output, 42);
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 2);
+        // The retry carries the conversation: original ask, the model's
+        // own bad reply, and a correction naming the parse error.
+        let retry = &requests[1].messages;
+        assert_eq!(retry.len(), 3);
+        assert_eq!(retry[0].content, "the number is 2");
+        assert!(retry[1].content.starts_with("Sure!"));
+        assert!(retry[2].content.contains("did not parse"));
+        // Both attempts are paid for: the mock reports at least one
+        // output token per reply, so a summed total must show two.
+        assert!(run.usage.output_tokens >= 2);
+    }
+
+    #[tokio::test]
+    async fn a_second_bad_reply_surfaces_the_typed_error() {
         let mock = MockLlmClient::default();
         mock.enqueue("I'm sorry, I can't do math today.");
+        mock.enqueue("Still prose, still not JSON.");
         let ctx = AgentContext {
             llm: &mock,
             model: "m",
         };
 
         match EchoAgent.run(&ctx, 1).await.unwrap_err() {
-            EchoError::BadReply { snippet, .. } => assert!(snippet.starts_with("I'm sorry")),
+            // The error carries the FINAL reply's snippet — that's what
+            // the model said after seeing its mistake.
+            EchoError::BadReply { snippet, .. } => assert!(snippet.starts_with("Still prose")),
             other => panic!("expected BadReply, got {other:?}"),
         }
+        assert_eq!(mock.requests().len(), 2, "exactly one retry, then stop");
     }
 
     #[test]
