@@ -53,6 +53,19 @@ pub fn backed_phrases(jd: &JobRequirements, dataset: &ResumeDataset) -> Vec<Mirr
         if key.len() < 2 || key == title_key || seen.contains(&key) {
             continue;
         }
+        // Skip a phrase a recorded skill already covers verbatim (case
+        // aside): the ATS scan is case-insensitive substring matching, so
+        // "Data Engineering" on the page already credits "data
+        // engineering" — mirroring it would just duplicate the line. A
+        // genuine word-order variant ("managing engineering" vs
+        // "Engineering management") isn't a substring, so it survives.
+        let lowered = phrase.to_lowercase();
+        if skills
+            .iter()
+            .any(|(_, name)| name.to_lowercase().contains(&lowered))
+        {
+            continue;
+        }
         // The gate: every token of the phrase appears in the skill, so the
         // phrase is the same competency in the JD's words.
         if let Some((_, skill_name)) = skills
@@ -136,6 +149,17 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].phrase, "AI-powered products");
         assert_eq!(matches[0].dataset_skill, "AI-Powered Product Development");
+    }
+
+    #[test]
+    fn a_case_only_variant_already_covered_is_not_mirrored() {
+        // The skill "Data Engineering" already credits the phrase "data
+        // engineering" for a case-insensitive ATS scan, so mirroring it
+        // would only duplicate the line.
+        let dataset = dataset_with_skill("Data Engineering");
+        let jd = jd("Staff Engineer", &["data engineering"]);
+
+        assert!(backed_phrases(&jd, &dataset).is_empty());
     }
 
     #[test]
