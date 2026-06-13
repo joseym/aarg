@@ -11,5 +11,5 @@ pub use client::LlmClient;
 pub use mock::MockLlmClient;
 pub use types::{
     CompletionRequest, CompletionResponse, LlmError, Message, Role, StreamEvent, TokenStream,
-    TokenUsage,
+    TokenUsage, ToolCall, ToolResult, ToolSpec,
 };

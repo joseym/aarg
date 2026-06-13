@@ -16,11 +16,20 @@ pub enum Role {
     Assistant,
 }
 
-/// One turn of conversation sent to the model.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One turn of conversation sent to the model. Plain text turns leave
+/// the tool vectors empty; tool-use turns (the model calling out, the
+/// follow-up carrying results) fill them. Each client decides how the
+/// fields become provider-specific wire blocks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
+    /// Tool invocations an assistant turn makes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// Results a user turn carries back for earlier tool calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_results: Vec<ToolResult>,
 }
 
 impl Message {
@@ -28,6 +37,8 @@ impl Message {
         Self {
             role: Role::User,
             content: content.into(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
         }
     }
 
@@ -35,8 +46,49 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
         }
     }
+
+    /// The user turn that answers an assistant's tool calls.
+    pub fn tool_results(results: Vec<ToolResult>) -> Self {
+        Self {
+            role: Role::User,
+            content: String::new(),
+            tool_calls: Vec::new(),
+            tool_results: results,
+        }
+    }
+}
+
+/// A tool offered to the model: name, what it does, and the JSON
+/// schema of its arguments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// The model asking for one tool invocation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Provider-assigned ID the result must echo back.
+    pub id: String,
+    pub name: String,
+    pub args: serde_json::Value,
+}
+
+/// What one tool invocation produced, going back to the model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// The `ToolCall::id` this answers.
+    pub call_id: String,
+    pub content: String,
+    /// Errors go back to the model too — it can adapt (retry with
+    /// different arguments, or answer without the tool).
+    pub is_error: bool,
 }
 
 /// A provider-agnostic completion request.
@@ -50,6 +102,9 @@ pub struct CompletionRequest {
     /// Sampling temperature. Leave `None` for the provider default; newer
     /// Anthropic models reject the parameter outright.
     pub temperature: Option<f32>,
+    /// Tools the model may call this turn. Empty for plain completions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolSpec>,
 }
 
 /// Token counts reported by the provider, used later for cost accounting.
@@ -60,13 +115,17 @@ pub struct TokenUsage {
 }
 
 /// A complete (non-streaming) model response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionResponse {
     /// The model's text output, with any non-text blocks filtered out.
     pub text: String,
+    /// Tool invocations the model is asking for. Non-empty means the
+    /// conversation isn't finished — the caller owes results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
     /// The model that actually served the request.
     pub model: String,
-    /// Why generation stopped (e.g. "end_turn", "max_tokens"), if reported.
+    /// Why generation stopped (e.g. "end_turn", "tool_use"), if reported.
     pub stop_reason: Option<String>,
     pub usage: TokenUsage,
 }
@@ -107,6 +166,9 @@ pub enum LlmError {
 
     #[error("the response stream was malformed: {0}")]
     Stream(String),
+
+    #[error("the model kept calling tools after {rounds} rounds without answering")]
+    ToolLoop { rounds: u32 },
 
     #[error("the mock client has no queued response left")]
     MockExhausted,

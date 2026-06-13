@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{Agent, AgentContext};
+use crate::agent::{Agent, AgentContext, Tool};
 use crate::dataset::types::SkillCategory;
 use crate::llm::LlmError;
 
@@ -109,7 +109,20 @@ pub enum Importance {
 
 /// The JD parser as an agent: the model classifies; assembly fills in
 /// what only code can know (the raw text, defaults for omitted fields).
-pub struct JdParserAgent;
+/// Carries the runtime's first tool: when the input only references a
+/// job-board URL instead of containing the posting, the model can
+/// fetch it.
+pub struct JdParserAgent {
+    tools: Vec<Box<dyn Tool>>,
+}
+
+impl Default for JdParserAgent {
+    fn default() -> Self {
+        Self {
+            tools: vec![Box::new(crate::fetch::FetchJdTool)],
+        }
+    }
+}
 
 #[async_trait]
 impl Agent for JdParserAgent {
@@ -130,6 +143,9 @@ impl Agent for JdParserAgent {
     fn user_message(&self, input: &String) -> String {
         input.clone()
     }
+    fn tools(&self) -> &[Box<dyn Tool>] {
+        &self.tools
+    }
     fn bad_reply(&self, snippet: String, source: serde_json::Error) -> JdError {
         JdError::BadReply { snippet, source }
     }
@@ -141,7 +157,10 @@ impl Agent for JdParserAgent {
 /// Parse a job description.
 // EXERCISE(EX-009)
 pub async fn parse_jd(ctx: &AgentContext<'_>, jd_text: &str) -> Result<JobRequirements, JdError> {
-    Ok(JdParserAgent.run(ctx, jd_text.to_string()).await?.output)
+    Ok(JdParserAgent::default()
+        .run(ctx, jd_text.to_string())
+        .await?
+        .output)
 }
 
 /// The extraction contract. Same discipline as the resume prompt:
@@ -156,6 +175,7 @@ Rules — all of them matter:
 - ats_phrases are the exact multi-word phrases from the JD that a resume should mirror word-for-word (role title, key technologies, recurring domain terms) — typically 5 to 15.
 - domain_keywords are industry/domain terms, not technologies.
 - Enum values: seniority is one of "junior"|"mid"|"senior"|"staff"|"principal"|"manager"|"director"|"executive"|"unspecified". remote is one of "remote"|"hybrid"|"on_site"|"unspecified". category is one of "hard"|"soft"|"domain"|"tool"|"language"|"framework".
+- If the message contains only a link to a posting rather than the posting itself, and it is a Greenhouse or Lever URL, call the fetch_jd tool to get the text first.
 - Reply with exactly one JSON object and nothing else — no markdown fences, no commentary.
 
 The JSON object:
@@ -327,6 +347,34 @@ mod tests {
         assert_eq!(jd.required_skills[0].importance, Importance::Critical);
         assert_eq!(jd.required_skills[1].importance, Importance::Required);
         assert_eq!(jd.preferred_skills[0].importance, Importance::Preferred);
+    }
+
+    #[tokio::test]
+    async fn the_parser_can_take_a_tool_round_and_recover() {
+        use crate::llm::ToolCall;
+        let mock = MockLlmClient::default();
+        // The "model" tries to fetch an unsupported URL; the real tool
+        // fails fast (no network), the error goes back as a result, and
+        // the model answers from the text it already had.
+        mock.enqueue_tool_calls(vec![ToolCall {
+            id: "tu_1".into(),
+            name: "fetch_jd".into(),
+            args: serde_json::json!({"url": "https://example.com/job"}),
+        }]);
+        mock.enqueue(GOOD_REPLY);
+
+        let jd = parse_jd(&test_ctx(&mock), "see https://example.com/job")
+            .await
+            .unwrap();
+
+        assert_eq!(jd.company, "Acme Corp");
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 2);
+        // The tool was offered, and its failure went back to the model.
+        assert_eq!(requests[0].tools[0].name, "fetch_jd");
+        let result = &requests[1].messages[2].tool_results[0];
+        assert!(result.is_error);
+        assert!(result.content.contains("Greenhouse or Lever"));
     }
 
     #[tokio::test]

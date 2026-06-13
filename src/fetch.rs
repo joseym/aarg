@@ -11,9 +11,13 @@
 //! works offline.
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
+use async_trait::async_trait;
 use directories::ProjectDirs;
 use serde::Deserialize;
+
+use crate::agent::{Tool, ToolError};
 
 /// Everything that can go wrong while fetching a JD.
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +44,50 @@ pub enum FetchError {
         #[source]
         source: serde_json::Error,
     },
+}
+
+/// The fetch capability as a runtime tool — the PRD's `fetch_url`,
+/// named for what it actually fetches. Offered to the JD parser so a
+/// message that only *references* a posting URL can still be resolved;
+/// the deterministic prefetch in the commands stays the primary path.
+pub struct FetchJdTool;
+
+static FETCH_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(|| {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "A Greenhouse (boards.greenhouse.io) or Lever (jobs.lever.co) posting URL"
+            }
+        },
+        "required": ["url"]
+    })
+});
+
+#[async_trait]
+impl Tool for FetchJdTool {
+    fn name(&self) -> &'static str {
+        "fetch_jd"
+    }
+    fn description(&self) -> &'static str {
+        "Fetch the text of a job posting from a Greenhouse or Lever URL"
+    }
+    fn input_schema(&self) -> &serde_json::Value {
+        &FETCH_SCHEMA
+    }
+    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let url = args
+            .get("url")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ToolError::Failed {
+                message: "fetch_jd needs a string \"url\" argument".into(),
+            })?;
+        let text = fetch_jd(url).await.map_err(|error| ToolError::Failed {
+            message: error.to_string(),
+        })?;
+        Ok(serde_json::json!({ "text": text }))
+    }
 }
 
 /// A recognized job-board posting. Which board decides both the API URL
@@ -463,6 +511,23 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, FetchError::UnsupportedUrl { .. }));
+    }
+
+    #[tokio::test]
+    async fn the_fetch_tool_rejects_bad_args_and_unsupported_urls() {
+        // Both failures come back as ToolError (fed to the model as
+        // error results), and neither touches the network.
+        let err = FetchJdTool
+            .call(serde_json::json!({"link": "oops"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("url"));
+
+        let err = FetchJdTool
+            .call(serde_json::json!({"url": "https://example.com/x"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Greenhouse or Lever"));
     }
 
     #[test]

@@ -12,14 +12,22 @@ use futures_util::stream;
 
 use crate::llm::client::LlmClient;
 use crate::llm::types::{
-    CompletionRequest, CompletionResponse, LlmError, StreamEvent, TokenStream, TokenUsage,
+    CompletionRequest, CompletionResponse, LlmError, StreamEvent, TokenStream, TokenUsage, ToolCall,
 };
+
+/// One scripted reply: plain text, or the model "deciding" to call
+/// tools. Tests script the whole tool dance this way.
+#[derive(Debug)]
+enum MockReply {
+    Text(String),
+    ToolCalls(Vec<ToolCall>),
+}
 
 /// An `LlmClient` that replays queued responses instead of calling a
 /// provider, recording every request it receives.
 #[derive(Debug, Default)]
 pub struct MockLlmClient {
-    responses: Mutex<VecDeque<String>>,
+    responses: Mutex<VecDeque<MockReply>>,
     requests: Mutex<Vec<CompletionRequest>>,
 }
 
@@ -30,7 +38,13 @@ impl MockLlmClient {
 
     /// Queue a response text; each request consumes one, in order.
     pub fn enqueue(&self, text: impl Into<String>) {
-        lock_ignoring_poison(&self.responses).push_back(text.into());
+        lock_ignoring_poison(&self.responses).push_back(MockReply::Text(text.into()));
+    }
+
+    /// Queue a tool-calling turn: the "model" asks for these
+    /// invocations instead of answering.
+    pub fn enqueue_tool_calls(&self, calls: Vec<ToolCall>) {
+        lock_ignoring_poison(&self.responses).push_back(MockReply::ToolCalls(calls));
     }
 
     /// Every request this client has received, oldest first.
@@ -38,7 +52,7 @@ impl MockLlmClient {
         lock_ignoring_poison(&self.requests).clone()
     }
 
-    fn record_and_pop(&self, request: CompletionRequest) -> Result<String, LlmError> {
+    fn record_and_pop(&self, request: CompletionRequest) -> Result<MockReply, LlmError> {
         lock_ignoring_poison(&self.requests).push(request);
         lock_ignoring_poison(&self.responses)
             .pop_front()
@@ -67,20 +81,29 @@ impl LlmClient for MockLlmClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let model = request.model.clone();
         let prompt_len: usize = request.messages.iter().map(|m| m.content.len()).sum();
-        let text = self.record_and_pop(request)?;
+        let (text, tool_calls, stop_reason) = match self.record_and_pop(request)? {
+            MockReply::Text(text) => (text, Vec::new(), "end_turn"),
+            MockReply::ToolCalls(calls) => (String::new(), calls, "tool_use"),
+        };
         Ok(CompletionResponse {
             usage: TokenUsage {
                 input_tokens: (prompt_len as u64 / 4).max(1),
                 output_tokens: estimate_tokens(&text),
             },
-            stop_reason: Some("end_turn".to_string()),
+            stop_reason: Some(stop_reason.to_string()),
             model,
             text,
+            tool_calls,
         })
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<TokenStream, LlmError> {
-        let text = self.record_and_pop(request)?;
+        // Streaming doesn't carry tool calls in this phase; a scripted
+        // tool turn streams as its (empty) text.
+        let text = match self.record_and_pop(request)? {
+            MockReply::Text(text) => text,
+            MockReply::ToolCalls(_) => String::new(),
+        };
         let usage = TokenUsage {
             input_tokens: 1,
             output_tokens: estimate_tokens(&text),
@@ -117,6 +140,7 @@ mod tests {
             system: None,
             messages: vec![Message::user(prompt)],
             temperature: None,
+            tools: Vec::new(),
         }
     }
 

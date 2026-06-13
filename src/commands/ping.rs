@@ -15,6 +15,7 @@ pub async fn run() -> Result<(), CliError> {
         system: None,
         messages: vec![Message::user("Reply with the single word: pong")],
         temperature: None,
+        tools: Vec::new(),
     };
 
     let started = Instant::now();

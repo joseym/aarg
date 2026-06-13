@@ -66,10 +66,11 @@ impl AnthropicClient {
 /// rejects explicit `null`s, and newer models reject `temperature`
 /// entirely, so absence is the only safe default.
 fn request_body(request: &CompletionRequest, stream: bool) -> serde_json::Value {
+    let messages: Vec<serde_json::Value> = request.messages.iter().map(wire_message).collect();
     let mut body = json!({
         "model": request.model,
         "max_tokens": request.max_tokens,
-        "messages": request.messages,
+        "messages": messages,
         "stream": stream,
     });
     if let Some(system) = &request.system {
@@ -78,7 +79,44 @@ fn request_body(request: &CompletionRequest, stream: bool) -> serde_json::Value 
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    if !request.tools.is_empty() {
+        body["tools"] = json!(request.tools);
+    }
     body
+}
+
+/// One message as the wire wants it. Plain text stays a bare string —
+/// the compact form the API has always taken; turns carrying tool
+/// traffic become content-block arrays.
+fn wire_message(message: &crate::llm::Message) -> serde_json::Value {
+    let role = json!(message.role);
+    if message.tool_calls.is_empty() && message.tool_results.is_empty() {
+        return json!({"role": role, "content": message.content});
+    }
+    let mut blocks = Vec::new();
+    for result in &message.tool_results {
+        let mut block = json!({
+            "type": "tool_result",
+            "tool_use_id": result.call_id,
+            "content": result.content,
+        });
+        if result.is_error {
+            block["is_error"] = json!(true);
+        }
+        blocks.push(block);
+    }
+    if !message.content.is_empty() {
+        blocks.push(json!({"type": "text", "text": message.content}));
+    }
+    for call in &message.tool_calls {
+        blocks.push(json!({
+            "type": "tool_use",
+            "id": call.id,
+            "name": call.name,
+            "input": call.args,
+        }));
+    }
+    json!({"role": role, "content": blocks})
 }
 
 // ---- non-streaming response parsing ------------------------------------
@@ -97,6 +135,13 @@ struct WireContentBlock {
     kind: String,
     #[serde(default)]
     text: String,
+    // tool_use block fields; absent on text blocks.
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    input: serde_json::Value,
 }
 
 #[derive(Deserialize, Default, Clone, Copy)]
@@ -122,8 +167,19 @@ fn parse_completion(body: &str) -> Result<CompletionResponse, LlmError> {
         .filter(|block| block.kind == "text")
         .map(|block| block.text.as_str())
         .collect();
+    let tool_calls = wire
+        .content
+        .into_iter()
+        .filter(|block| block.kind == "tool_use")
+        .map(|block| crate::llm::ToolCall {
+            id: block.id,
+            name: block.name,
+            args: block.input,
+        })
+        .collect();
     Ok(CompletionResponse {
         text,
+        tool_calls,
         model: wire.model,
         stop_reason: wire.stop_reason,
         usage: TokenUsage {
@@ -332,6 +388,7 @@ mod tests {
             system: None,
             messages: vec![Message::user("hello")],
             temperature: None,
+            tools: Vec::new(),
         }
     }
 
@@ -353,6 +410,75 @@ mod tests {
         assert_eq!(body["system"], "be brief");
         assert_eq!(body["stream"], true);
         assert!((body["temperature"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn request_body_writes_tool_specs_and_tool_turns_as_blocks() {
+        use crate::llm::{ToolCall, ToolResult, ToolSpec};
+        let mut request = request();
+        request.tools = vec![ToolSpec {
+            name: "fetch_jd".into(),
+            description: "Fetch a posting".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        request.messages = vec![
+            Message::user("get it"),
+            Message {
+                role: crate::llm::Role::Assistant,
+                content: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "tu_1".into(),
+                    name: "fetch_jd".into(),
+                    args: serde_json::json!({"url": "https://x"}),
+                }],
+                tool_results: Vec::new(),
+            },
+            Message::tool_results(vec![ToolResult {
+                call_id: "tu_1".into(),
+                content: "the posting".into(),
+                is_error: false,
+            }]),
+        ];
+
+        let body = request_body(&request, false);
+
+        assert_eq!(body["tools"][0]["name"], "fetch_jd");
+        // Plain text stays a bare string...
+        assert_eq!(body["messages"][0]["content"], "get it");
+        // ...tool turns become content-block arrays.
+        let call = &body["messages"][1]["content"][0];
+        assert_eq!(call["type"], "tool_use");
+        assert_eq!(call["id"], "tu_1");
+        assert_eq!(call["input"]["url"], "https://x");
+        let result = &body["messages"][2]["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["tool_use_id"], "tu_1");
+        assert_eq!(result["content"], "the posting");
+        assert!(result.get("is_error").is_none());
+    }
+
+    #[test]
+    fn parse_completion_collects_tool_use_blocks() {
+        let body = r#"{
+            "model": "claude-haiku-4-5-20251001",
+            "content": [
+                {"type": "text", "text": "Let me fetch that."},
+                {"type": "tool_use", "id": "tu_9", "name": "fetch_jd",
+                 "input": {"url": "https://jobs.lever.co/acme/x"}}
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 20}
+        }"#;
+        let response = parse_completion(body).unwrap();
+        assert_eq!(response.text, "Let me fetch that.");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "tu_9");
+        assert_eq!(response.tool_calls[0].name, "fetch_jd");
+        assert_eq!(
+            response.tool_calls[0].args["url"],
+            "https://jobs.lever.co/acme/x"
+        );
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
     }
 
     #[test]

@@ -49,6 +49,33 @@ pub struct AgentRun<T> {
     pub usage: TokenUsage,
 }
 
+/// A capability an agent may offer the model: fetch a URL, look up a
+/// skill — deterministic code the model can ask to have run. The model
+/// sees `name`/`description`/`input_schema`; `call` is what actually
+/// executes, and its result (or error) goes straight back into the
+/// conversation.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    /// JSON Schema for the arguments — borrowed, so implementors keep
+    /// one static value rather than rebuilding it per call.
+    fn input_schema(&self) -> &serde_json::Value;
+    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError>;
+}
+
+/// Why a tool invocation failed. These are *reported to the model* as
+/// error results, not surfaced to the user — the model can adapt
+/// (different arguments, or answering without the tool).
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    #[error("no tool named {name:?}")]
+    UnknownTool { name: String },
+
+    #[error("{message}")]
+    Failed { message: String },
+}
+
 /// One LLM-backed unit of work with typed input and output.
 ///
 /// Implementations provide the five things Phase 1 proved are
@@ -82,6 +109,12 @@ pub trait Agent: Send + Sync {
     /// Render the typed input into the user message.
     fn user_message(&self, input: &Self::Input) -> String;
 
+    /// Tools this agent offers the model. Empty for pure LLM agents —
+    /// which is most of them.
+    fn tools(&self) -> &[Box<dyn Tool>] {
+        &[]
+    }
+
     /// Wrap an unparseable reply in the agent's own error, keeping a
     /// snippet of what the model actually said.
     fn bad_reply(&self, snippet: String, source: serde_json::Error) -> Self::Error;
@@ -109,6 +142,11 @@ pub trait Agent: Send + Sync {
 /// is the honest default until per-agent config exists.
 const PARSE_ATTEMPTS: u32 = 2;
 
+/// How many tool-calling rounds a run may take before it must answer.
+/// A model that keeps reaching for tools past this is looping, and the
+/// run fails typed rather than spending forever.
+const TOOL_ROUNDS: u32 = 4;
+
 /// The default `run` body as a free function, so an agent that
 /// overrides `run` for control flow can still delegate to the spine
 /// (trait default methods have no `super` to call).
@@ -125,6 +163,16 @@ where
     // Serialized up front: `input` is moved into `assemble` later, and
     // the failure paths still want to record what the run was asked.
     let input_json = serde_json::to_value(&input).unwrap_or(serde_json::Value::Null);
+
+    let tool_specs: Vec<crate::llm::ToolSpec> = agent
+        .tools()
+        .iter()
+        .map(|tool| crate::llm::ToolSpec {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            input_schema: tool.input_schema().clone(),
+        })
+        .collect();
 
     let mut messages = vec![Message::user(agent.user_message(&input))];
     let mut usage = TokenUsage::default();
@@ -148,6 +196,7 @@ where
     };
 
     let mut attempt = 1;
+    let mut tool_rounds = 0;
     loop {
         let request = CompletionRequest {
             model: ctx.model.to_string(),
@@ -155,6 +204,7 @@ where
             system: Some(agent.system_prompt().to_string()),
             messages: messages.clone(),
             temperature: None,
+            tools: tool_specs.clone(),
         };
         let response = match ctx.llm.complete(request).await {
             Ok(response) => response,
@@ -172,6 +222,58 @@ where
         };
         usage.input_tokens += response.usage.input_tokens;
         usage.output_tokens += response.usage.output_tokens;
+
+        // Tool round: the model asked for invocations instead of (or
+        // before) answering. Dispatch each, feed the results back as
+        // the next user turn, and go around again.
+        if !response.tool_calls.is_empty() {
+            tool_rounds += 1;
+            if tool_rounds > TOOL_ROUNDS {
+                let error = LlmError::ToolLoop {
+                    rounds: TOOL_ROUNDS,
+                };
+                finish(
+                    &messages,
+                    Some(&response.text),
+                    usage,
+                    TraceOutcome::Failed {
+                        error: error.to_string(),
+                    },
+                );
+                return Err(error.into());
+            }
+            messages.push(Message {
+                role: crate::llm::Role::Assistant,
+                content: response.text.clone(),
+                tool_calls: response.tool_calls.clone(),
+                tool_results: Vec::new(),
+            });
+            let mut results = Vec::new();
+            for call in &response.tool_calls {
+                let outcome = match agent.tools().iter().find(|t| t.name() == call.name) {
+                    Some(tool) => tool.call(call.args.clone()).await,
+                    None => Err(ToolError::UnknownTool {
+                        name: call.name.clone(),
+                    }),
+                };
+                // Errors go back to the model as error results — it can
+                // adapt; only the round cap is fatal.
+                results.push(match outcome {
+                    Ok(value) => crate::llm::ToolResult {
+                        call_id: call.id.clone(),
+                        content: value.to_string(),
+                        is_error: false,
+                    },
+                    Err(error) => crate::llm::ToolResult {
+                        call_id: call.id.clone(),
+                        content: error.to_string(),
+                        is_error: true,
+                    },
+                });
+            }
+            messages.push(Message::tool_results(results));
+            continue;
+        }
 
         let json = strip_fences(&response.text);
         match serde_json::from_str::<A::Wire>(json) {
@@ -378,6 +480,170 @@ mod tests {
             other => panic!("expected BadReply, got {other:?}"),
         }
         assert_eq!(mock.requests().len(), 2, "exactly one retry, then stop");
+    }
+
+    /// A tool the tests fully control: doubles a number.
+    struct DoubleTool {
+        schema: serde_json::Value,
+    }
+
+    impl DoubleTool {
+        fn new() -> Self {
+            Self {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {"n": {"type": "integer"}},
+                    "required": ["n"]
+                }),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for DoubleTool {
+        fn name(&self) -> &'static str {
+            "double"
+        }
+        fn description(&self) -> &'static str {
+            "Double a number"
+        }
+        fn input_schema(&self) -> &serde_json::Value {
+            &self.schema
+        }
+        async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            let n = args
+                .get("n")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| ToolError::Failed {
+                    message: "double needs an integer n".into(),
+                })?;
+            Ok(serde_json::json!({"doubled": n * 2}))
+        }
+    }
+
+    /// EchoAgent with a toolbox: same contract, plus `double`.
+    struct ToolboxAgent {
+        tools: Vec<Box<dyn Tool>>,
+    }
+
+    impl ToolboxAgent {
+        fn new() -> Self {
+            Self {
+                tools: vec![Box::new(DoubleTool::new())],
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Agent for ToolboxAgent {
+        type Input = i64;
+        type Wire = EchoWire;
+        type Output = i64;
+        type Error = EchoError;
+
+        fn id(&self) -> &'static str {
+            "toolbox_test"
+        }
+        fn system_prompt(&self) -> &str {
+            "Use the double tool, then reply with {\"value\": <result>}."
+        }
+        fn reply_budget(&self) -> u32 {
+            32
+        }
+        fn user_message(&self, input: &i64) -> String {
+            format!("double {input}")
+        }
+        fn tools(&self) -> &[Box<dyn Tool>] {
+            &self.tools
+        }
+        fn bad_reply(&self, snippet: String, source: serde_json::Error) -> EchoError {
+            EchoError::BadReply { snippet, source }
+        }
+        fn assemble(&self, wire: EchoWire, _input: i64) -> Result<i64, EchoError> {
+            Ok(wire.value)
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_calls_are_dispatched_and_results_fed_back() {
+        let mock = MockLlmClient::default();
+        mock.enqueue_tool_calls(vec![crate::llm::ToolCall {
+            id: "t1".into(),
+            name: "double".into(),
+            args: serde_json::json!({"n": 21}),
+        }]);
+        mock.enqueue("{\"value\": 42}");
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+            tracer: &Tracer::DISABLED,
+        };
+
+        let run = ToolboxAgent::new().run(&ctx, 21).await.unwrap();
+
+        assert_eq!(run.output, 42);
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 2);
+        // The tool was offered to the model from the start...
+        assert_eq!(requests[0].tools.len(), 1);
+        assert_eq!(requests[0].tools[0].name, "double");
+        // ...and the second request carries the full tool exchange:
+        // ask, assistant tool call, tool result.
+        let convo = &requests[1].messages;
+        assert_eq!(convo.len(), 3);
+        assert_eq!(convo[1].tool_calls[0].name, "double");
+        let result = &convo[2].tool_results[0];
+        assert_eq!(result.call_id, "t1");
+        assert!(result.content.contains("42"));
+        assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn unknown_tools_report_back_as_errors_not_crashes() {
+        let mock = MockLlmClient::default();
+        mock.enqueue_tool_calls(vec![crate::llm::ToolCall {
+            id: "t1".into(),
+            name: "no_such_tool".into(),
+            args: serde_json::json!({}),
+        }]);
+        mock.enqueue("{\"value\": 7}");
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+            tracer: &Tracer::DISABLED,
+        };
+
+        let run = ToolboxAgent::new().run(&ctx, 7).await.unwrap();
+
+        assert_eq!(run.output, 7);
+        let convo = &mock.requests()[1].messages;
+        let result = &convo[2].tool_results[0];
+        assert!(result.is_error);
+        assert!(result.content.contains("no_such_tool"));
+    }
+
+    #[tokio::test]
+    async fn a_model_stuck_on_tools_fails_typed() {
+        let mock = MockLlmClient::default();
+        for i in 0..5 {
+            mock.enqueue_tool_calls(vec![crate::llm::ToolCall {
+                id: format!("t{i}"),
+                name: "double".into(),
+                args: serde_json::json!({"n": 1}),
+            }]);
+        }
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+            tracer: &Tracer::DISABLED,
+        };
+
+        let err = ToolboxAgent::new().run(&ctx, 1).await.unwrap_err();
+        assert!(matches!(
+            err,
+            EchoError::Llm(LlmError::ToolLoop { rounds: 4 })
+        ));
+        assert_eq!(mock.requests().len(), 5, "the cap stops the spend");
     }
 
     #[tokio::test]
