@@ -1,14 +1,18 @@
 //! Skill verification: the interviews that connect skills to evidence
-//! (FR-3.1). Two flows share one per-skill interview:
+//! (FR-3.1). Two flows reach the same "collect the evidence" point:
 //!
 //! - `verify_unbacked` — recorded skills with an empty `evidence` list
 //!   sit in limbo, barred from tailoring by the never-fabricate rule. A
-//!   "yes" backs one with role evidence; a "no" removes it.
-//! - `verify_unknown` — skills a job description wants that aren't in
-//!   the dataset at all (the gap's "unknown" bucket). A "yes" *adds*
-//!   the skill with evidence; a "no" leaves it absent. This is what
-//!   turns "the job wants Data Engineering, you didn't record it" into
-//!   recorded experience — but only if the person genuinely has it.
+//!   per-skill interview backs one on "yes" and removes it on "no".
+//! - `verify_keywords` — the JD keywords nothing in the dataset backs
+//!   yet (unmatched skills plus ATS phrases), gathered by
+//!   `unbacked_keywords`. The user ticks the ones they have in a triage
+//!   checklist; checked keywords become skills, unchecked ones are
+//!   remembered as declined. A "help me decide" pass lets the user talk
+//!   an unchecked keyword over with the guide and pull it in if it turns
+//!   out they have it. This turns "the job wants Data Engineering, you
+//!   didn't record it" into recorded experience — but only if the person
+//!   genuinely has it.
 //!
 //! A "yes" always means a real role plus, optionally, years and a
 //! user-written sentence (words the user typed are the one source that
@@ -441,10 +445,16 @@ pub fn unbacked_keywords(
 /// user-written sentence); an unchecked one is remembered as declined so
 /// it isn't offered again. Like the per-skill interview, this invents
 /// nothing — the user affirms each claim and points it at a role.
+///
+/// `guide`, when present, adds a "help me decide" pass after the
+/// checklist: the user can talk through any keyword they left unchecked
+/// (a checklist has no room for a per-row "what is this?"), and pull one
+/// in if the conversation reveals they do have it.
 pub async fn verify_keywords(
     dataset: &mut ResumeDataset,
     candidates: &[KeywordCandidate],
     user: &dyn UserHandle,
+    guide: Option<&AgentContext<'_>>,
 ) -> Result<VerifyOutcome, AskError> {
     let mut outcome = VerifyOutcome::default();
     if candidates.is_empty() {
@@ -458,9 +468,9 @@ pub async fn verify_keywords(
     let options: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
     let checked = match user
         .ask(Question::MultiSelect {
-            prompt: "Check the job keywords you genuinely have — the rest are set aside and \
-                     won't be offered again"
-                .to_string(),
+            prompt:
+                "Check the job keywords you genuinely have (you can talk through the rest next)"
+                    .to_string(),
             options,
         })
         .await?
@@ -470,35 +480,145 @@ pub async fn verify_keywords(
     };
 
     // role_options is owned, so the evidence interview can borrow it
-    // while the loop also mutates the dataset to add skills.
+    // while the loop also mutates the dataset to add skills. `recorded`
+    // tracks which candidates became skills (checked, or rescued by the
+    // help pass); whatever's left at the end is declined.
     let role_options = role_options(dataset);
+    let mut recorded = vec![false; candidates.len()];
     for (index, candidate) in candidates.iter().enumerate() {
         if checked.contains(&index) {
-            let (role_index, years, sentence) =
-                collect_evidence(&candidate.name, &role_options, user).await?;
-            let skill_id = add_skill(dataset, &candidate.name, candidate.category);
-            attach_evidence(
-                dataset,
-                &skill_id,
-                role_index,
-                years,
-                sentence,
-                &mut outcome,
-            );
-            user.notify(&format!("added {}", candidate.name));
-            outcome.verified += 1;
-        } else {
-            // Unchecked means "not me" — remember it so the checklist
-            // shrinks instead of re-offering the same keyword every run.
-            let key = candidate.name.to_lowercase();
-            if !dataset.metadata.declined_skills.contains(&key) {
-                dataset.metadata.declined_skills.push(key);
-            }
-            outcome.declined += 1;
+            record_keyword(dataset, candidate, &role_options, user, &mut outcome).await?;
+            recorded[index] = true;
+        }
+    }
+
+    // The "help me decide" pass over the keywords left unchecked; it
+    // flips `recorded` for anything the user rescues.
+    if let Some(ctx) = guide {
+        clarify_unchecked(
+            dataset,
+            candidates,
+            &mut recorded,
+            &role_options,
+            user,
+            ctx,
+            &mut outcome,
+        )
+        .await?;
+    }
+
+    // Whatever is still unrecorded — unchecked and not rescued — is a
+    // "no" worth remembering.
+    for (index, candidate) in candidates.iter().enumerate() {
+        if !recorded[index] {
+            decline_keyword(dataset, candidate, &mut outcome);
         }
     }
 
     Ok(outcome)
+}
+
+/// Run the evidence interview for one claimed keyword and add it as a
+/// recorded skill. Shared by the checklist pass and the help pass.
+async fn record_keyword(
+    dataset: &mut ResumeDataset,
+    candidate: &KeywordCandidate,
+    role_options: &[String],
+    user: &dyn UserHandle,
+    outcome: &mut VerifyOutcome,
+) -> Result<(), AskError> {
+    let (role_index, years, sentence) =
+        collect_evidence(&candidate.name, role_options, user).await?;
+    let skill_id = add_skill(dataset, &candidate.name, candidate.category);
+    attach_evidence(dataset, &skill_id, role_index, years, sentence, outcome);
+    user.notify(&format!("added {}", candidate.name));
+    outcome.verified += 1;
+    Ok(())
+}
+
+/// Remember a keyword the user didn't claim, so the checklist shrinks
+/// instead of re-offering it every run.
+fn decline_keyword(
+    dataset: &mut ResumeDataset,
+    candidate: &KeywordCandidate,
+    outcome: &mut VerifyOutcome,
+) {
+    let key = candidate.name.to_lowercase();
+    if !dataset.metadata.declined_skills.contains(&key) {
+        dataset.metadata.declined_skills.push(key);
+    }
+    outcome.declined += 1;
+}
+
+/// The "help me decide" pass: let the user talk through any unchecked
+/// keyword with the guide and pull it in if it turns out they have it.
+/// Touches only the keywords left unchecked, so confident ticks are
+/// undisturbed. Flips `recorded[i]` for anything rescued.
+async fn clarify_unchecked(
+    dataset: &mut ResumeDataset,
+    candidates: &[KeywordCandidate],
+    recorded: &mut [bool],
+    role_options: &[String],
+    user: &dyn UserHandle,
+    ctx: &AgentContext<'_>,
+    outcome: &mut VerifyOutcome,
+) -> Result<(), AskError> {
+    // Indexes still in play: unchecked, not yet recorded.
+    let mut pending: Vec<usize> = (0..candidates.len()).filter(|i| !recorded[*i]).collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    if !user
+        .confirm("talk through any of the ones you left unchecked?", false)
+        .await?
+    {
+        return Ok(());
+    }
+
+    loop {
+        let mut options: Vec<String> = pending
+            .iter()
+            .map(|&i| candidates[i].name.clone())
+            .collect();
+        options.push("Done — set the rest aside".to_string());
+        let pick = match user
+            .ask(Question::Select {
+                prompt: "Which one?".to_string(),
+                options,
+            })
+            .await?
+        {
+            Answer::Choice(index) if index < pending.len() => index,
+            _ => break, // "Done", or any out-of-range answer
+        };
+
+        let candidate_index = pending[pick];
+        clarify(&candidates[candidate_index].name, role_options, user, ctx).await?;
+        if user
+            .confirm(
+                &format!("Add {} now?", candidates[candidate_index].name),
+                false,
+            )
+            .await?
+        {
+            record_keyword(
+                dataset,
+                &candidates[candidate_index],
+                role_options,
+                user,
+                outcome,
+            )
+            .await?;
+            // Mark it recorded so the caller's decline sweep skips it,
+            // and drop it from the pending menu.
+            recorded[candidate_index] = true;
+            pending.remove(pick);
+        }
+        if pending.is_empty() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// "Title — Company" for each role, the menu the interview offers.
@@ -824,7 +944,7 @@ mod tests {
             "Built the trade-settlement data pipeline".into(),
         ));
 
-        let outcome = verify_keywords(&mut dataset, &candidates, &user)
+        let outcome = verify_keywords(&mut dataset, &candidates, &user, None)
             .await
             .unwrap();
 
@@ -873,7 +993,7 @@ mod tests {
         let user = ScriptedUser::new();
         user.answer(Answer::Choices(Vec::new())); // checked nothing
 
-        let outcome = verify_keywords(&mut dataset, &candidates, &user)
+        let outcome = verify_keywords(&mut dataset, &candidates, &user, None)
             .await
             .unwrap();
 
@@ -894,9 +1014,73 @@ mod tests {
         let mut dataset = dataset_with_unbacked("TypeScript");
         let user = ScriptedUser::new();
 
-        let outcome = verify_keywords(&mut dataset, &[], &user).await.unwrap();
+        let outcome = verify_keywords(&mut dataset, &[], &user, None)
+            .await
+            .unwrap();
 
         assert_eq!(outcome, VerifyOutcome::default());
+    }
+
+    #[tokio::test]
+    async fn the_help_pass_rescues_an_unchecked_keyword() {
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        let candidates = vec![
+            KeywordCandidate {
+                name: "Data Engineering".into(),
+                category: SkillCategory::Hard,
+            },
+            KeywordCandidate {
+                name: "SOC 2 Type 2".into(),
+                category: SkillCategory::Domain,
+            },
+        ];
+        let mock = MockLlmClient::default();
+        // The guide's opener description for the keyword being discussed.
+        mock.enqueue(
+            r#"{"reply": "SOC 2 Type 2 is an audited security/compliance attestation; if you owned or drove one, that counts."}"#,
+        );
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+            tracer: &Tracer::DISABLED,
+        };
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choices(Vec::new())); // checklist: nothing checked
+        user.confirm_with(true); // yes, talk through the unchecked
+        user.answer(Answer::Choice(1)); // discuss "SOC 2 Type 2"
+        user.answer(Answer::Text(String::new())); // opener shown; no follow-up
+        user.confirm_with(true); // "Add SOC 2 Type 2 now?" -> yes
+        user.answer(Answer::Choice(0)); // role-1
+        user.answer(Answer::Text("2".into())); // years
+        user.answer(Answer::Text("Drove the SOC 2 Type 2 audit".into())); // sentence
+        user.answer(Answer::Choice(1)); // "Done" — set the rest aside
+
+        let outcome = verify_keywords(&mut dataset, &candidates, &user, Some(&ctx))
+            .await
+            .unwrap();
+
+        // The discussed keyword was rescued and recorded; the other,
+        // never touched, is declined.
+        assert_eq!(outcome.verified, 1);
+        assert_eq!(outcome.declined, 1);
+        let added = dataset
+            .skills
+            .skills
+            .iter()
+            .find(|s| s.canonical_name == "SOC 2 Type 2")
+            .unwrap();
+        assert!(added.verified);
+        assert_eq!(
+            added.evidence,
+            vec![EvidenceRef::Role(RoleId("role-1".into()))]
+        );
+        assert_eq!(
+            dataset.metadata.declined_skills,
+            vec!["data engineering".to_string()]
+        );
+        // The guide was consulted once (the opener) and its reply shown.
+        assert_eq!(mock.requests().len(), 1);
+        assert!(user.notices().iter().any(|n| n.contains("attestation")));
     }
 
     #[tokio::test]
