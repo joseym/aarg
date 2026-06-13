@@ -20,6 +20,8 @@ pub mod gap;
 pub mod guide;
 pub mod ingest;
 pub mod jd;
+pub mod keywords;
+pub mod mirror;
 pub mod render;
 pub mod review;
 pub mod secrets;

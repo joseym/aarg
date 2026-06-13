@@ -35,6 +35,7 @@ use crate::dataset::types::{
 use crate::gap::GapReport;
 use crate::guide::{GuideInput, GuideTurn, VerificationGuideAgent};
 use crate::jd::JobRequirements;
+use crate::keywords::keyword_key;
 use crate::user::{Answer, AskError, Question, UserHandle};
 
 /// How many guide exchanges before nudging the user back to the
@@ -444,72 +445,6 @@ pub async fn verify_unbacked(
 pub struct KeywordCandidate {
     pub name: String,
     pub category: SkillCategory,
-}
-
-/// Words that don't distinguish one keyword from another — seniority,
-/// and filler the JD pads phrases with. Dropped before comparison so
-/// "senior engineering manager" and "engineering manager" match.
-const KEYWORD_NOISE: &[&str] = &[
-    "sr",
-    "snr",
-    "senior",
-    "jr",
-    "junior",
-    "lead",
-    "staff",
-    "principal",
-    "mid",
-    "entry",
-    "level",
-    "experience",
-    "industry",
-    "knowledge",
-    "expertise",
-    "the",
-    "a",
-    "an",
-    "of",
-    "in",
-    "and",
-    "or",
-    "with",
-];
-
-/// A comparison key that collapses near-duplicate keywords: lowercase,
-/// drop the noise words, light-stem each remaining word so inflections
-/// fold together ("management"/"manager" -> "manag"), then sort so word
-/// order doesn't matter. "people management", "people manager", "sr
-/// engineering manager" and "engineering manager" reduce to keys that
-/// dedupe down to two distinct concepts, not four. It's a heuristic, not
-/// a stemmer — good enough to thin an interview, not a search index.
-fn keyword_key(name: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
-        .filter(|w| !KEYWORD_NOISE.contains(&w.as_str()))
-        .map(|w| stem(&w))
-        .filter(|w| !w.is_empty())
-        .collect();
-    tokens.sort();
-    tokens.dedup();
-    tokens
-}
-
-/// A deliberately crude stem: strip one common suffix, then a trailing
-/// "e", so "manage"/"manager"/"management"/"managing" all land on
-/// "manag". Only touches words long enough that the stub stays
-/// recognizable.
-fn stem(word: &str) -> String {
-    // Longest suffix first, so "ments" wins over "s".
-    for suffix in ["ments", "ment", "ings", "ing", "ers", "er", "ed", "es", "s"] {
-        if word.len() > suffix.len() + 2 && word.ends_with(suffix) {
-            return word[..word.len() - suffix.len()]
-                .trim_end_matches('e')
-                .to_string();
-        }
-    }
-    word.trim_end_matches('e').to_string()
 }
 
 /// Every JD keyword the dataset can't yet support: the gap's unknown

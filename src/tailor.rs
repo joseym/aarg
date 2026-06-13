@@ -30,6 +30,7 @@ use crate::dataset::types::{
 };
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
+use crate::mirror;
 use async_trait::async_trait;
 
 use crate::agent::{Agent, AgentContext};
@@ -205,7 +206,7 @@ impl Agent for TailoringAgent {
             wire,
             input.build_id,
             input.jd_id,
-            input.jd.title.clone(),
+            &input.jd,
             &input.dataset,
             &input.gap,
         )
@@ -393,7 +394,7 @@ fn assemble(
     raw: RawSelection,
     build_id: BuildId,
     jd_id: JdId,
-    target_title: String,
+    jd: &JobRequirements,
     dataset: &ResumeDataset,
     gap: &GapReport,
 ) -> Result<(TailoredResume, Vec<String>), TailorError> {
@@ -524,6 +525,23 @@ fn assemble(
         }
     }
 
+    // Evidence-gated phrase mirroring: add the JD's wording for any
+    // keyword a recorded skill already backs, so a literal ATS scan
+    // credits a concept the user genuinely has but words differently.
+    // `mirror::backed_phrases` is the gate — it returns only phrases
+    // subsumed by a recorded skill, never an unbacked one — so this is
+    // the single sanctioned path for a JD phrase to reach the page
+    // without being literally in the dataset.
+    for matched in mirror::backed_phrases(jd, dataset) {
+        if seen.insert(matched.phrase.clone()) {
+            skills.push(matched.phrase.clone());
+            warnings.push(format!(
+                "mirrored {:?} into skills — backed by your {:?}",
+                matched.phrase, matched.dataset_skill
+            ));
+        }
+    }
+
     let mut projects = Vec::new();
     for id in &raw.projects {
         match dataset.projects.iter().find(|p| p.id.0 == *id) {
@@ -553,7 +571,7 @@ fn assemble(
             jd_id,
             generated_at: Utc::now(),
             contact: dataset.contact.clone(),
-            target_title: Some(target_title),
+            target_title: Some(jd.title.clone()),
             summary,
             roles,
             education: dataset.education.clone(),
@@ -811,6 +829,54 @@ mod tests {
             vec!["Engineering management", "Rust"]
         );
         assert!(outcome.warnings.is_empty(), "got: {:?}", outcome.warnings);
+    }
+
+    #[tokio::test]
+    async fn a_backed_jd_phrase_is_mirrored_but_an_unbacked_one_is_not() {
+        let mut jd = sample_jd();
+        // Neutral title so the title guard doesn't filter the test phrase
+        // (the default title also normalizes to "engineering management").
+        jd.title = "Staff Architect".into();
+        // "managing engineering" is the recorded "Engineering management"
+        // skill in the JD's words; "blockchain custody" backs to nothing.
+        jd.ats_phrases = vec!["managing engineering".into(), "blockchain custody".into()];
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"summary":"Lead.",
+                "roles":[{"id":"role-1","bullets":[
+                  {"source_id":"bullet-1","text":"Led a team of 12 engineers across 3 squads"}
+                ]}],
+                "skills":["Engineering management"],
+                "projects":[]}"#,
+        );
+
+        let outcome = tailor_resume(
+            &test_ctx(&mock),
+            BuildId("001".into()),
+            JdId("x".into()),
+            &jd,
+            &sample_dataset(),
+            &sample_gap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let skills = &outcome.resume.skills_section.skills;
+        // The backed wording variant is surfaced for the ATS scan...
+        assert!(
+            skills.iter().any(|s| s == "managing engineering"),
+            "got {skills:?}"
+        );
+        // ...and the unbacked phrase never reaches the page (backdoor shut).
+        assert!(!skills.iter().any(|s| s == "blockchain custody"));
+        // The mirror is recorded so the build is auditable.
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("mirrored") && w.contains("managing engineering"))
+        );
     }
 
     #[tokio::test]
