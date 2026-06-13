@@ -131,6 +131,9 @@ pub async fn capture_metrics(
         let Some(text) = bullet_text(dataset, &target.bullet_id) else {
             continue; // a phantom id the reviewer invented
         };
+        if bullet_has_metric(dataset, &target.bullet_id) {
+            continue; // already quantified — don't re-ask the same bullet
+        }
 
         let question = match MetricInterviewAgent
             .run(
@@ -170,21 +173,32 @@ fn bullet_text(dataset: &ResumeDataset, id: &BulletId) -> Option<String> {
         .map(|bullet| bullet.text.clone())
 }
 
-/// Fold the user's number into the bullet: record it structurally on
-/// `metric`, and weave it into the text so it survives tailoring's
-/// digit-runs guard (which only keeps numbers already present in the
-/// source). The user's words go in verbatim — they need no further proof.
+/// Record the user's number on the bullet's `metric` field — cleanly,
+/// leaving the text untouched. Tailoring surfaces that field to the model
+/// (so it can weave the number in) and its digit-runs guard counts the
+/// metric as part of the allowed source, so the number survives a rewrite
+/// without ever polluting the recorded bullet with "(...)" appends. The
+/// user's words go in verbatim — they need no further proof.
 fn apply_metric(dataset: &mut ResumeDataset, id: &BulletId, answer: &str) {
     for role in &mut dataset.roles {
         for bullet in &mut role.bullets {
             if bullet.id == *id {
-                let base = bullet.text.trim().trim_end_matches('.').to_string();
-                bullet.text = format!("{base} ({answer})");
                 bullet.metric = Some(Metric(answer.to_string()));
                 return;
             }
         }
     }
+}
+
+/// Whether the bullet already carries a metric — in which case it's been
+/// quantified and shouldn't be re-asked (or the appends would pile up).
+fn bullet_has_metric(dataset: &ResumeDataset, id: &BulletId) -> bool {
+    dataset
+        .roles
+        .iter()
+        .flat_map(|role| &role.bullets)
+        .find(|bullet| bullet.id == *id)
+        .is_some_and(|bullet| bullet.metric.is_some())
 }
 
 #[cfg(test)]
@@ -258,13 +272,13 @@ mod tests {
 
         assert_eq!(added, 1);
         let bullet = &dataset.roles[0].bullets[0];
+        // The number lands on the metric field, recorded cleanly...
         assert_eq!(
             bullet.metric,
             Some(Metric("cut delivery costs ~30%".into()))
         );
-        // The number is in the text, so tailoring's digit-runs guard will
-        // let a rewrite keep it.
-        assert!(bullet.text.contains("30%"));
+        // ...and the bullet text is left untouched — no "(...)" appended.
+        assert_eq!(bullet.text, "Reduced delivery costs");
         // The leading question reached the user.
         assert!(
             user.notices()
@@ -310,6 +324,28 @@ mod tests {
 
         assert_eq!(added, 0);
         // The agent was never even consulted for a bullet that isn't there.
+        assert!(mock.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bullet_that_already_has_a_metric_is_not_re_asked() {
+        let mut dataset = dataset_with_bullet("bullet-1", "Reduced delivery costs");
+        dataset.roles[0].bullets[0].metric = Some(Metric("30%".into()));
+        let before = dataset.clone();
+        let mock = MockLlmClient::default();
+        let user = ScriptedUser::new();
+
+        let targets = [MetricTarget {
+            bullet_id: BulletId("bullet-1".into()),
+            hint: None,
+        }];
+        let added = capture_metrics(&mut dataset, &targets, &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(added, 0);
+        assert_eq!(dataset, before);
+        // No question asked — it's already quantified, so nothing re-appends.
         assert!(mock.requests().is_empty());
     }
 

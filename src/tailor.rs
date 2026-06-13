@@ -308,7 +308,16 @@ fn build_user_message(jd: &JobRequirements, dataset: &ResumeDataset, gap: &GapRe
             text.push_str(&format!("  context: {context}\n"));
         }
         for bullet in &role.bullets {
-            text.push_str(&format!("  {}: {}\n", bullet.id.0, bullet.text));
+            text.push_str(&format!("  {}: {}", bullet.id.0, bullet.text));
+            // A user-supplied metric the model may fold in (the assemble
+            // guard counts its digits as allowed source).
+            if let Some(metric) = &bullet.metric {
+                text.push_str(&format!(
+                    "  [a verified metric you may fold in: {}]",
+                    metric.0
+                ));
+            }
+            text.push('\n');
         }
     }
 
@@ -435,7 +444,14 @@ fn assemble(
                     if !used.insert(picked.source_id.clone()) {
                         continue; // same source selected twice; keep the first
                     }
-                    let text = if digit_runs(&picked.text).is_subset(&digit_runs(&source.text)) {
+                    // A number may come from the source text OR a verified
+                    // metric the user added; both are allowed in a rewrite,
+                    // nothing else.
+                    let mut allowed = digit_runs(&source.text);
+                    if let Some(metric) = &source.metric {
+                        allowed.extend(digit_runs(&metric.0));
+                    }
+                    let text = if digit_runs(&picked.text).is_subset(&allowed) {
                         picked.text
                     } else {
                         warnings.push(format!(
@@ -927,6 +943,50 @@ mod tests {
             "Led a team of 12 engineers across 3 squads"
         );
         assert!(outcome.warnings.iter().any(|w| w.contains("added numbers")));
+    }
+
+    #[tokio::test]
+    async fn a_user_supplied_metric_is_surfaced_and_its_number_survives() {
+        let mut dataset = sample_dataset();
+        // role-2's bullet has no number in its text, but a metric the user
+        // captured separately.
+        dataset.roles[1].bullets[0].metric = Some(Metric("40% fewer breaks".into()));
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"summary":"s",
+                "roles":[{"id":"role-2","bullets":[
+                  {"source_id":"bullet-3","text":"Built the settlement pipeline, cutting breaks 40%"}
+                ]}],
+                "skills":["Rust"],"projects":[]}"#,
+        );
+
+        let outcome = tailor_resume(
+            &test_ctx(&mock),
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &dataset,
+            &sample_gap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // The "40%" survives because the metric field authorized it (it's
+        // in neither the source text nor reverted).
+        let role2 = outcome
+            .resume
+            .roles
+            .iter()
+            .find(|r| r.id == RoleId("role-2".into()))
+            .unwrap();
+        assert!(role2.bullets.iter().any(|b| b.text.contains("40%")));
+        // ...and the metric was shown to the model in the prompt.
+        assert!(
+            mock.requests()[0].messages[0]
+                .content
+                .contains("a verified metric you may fold in: 40% fewer breaks")
+        );
     }
 
     #[tokio::test]
