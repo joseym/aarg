@@ -250,6 +250,7 @@ Rules — all of them matter:
 - Taper rather than collapse: a resume where one role has six bullets and the rest have one looks lopsided. Budget by relevance — roughly 4-6 bullets for the most recent or most relevant role, about 3 for mid roles, and at least 2 for older or less relevant ones (use a single bullet only for a role that has just one recorded). An unexplained employment gap reads worse to a hiring manager than a lightly covered role.
 - Keep roles in the order given (most recent first).
 - You may rephrase a bullet to mirror the job description's vocabulary, but every fact, number, technology, and outcome must already be in the source bullet. Never add metrics, scale, team sizes, technologies, or results that the source does not state.
+- When a bullet is shown with a bracketed measured result (e.g. "[measured result to fold in: 3x faster]"), that figure is the candidate's own verified number and counts as source — work it into the rewritten bullet rather than dropping it.
 - Prefer mirroring the JD's exact phrases (the ats_phrases list) when the underlying fact honestly supports them.
 - "summary": 2-3 sentences, factual, drawn only from the work history given. No superlatives the material doesn't earn.
 - "skills": the usable skills ordered by relevance to this JD, spelled exactly as given in the usable-skills list. Include only skills from that list. Never mention anything from the do-not-claim list anywhere in your output.
@@ -309,13 +310,10 @@ fn build_user_message(jd: &JobRequirements, dataset: &ResumeDataset, gap: &GapRe
         }
         for bullet in &role.bullets {
             text.push_str(&format!("  {}: {}", bullet.id.0, bullet.text));
-            // A user-supplied metric the model may fold in (the assemble
-            // guard counts its digits as allowed source).
+            // A user-supplied measured result the model should fold in
+            // (the assemble guard counts its digits as allowed source).
             if let Some(metric) = &bullet.metric {
-                text.push_str(&format!(
-                    "  [a verified metric you may fold in: {}]",
-                    metric.0
-                ));
+                text.push_str(&format!("  [measured result to fold in: {}]", metric.0));
             }
             text.push('\n');
         }
@@ -981,11 +979,12 @@ mod tests {
             .find(|r| r.id == RoleId("role-2".into()))
             .unwrap();
         assert!(role2.bullets.iter().any(|b| b.text.contains("40%")));
-        // ...and the metric was shown to the model in the prompt.
+        // ...and the metric was shown to the model in the prompt, as a
+        // result to fold in.
         assert!(
             mock.requests()[0].messages[0]
                 .content
-                .contains("a verified metric you may fold in: 40% fewer breaks")
+                .contains("measured result to fold in: 40% fewer breaks")
         );
     }
 
