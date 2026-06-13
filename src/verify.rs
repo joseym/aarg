@@ -538,9 +538,15 @@ pub fn unbacked_keywords(
     let mut seen: Vec<Vec<String>> = Vec::new();
     let mut out: Vec<KeywordCandidate> = Vec::new();
 
+    // The role's own title ("Senior Engineering Manager") is the most
+    // common non-skill that ATS phrases smuggle in. It belongs in a
+    // target-title headline, not the skills list, so never offer it (or
+    // its seniority variants) as a verifiable skill.
+    let title_key = keyword_key(&jd.title);
+
     let mut consider = |name: &str, category: SkillCategory| {
         let key = keyword_key(name);
-        if declined.contains(&key) || seen.contains(&key) {
+        if key.is_empty() || key == title_key || declined.contains(&key) || seen.contains(&key) {
             return;
         }
         seen.push(key);
@@ -1035,12 +1041,17 @@ mod tests {
     }
 
     /// A JD whose only meaningful field for keyword candidacy is its ATS
-    /// phrases (the function reads skills from the gap, not the JD).
+    /// phrases (the function reads skills from the gap, not the JD). The
+    /// title is neutral so it doesn't accidentally filter a test phrase.
     fn jd_with_phrases(phrases: &[&str]) -> JobRequirements {
+        jd_titled("Staff Architect", phrases)
+    }
+
+    fn jd_titled(title: &str, phrases: &[&str]) -> JobRequirements {
         use crate::jd::{RemotePolicy, Seniority};
         JobRequirements {
             company: "amplo".into(),
-            title: "Senior Engineering Manager".into(),
+            title: title.into(),
             seniority: Seniority::Senior,
             location: None,
             remote: RemotePolicy::Unspecified,
@@ -1288,6 +1299,33 @@ mod tests {
             names,
             vec!["people management", "Senior Engineering Manager"]
         );
+    }
+
+    #[test]
+    fn unbacked_keywords_never_offers_the_job_title_as_a_skill() {
+        let dataset = dataset_with_unbacked("TypeScript");
+        let gap = GapReport {
+            matched: Vec::new(),
+            weak: Vec::new(),
+            unknown: Vec::new(),
+        };
+        let jd = jd_titled(
+            "Senior Engineering Manager",
+            &[
+                "Senior Engineering Manager",
+                "Sr. Engineering Manager",
+                "SaaS environment",
+            ],
+        );
+
+        let names: Vec<String> = unbacked_keywords(&dataset, &jd, &gap)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+
+        // The title and its seniority variant are filtered; the real
+        // keyword stays.
+        assert_eq!(names, vec!["SaaS environment"]);
     }
 
     #[tokio::test]
