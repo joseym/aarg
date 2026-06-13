@@ -20,6 +20,7 @@ pub mod gap;
 pub mod ingest;
 pub mod jd;
 pub mod render;
+pub mod review;
 pub mod secrets;
 pub mod tailor;
 pub mod terminal;

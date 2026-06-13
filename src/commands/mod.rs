@@ -30,6 +30,7 @@ use crate::ingest::IngestError;
 use crate::jd::{JdError, JobRequirements};
 use crate::llm::{AnthropicClient, LlmError};
 use crate::render::RenderError;
+use crate::review::ReviewError;
 use crate::secrets::{self, SecretsError};
 use crate::tailor::TailorError;
 use crate::trace::TraceError;
@@ -181,6 +182,10 @@ pub enum CliError {
         "the model's output didn't parse or selected nothing; re-running usually helps"
     ))]
     Tailor(#[from] TailorError),
+
+    #[error(transparent)]
+    #[diagnostic(help("the reviewer's output didn't parse; re-running usually helps"))]
+    Review(#[from] ReviewError),
 
     #[error(transparent)]
     #[diagnostic(help(
