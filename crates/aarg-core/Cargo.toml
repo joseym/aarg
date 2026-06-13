@@ -1,0 +1,32 @@
+[package]
+name = "aarg-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "The agent runtime behind aarg: typed agents, tools, validation-retry, and run tracing over hand-rolled LLM clients"
+authors = ["Josey Morton <me@joseymorton.com>"]
+repository = "https://github.com/joseymorton/aarg"
+
+[dependencies]
+async-trait = "0.1.89"
+chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
+directories = "6.0.0"
+futures-util = "0.3.32"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["rt", "sync", "macros"] }
+tokio-stream = "0.1.18"
+
+# Same discipline as the binary crate: production code may not unwrap,
+# expect, or panic; test modules opt out locally.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.52.3", features = ["full"] }

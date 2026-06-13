@@ -4,7 +4,11 @@
 //! is a thin shell that parses arguments and dispatches into here. Keeping
 //! the logic in a library makes every module testable with `cargo test`.
 
-pub mod agent;
+// The agent runtime lives in its own crate (the Phase 2 split);
+// re-exporting its modules keeps every `crate::agent::...` path in
+// this crate working unchanged.
+pub use aarg_core::{agent, llm, trace};
+
 pub mod ats;
 pub mod builds;
 pub mod cli;
@@ -15,8 +19,6 @@ pub mod fetch;
 pub mod gap;
 pub mod ingest;
 pub mod jd;
-pub mod llm;
 pub mod render;
 pub mod secrets;
 pub mod tailor;
-pub mod trace;
