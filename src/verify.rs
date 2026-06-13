@@ -109,13 +109,22 @@ async fn interview_skill(
 
         match answer {
             Answer::Choice(0) | Answer::Choice(1) => {
-                let (role_index, years, sentence) =
-                    collect_evidence(name, role_options, user).await?;
-                return Ok(Verdict::Have {
-                    role_index,
-                    years,
-                    sentence,
-                });
+                match collect_evidence(name, role_options, user, guide).await? {
+                    Evidence::Provide {
+                        role_index,
+                        years,
+                        sentence,
+                    } => {
+                        return Ok(Verdict::Have {
+                            role_index,
+                            years,
+                            sentence,
+                        });
+                    }
+                    // Backed out at the role step — treat as "not now",
+                    // leaving the skill untouched to ask again later.
+                    Evidence::Skip => return Ok(Verdict::Skip),
+                }
             }
             Answer::Choice(2) => return Ok(Verdict::DontHave),
             Answer::Choice(3) => return Ok(Verdict::Skip),
@@ -229,24 +238,66 @@ async fn clarify(
     Ok(())
 }
 
+/// What `collect_evidence` came back with.
+enum Evidence {
+    /// The user pointed the skill at a role (with optional years/sentence).
+    Provide {
+        role_index: usize,
+        years: Option<f32>,
+        sentence: Option<String>,
+    },
+    /// The user backed out — didn't recognize it, or realized they don't
+    /// have it after all. Record nothing; it can be asked again.
+    Skip,
+}
+
 /// The questions behind a "yes": which role best shows the skill,
 /// roughly how many years, and an optional one-sentence description.
-/// Shared by the per-skill interview and the keyword triage, which
-/// reach the same point — "the user has this" — by different routes.
+/// Shared by the per-skill interview and the keyword triage, which reach
+/// the same point — "the user has this" — by different routes. When a
+/// `guide` is present the role menu also offers "explain it" (so
+/// clarification is reachable *while* populating, not only beforehand)
+/// and a skip, for when the explanation reveals it isn't a match.
 async fn collect_evidence(
     name: &str,
     role_options: &[String],
     user: &dyn UserHandle,
-) -> Result<(usize, Option<f32>, Option<String>), AskError> {
-    let role_index = match user
-        .ask(Question::Select {
-            prompt: format!("Which role best demonstrates {name}?"),
-            options: role_options.to_vec(),
-        })
-        .await?
-    {
-        Answer::Choice(index) if index < role_options.len() => index,
-        _ => 0,
+    guide: Option<&AgentContext<'_>>,
+) -> Result<Evidence, AskError> {
+    // The role question can re-appear: choosing "explain it" runs the
+    // guide and then re-asks, so the user can pick a role with help.
+    let role_index = loop {
+        let mut options = role_options.to_vec();
+        let explain_index = options.len();
+        if guide.is_some() {
+            options.push("I'm not sure what this is - explain it".to_string());
+        }
+        let skip_index = options.len();
+        options.push("Skip this one".to_string());
+
+        let choice = match user
+            .ask(Question::Select {
+                prompt: format!("Which role best demonstrates {name}?"),
+                options,
+            })
+            .await?
+        {
+            Answer::Choice(index) => index,
+            _ => 0,
+        };
+
+        if choice < role_options.len() {
+            break choice;
+        }
+        if choice == skip_index {
+            return Ok(Evidence::Skip);
+        }
+        if let (true, Some(ctx)) = (choice == explain_index, guide) {
+            clarify(name, role_options, user, ctx).await?;
+            continue;
+        }
+        // Any other out-of-range answer: default to the first role.
+        break 0;
     };
     let years = match user
         .ask(Question::Text {
@@ -269,7 +320,11 @@ async fn collect_evidence(
         }
         _ => None,
     };
-    Ok((role_index, years, sentence))
+    Ok(Evidence::Provide {
+        role_index,
+        years,
+        sentence,
+    })
 }
 
 /// Attach evidence for a skill that already exists in the dataset: a
@@ -391,23 +446,100 @@ pub struct KeywordCandidate {
     pub category: SkillCategory,
 }
 
+/// Words that don't distinguish one keyword from another — seniority,
+/// and filler the JD pads phrases with. Dropped before comparison so
+/// "senior engineering manager" and "engineering manager" match.
+const KEYWORD_NOISE: &[&str] = &[
+    "sr",
+    "snr",
+    "senior",
+    "jr",
+    "junior",
+    "lead",
+    "staff",
+    "principal",
+    "mid",
+    "entry",
+    "level",
+    "experience",
+    "industry",
+    "knowledge",
+    "expertise",
+    "the",
+    "a",
+    "an",
+    "of",
+    "in",
+    "and",
+    "or",
+    "with",
+];
+
+/// A comparison key that collapses near-duplicate keywords: lowercase,
+/// drop the noise words, light-stem each remaining word so inflections
+/// fold together ("management"/"manager" -> "manag"), then sort so word
+/// order doesn't matter. "people management", "people manager", "sr
+/// engineering manager" and "engineering manager" reduce to keys that
+/// dedupe down to two distinct concepts, not four. It's a heuristic, not
+/// a stemmer — good enough to thin an interview, not a search index.
+fn keyword_key(name: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .filter(|w| !KEYWORD_NOISE.contains(&w.as_str()))
+        .map(|w| stem(&w))
+        .filter(|w| !w.is_empty())
+        .collect();
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
+/// A deliberately crude stem: strip one common suffix, then a trailing
+/// "e", so "manage"/"manager"/"management"/"managing" all land on
+/// "manag". Only touches words long enough that the stub stays
+/// recognizable.
+fn stem(word: &str) -> String {
+    // Longest suffix first, so "ments" wins over "s".
+    for suffix in ["ments", "ment", "ings", "ing", "ers", "er", "ed", "es", "s"] {
+        if word.len() > suffix.len() + 2 && word.ends_with(suffix) {
+            return word[..word.len() - suffix.len()]
+                .trim_end_matches('e')
+                .to_string();
+        }
+    }
+    word.trim_end_matches('e').to_string()
+}
+
 /// Every JD keyword the dataset can't yet support: the gap's unknown
 /// skills, plus any ATS phrase that doesn't already resolve to a
 /// recorded skill. Keywords the user has already declined are left out —
-/// a settled "no" isn't a candidate — and duplicates are collapsed
-/// case-insensitively (the JD often lists a skill and a near-identical
-/// phrase). This is what the triage checklist offers.
+/// a settled "no" isn't a candidate — and near-duplicates are collapsed
+/// on a normalized key (see `keyword_key`), so the JD listing a skill
+/// and three rephrasings of it yields one checklist row. This is what
+/// the triage checklist offers.
 pub fn unbacked_keywords(
     dataset: &ResumeDataset,
     jd: &JobRequirements,
     gap: &GapReport,
 ) -> Vec<KeywordCandidate> {
-    let declined = &dataset.metadata.declined_skills;
-    let mut seen: Vec<String> = Vec::new();
+    // Compare on a normalized key so near-duplicates collapse: "people
+    // management" / "people manager", "engineering manager" / "sr
+    // engineering manager" should be one row, not three. Declined
+    // keywords are matched the same way, so declining "people manager"
+    // also suppresses "people management".
+    let declined: Vec<Vec<String>> = dataset
+        .metadata
+        .declined_skills
+        .iter()
+        .map(|d| keyword_key(d))
+        .collect();
+    let mut seen: Vec<Vec<String>> = Vec::new();
     let mut out: Vec<KeywordCandidate> = Vec::new();
 
     let mut consider = |name: &str, category: SkillCategory| {
-        let key = name.to_lowercase();
+        let key = keyword_key(name);
         if declined.contains(&key) || seen.contains(&key) {
             return;
         }
@@ -482,35 +614,46 @@ pub async fn verify_keywords(
     // role_options is owned, so the evidence interview can borrow it
     // while the loop also mutates the dataset to add skills. `recorded`
     // tracks which candidates became skills (checked, or rescued by the
-    // help pass); whatever's left at the end is declined.
+    // help pass).
     let role_options = role_options(dataset);
     let mut recorded = vec![false; candidates.len()];
     for (index, candidate) in candidates.iter().enumerate() {
         if checked.contains(&index) {
-            record_keyword(dataset, candidate, &role_options, user, &mut outcome).await?;
-            recorded[index] = true;
+            // A checked keyword can still back out at the role step (the
+            // "explain it" path may reveal it isn't a match); only a real
+            // role makes it `recorded`.
+            recorded[index] =
+                record_keyword(dataset, candidate, &role_options, user, guide, &mut outcome)
+                    .await?;
         }
     }
 
     // The "help me decide" pass over the keywords left unchecked; it
-    // flips `recorded` for anything the user rescues.
+    // returns the indexes the user rescued, which we mark recorded.
     if let Some(ctx) = guide {
-        clarify_unchecked(
+        let pending: Vec<usize> = (0..candidates.len())
+            .filter(|i| !checked.contains(i))
+            .collect();
+        let rescued = clarify_unchecked(
             dataset,
             candidates,
-            &mut recorded,
+            pending,
             &role_options,
-            user,
             ctx,
+            user,
             &mut outcome,
         )
         .await?;
+        for index in rescued {
+            recorded[index] = true;
+        }
     }
 
-    // Whatever is still unrecorded — unchecked and not rescued — is a
-    // "no" worth remembering.
+    // An unchecked keyword the user never rescued is a "no" worth
+    // remembering. A *checked* one that backed out at the role step is
+    // left alone — they engaged with it, so don't bury it as declined.
     for (index, candidate) in candidates.iter().enumerate() {
-        if !recorded[index] {
+        if !recorded[index] && !checked.contains(&index) {
             decline_keyword(dataset, candidate, &mut outcome);
         }
     }
@@ -518,22 +661,31 @@ pub async fn verify_keywords(
     Ok(outcome)
 }
 
-/// Run the evidence interview for one claimed keyword and add it as a
-/// recorded skill. Shared by the checklist pass and the help pass.
+/// Run the evidence interview for one claimed keyword. Returns `true`
+/// if it became a recorded skill, `false` if the user backed out at the
+/// role step. Shared by the checklist pass and the help pass.
 async fn record_keyword(
     dataset: &mut ResumeDataset,
     candidate: &KeywordCandidate,
     role_options: &[String],
     user: &dyn UserHandle,
+    guide: Option<&AgentContext<'_>>,
     outcome: &mut VerifyOutcome,
-) -> Result<(), AskError> {
-    let (role_index, years, sentence) =
-        collect_evidence(&candidate.name, role_options, user).await?;
-    let skill_id = add_skill(dataset, &candidate.name, candidate.category);
-    attach_evidence(dataset, &skill_id, role_index, years, sentence, outcome);
-    user.notify(&format!("added {}", candidate.name));
-    outcome.verified += 1;
-    Ok(())
+) -> Result<bool, AskError> {
+    match collect_evidence(&candidate.name, role_options, user, guide).await? {
+        Evidence::Provide {
+            role_index,
+            years,
+            sentence,
+        } => {
+            let skill_id = add_skill(dataset, &candidate.name, candidate.category);
+            attach_evidence(dataset, &skill_id, role_index, years, sentence, outcome);
+            user.notify(&format!("added {}", candidate.name));
+            outcome.verified += 1;
+            Ok(true)
+        }
+        Evidence::Skip => Ok(false),
+    }
 }
 
 /// Remember a keyword the user didn't claim, so the checklist shrinks
@@ -550,29 +702,28 @@ fn decline_keyword(
     outcome.declined += 1;
 }
 
-/// The "help me decide" pass: let the user talk through any unchecked
-/// keyword with the guide and pull it in if it turns out they have it.
-/// Touches only the keywords left unchecked, so confident ticks are
-/// undisturbed. Flips `recorded[i]` for anything rescued.
+/// The "help me decide" pass: let the user talk through any of the
+/// `pending` (unchecked) keywords with the guide and pull one in if it
+/// turns out they have it. Touches only those keywords, so confident
+/// ticks are undisturbed. Returns the indexes the user rescued.
 async fn clarify_unchecked(
     dataset: &mut ResumeDataset,
     candidates: &[KeywordCandidate],
-    recorded: &mut [bool],
+    mut pending: Vec<usize>,
     role_options: &[String],
-    user: &dyn UserHandle,
     ctx: &AgentContext<'_>,
+    user: &dyn UserHandle,
     outcome: &mut VerifyOutcome,
-) -> Result<(), AskError> {
-    // Indexes still in play: unchecked, not yet recorded.
-    let mut pending: Vec<usize> = (0..candidates.len()).filter(|i| !recorded[*i]).collect();
+) -> Result<Vec<usize>, AskError> {
+    let mut rescued: Vec<usize> = Vec::new();
     if pending.is_empty() {
-        return Ok(());
+        return Ok(rescued);
     }
     if !user
         .confirm("talk through any of the ones you left unchecked?", false)
         .await?
     {
-        return Ok(());
+        return Ok(rescued);
     }
 
     loop {
@@ -592,7 +743,8 @@ async fn clarify_unchecked(
             _ => break, // "Done", or any out-of-range answer
         };
 
-        let candidate_index = pending[pick];
+        // Take it out of the menu — we're handling it now, either way.
+        let candidate_index = pending.remove(pick);
         clarify(&candidates[candidate_index].name, role_options, user, ctx).await?;
         if user
             .confirm(
@@ -600,25 +752,23 @@ async fn clarify_unchecked(
                 false,
             )
             .await?
-        {
-            record_keyword(
+            && record_keyword(
                 dataset,
                 &candidates[candidate_index],
                 role_options,
                 user,
+                Some(ctx),
                 outcome,
             )
-            .await?;
-            // Mark it recorded so the caller's decline sweep skips it,
-            // and drop it from the pending menu.
-            recorded[candidate_index] = true;
-            pending.remove(pick);
+            .await?
+        {
+            rescued.push(candidate_index);
         }
         if pending.is_empty() {
             break;
         }
     }
-    Ok(())
+    Ok(rescued)
 }
 
 /// "Title — Company" for each role, the menu the interview offers.
@@ -1081,6 +1231,109 @@ mod tests {
         // The guide was consulted once (the opener) and its reply shown.
         assert_eq!(mock.requests().len(), 1);
         assert!(user.notices().iter().any(|n| n.contains("attestation")));
+    }
+
+    #[test]
+    fn keyword_key_collapses_rewordings_but_keeps_distinct_concepts() {
+        // Inflection and seniority/filler words don't distinguish.
+        assert_eq!(
+            keyword_key("people management"),
+            keyword_key("people manager")
+        );
+        assert_eq!(
+            keyword_key("engineering manager"),
+            keyword_key("Sr Engineering Manager")
+        );
+        assert_eq!(
+            keyword_key("Senior Engineering Manager"),
+            keyword_key("engineering management")
+        );
+        assert_eq!(
+            keyword_key("Insurtech Industry Experience"),
+            keyword_key("insurtech")
+        );
+        // Genuinely different concepts stay apart.
+        assert_ne!(
+            keyword_key("team management"),
+            keyword_key("people management")
+        );
+        assert_ne!(
+            keyword_key("backend engineering"),
+            keyword_key("engineering")
+        );
+    }
+
+    #[test]
+    fn unbacked_keywords_collapses_reworded_phrases_to_one_row() {
+        let dataset = dataset_with_unbacked("TypeScript");
+        let gap = GapReport {
+            matched: Vec::new(),
+            weak: Vec::new(),
+            unknown: Vec::new(),
+        };
+        let jd = jd_with_phrases(&[
+            "people management",
+            "people manager",
+            "Senior Engineering Manager",
+            "engineering manager",
+        ]);
+
+        let names: Vec<String> = unbacked_keywords(&dataset, &jd, &gap)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+
+        // Four phrases, two concepts; the first wording of each survives.
+        assert_eq!(
+            names,
+            vec!["people management", "Senior Engineering Manager"]
+        );
+    }
+
+    #[tokio::test]
+    async fn explain_is_reachable_while_populating_a_checked_keyword() {
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        let candidates = vec![KeywordCandidate {
+            name: "Backend Engineering".into(),
+            category: SkillCategory::Hard,
+        }];
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"reply": "Backend engineering is server-side systems work — APIs, databases, services."}"#,
+        );
+        let ctx = AgentContext {
+            llm: &mock,
+            model: "m",
+            tracer: &Tracer::DISABLED,
+        };
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choices(vec![0])); // check it
+        // Role menu is [role-1, "explain", "skip"]; ask to explain first.
+        user.answer(Answer::Choice(1));
+        user.answer(Answer::Text(String::new())); // opener shown; no follow-up
+        // Re-asked, now pick the real role and finish.
+        user.answer(Answer::Choice(0));
+        user.answer(Answer::Text(String::new()));
+        user.answer(Answer::Text("Ran the backend team".into()));
+
+        let outcome = verify_keywords(&mut dataset, &candidates, &user, Some(&ctx))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.verified, 1);
+        // The guide answered mid-populate, before any role was chosen.
+        assert_eq!(mock.requests().len(), 1);
+        assert!(user.notices().iter().any(|n| n.contains("server-side")));
+        let added = dataset
+            .skills
+            .skills
+            .iter()
+            .find(|s| s.canonical_name == "Backend Engineering")
+            .unwrap();
+        assert_eq!(
+            added.evidence,
+            vec![EvidenceRef::Role(RoleId("role-1".into()))]
+        );
     }
 
     #[tokio::test]
