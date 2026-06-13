@@ -267,7 +267,7 @@ async fn evaluate(
 
     let pdf = render::render_ats(&iter_dir, &resume)?;
     let page_text = ats::extract_pdf_text(&pdf)?;
-    let ats_report = ats::keyword_coverage(jd, gap, &page_text);
+    let ats_report = ats::keyword_coverage(jd, gap, dataset, &page_text);
 
     let score = combined_score(&report, ats_report.coverage);
 
@@ -358,7 +358,7 @@ fn print_coverage(report: &AtsReport) {
     for miss in &report.keyword_misses {
         match &miss.evidence {
             EvidenceStatus::Backed { dataset_skill } => println!(
-                "  miss: {:?} ({}) - backed by {:?}; a revision could mirror it",
+                "  miss: {:?} ({}) - recorded as {:?}, but it didn't reach the page",
                 miss.phrase,
                 kind_label(miss.kind),
                 dataset_skill

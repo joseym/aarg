@@ -14,6 +14,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::dataset::types::ResumeDataset;
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
 
@@ -83,16 +84,40 @@ pub fn extract_pdf_text(path: &Path) -> Result<String, AtsError> {
 
 /// Check every JD skill and ATS phrase against the page text.
 // EXERCISE(EX-012)
-pub fn keyword_coverage(jd: &JobRequirements, gap: &GapReport, page_text: &str) -> AtsReport {
+pub fn keyword_coverage(
+    jd: &JobRequirements,
+    gap: &GapReport,
+    dataset: &ResumeDataset,
+    page_text: &str,
+) -> AtsReport {
     let haystack = normalize(page_text);
-    // What the gap report matched each JD name to, for second-chance
-    // hits (the page says "Kubernetes", the JD said "container
-    // orchestration") and for evidence status on misses.
+    // What backs a JD name, for second-chance hits (the page says
+    // "Kubernetes", the JD said "container orchestration") and for
+    // evidence status on misses. Two sources, in order: the gap
+    // analyzer's matches (which understand synonyms for JD *skills*),
+    // then the dataset directly — because ATS *phrases* never go through
+    // gap matching, so a phrase the user has recorded as a skill (e.g. a
+    // verified "SOC 2 Type 2") would otherwise read as unbacked.
     let backing = |jd_name: &str| -> Option<String> {
-        gap.matched
+        if let Some(matched) = gap
+            .matched
             .iter()
             .find(|m| m.jd_skill.name.eq_ignore_ascii_case(jd_name))
-            .map(|m| m.dataset_name.clone())
+        {
+            return Some(matched.dataset_name.clone());
+        }
+        let lowered = jd_name.to_lowercase();
+        if let Some(id) = dataset.skills.aliases.get(&lowered)
+            && let Some(skill) = dataset.skills.skills.iter().find(|s| &s.id == id)
+        {
+            return Some(skill.canonical_name.clone());
+        }
+        dataset
+            .skills
+            .skills
+            .iter()
+            .find(|s| s.canonical_name.eq_ignore_ascii_case(jd_name))
+            .map(|s| s.canonical_name.clone())
     };
 
     let mut hits = Vec::new();
@@ -165,9 +190,19 @@ fn contains(haystack: &str, phrase: &str) -> bool {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::dataset::types::{SkillCategory, SkillId};
+    use crate::dataset::types::{Contact, Proficiency, Skill, SkillCategory, SkillId};
     use crate::gap::SkillMatch;
     use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority};
+
+    fn empty_dataset() -> ResumeDataset {
+        ResumeDataset::new(Contact {
+            full_name: "Ada".into(),
+            email: "ada@example.com".into(),
+            phone: None,
+            location: None,
+            links: Vec::new(),
+        })
+    }
 
     fn jd_skill(name: &str, importance: Importance) -> JdSkill {
         JdSkill {
@@ -223,7 +258,12 @@ mod tests {
             unknown: Vec::new(),
         };
 
-        let report = keyword_coverage(&jd, &gap, "Systems work in Rust and Typst.");
+        let report = keyword_coverage(
+            &jd,
+            &gap,
+            &empty_dataset(),
+            "Systems work in Rust and Typst.",
+        );
 
         assert_eq!(report.keyword_hits.len(), 1);
         assert_eq!(report.keyword_misses.len(), 1);
@@ -241,7 +281,12 @@ mod tests {
         );
         let gap = gap_matching("container orchestration", "Kubernetes");
 
-        let report = keyword_coverage(&jd, &gap, "Ran Kubernetes clusters in production.");
+        let report = keyword_coverage(
+            &jd,
+            &gap,
+            &empty_dataset(),
+            "Ran Kubernetes clusters in production.",
+        );
 
         assert_eq!(report.keyword_hits.len(), 1);
         assert!((report.coverage - 1.0).abs() < f32::EPSILON);
@@ -256,12 +301,51 @@ mod tests {
         let gap = gap_matching("container orchestration", "Kubernetes");
 
         // Neither phrase nor dataset name on the page.
-        let report = keyword_coverage(&jd, &gap, "Wrote backend services.");
+        let report = keyword_coverage(&jd, &gap, &empty_dataset(), "Wrote backend services.");
 
         assert_eq!(
             report.keyword_misses[0].evidence,
             EvidenceStatus::Backed {
                 dataset_skill: "Kubernetes".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_recorded_skill_backs_an_ats_phrase_miss() {
+        // The user verified "SOC 2 Type 2" as a skill, but the tailored
+        // page never printed the literal phrase. The miss must read as
+        // backed-by-the-recorded-skill, not "no supporting evidence".
+        let jd = jd_with(vec![], vec!["SOC 2 Type 2"]);
+        let gap = GapReport {
+            matched: Vec::new(),
+            weak: Vec::new(),
+            unknown: Vec::new(),
+        };
+        let mut dataset = empty_dataset();
+        dataset.skills.skills.push(Skill {
+            id: SkillId("skill-9".into()),
+            canonical_name: "SOC 2 Type 2".into(),
+            aliases: Vec::new(),
+            category: SkillCategory::Domain,
+            proficiency: Proficiency::Working,
+            years: None,
+            last_used: None,
+            evidence: Vec::new(),
+            verified: true,
+            verified_at: None,
+        });
+        dataset
+            .skills
+            .aliases
+            .insert("soc 2 type 2".into(), SkillId("skill-9".into()));
+
+        let report = keyword_coverage(&jd, &gap, &dataset, "Led security and compliance work.");
+
+        assert_eq!(
+            report.keyword_misses[0].evidence,
+            EvidenceStatus::Backed {
+                dataset_skill: "SOC 2 Type 2".into()
             }
         );
     }
@@ -275,7 +359,12 @@ mod tests {
             unknown: Vec::new(),
         };
 
-        let report = keyword_coverage(&jd, &gap, "Drove Engineering\n   Excellence at scale.");
+        let report = keyword_coverage(
+            &jd,
+            &gap,
+            &empty_dataset(),
+            "Drove Engineering\n   Excellence at scale.",
+        );
 
         assert_eq!(report.keyword_hits.len(), 1);
         // No required skills at all: coverage is vacuously full.
