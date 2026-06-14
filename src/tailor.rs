@@ -564,7 +564,16 @@ fn assemble(
     // before mirroring on purpose — mirrored phrases are *deliberate* ATS
     // wording variants ("managing engineering" for "Engineering
     // management"), and the normalized dedup would collapse exactly those.
-    let mut skills = dedup_and_cap_skills(skills, MAX_SKILLS);
+    // The JD's required/preferred keywords, normalized — the subset pass
+    // must never drop one of these (it's the canonical wording coverage
+    // counts), only the looser variants around it.
+    let protected: Vec<Vec<String>> = jd
+        .required_skills
+        .iter()
+        .chain(jd.preferred_skills.iter())
+        .map(|s| keyword_key(&s.name))
+        .collect();
+    let mut skills = dedup_and_cap_skills(skills, MAX_SKILLS, &protected);
     let mut seen: HashSet<String> = skills.iter().cloned().collect();
 
     // Evidence-gated phrase mirroring: add the JD's wording for any
@@ -575,6 +584,18 @@ fn assemble(
     // the single sanctioned path for a JD phrase to reach the page
     // without being literally in the dataset.
     for matched in mirror::backed_phrases(jd, dataset) {
+        // Skip a phrase whose concept is already on the page: if a listed
+        // skill's tokens already cover it, the ATS credits the phrase via
+        // that skill (ats.rs's second-chance backing), so mirroring the
+        // variant adds no coverage and only reads as keyword-stuffing.
+        let key = keyword_key(&matched.phrase);
+        let already_covered = !key.is_empty()
+            && skills
+                .iter()
+                .any(|s| key.iter().all(|t| keyword_key(s).contains(t)));
+        if already_covered {
+            continue;
+        }
         if seen.insert(matched.phrase.clone()) {
             skills.push(matched.phrase.clone());
             warnings.push(format!(
@@ -641,23 +662,46 @@ const MAX_BULLETS_PER_ROLE: usize = 6;
 /// that reads worse than a curated list.
 const MAX_SKILLS: usize = 18;
 
-/// Collapse normalized-duplicate skills (keeping the first, which is the
-/// most JD-relevant since skills arrive relevance-ordered) and cap the
-/// list at `max`. "data engineering" and "Data Engineering" share a
-/// `keyword_key`, so only the first survives; a phrase with no
-/// distinguishing tokens (rare) is left as-is rather than risk merging it.
-fn dedup_and_cap_skills(skills: Vec<String>, max: usize) -> Vec<String> {
-    let mut seen: Vec<Vec<String>> = Vec::new();
-    let mut out: Vec<String> = Vec::new();
+/// Collapse duplicate and near-duplicate skills, then cap at `max`.
+///
+/// Two collapses, both keeping the most JD-relevant survivor (skills
+/// arrive relevance-ordered, so "keep the earlier one" does that):
+///
+/// 1. **Exact** — "data engineering" and "Data Engineering" share a
+///    `keyword_key`, so only the first survives.
+/// 2. **Subset** — a skill whose tokens are a *proper subset* of another
+///    kept skill's is dropped: "remote-first" {first, remote} is subsumed
+///    by "Remote-First Communication" {communication, first, remote}, and
+///    listing both reads as keyword-stuffing to a human reviewer. The more
+///    specific (superset) phrasing is kept.
+///
+/// `protected` is the token-set of every required/preferred JD skill: a
+/// skill matching one is never dropped by the subset pass, since it's the
+/// canonical JD wording and what `coverage` counts. The looser variants
+/// *around* it collapse instead. A phrase with no distinguishing tokens
+/// (rare) is left as-is rather than risk merging it.
+fn dedup_and_cap_skills(skills: Vec<String>, max: usize, protected: &[Vec<String>]) -> Vec<String> {
+    // Pass 1: exact-key dedup, keeping the first (most JD-relevant).
+    let mut kept: Vec<(String, Vec<String>)> = Vec::new();
     for skill in skills {
         let key = keyword_key(&skill);
-        if !key.is_empty() {
-            if seen.contains(&key) {
-                continue;
-            }
-            seen.push(key);
+        if !key.is_empty() && kept.iter().any(|(_, k)| *k == key) {
+            continue;
         }
-        out.push(skill);
+        kept.push((skill, key));
+    }
+    // Pass 2: drop a skill whose tokens are a proper subset of another
+    // kept skill's — unless it's a protected JD keyword.
+    let mut out: Vec<String> = Vec::new();
+    for (i, (skill, key)) in kept.iter().enumerate() {
+        let subsumed = !key.is_empty()
+            && !protected.contains(key)
+            && kept.iter().enumerate().any(|(j, (_, other))| {
+                j != i && key.len() < other.len() && key.iter().all(|t| other.contains(t))
+            });
+        if !subsumed {
+            out.push(skill.clone());
+        }
     }
     out.truncate(max);
     out
@@ -981,6 +1025,56 @@ mod tests {
         // skill in the JD's words; "blockchain custody" backs to nothing.
         jd.ats_phrases = vec!["managing engineering".into(), "blockchain custody".into()];
         let mock = MockLlmClient::default();
+        // The model lists only "Rust", so the "Engineering management"
+        // concept the mirror phrase backs to is NOT already on the page.
+        mock.enqueue(
+            r#"{"summary":"Lead.",
+                "roles":[{"id":"role-1","bullets":[
+                  {"source_id":"bullet-1","text":"Led a team of 12 engineers across 3 squads"}
+                ]}],
+                "skills":["Rust"],
+                "projects":[]}"#,
+        );
+
+        let outcome = tailor_resume(
+            &test_ctx(&mock),
+            BuildId("001".into()),
+            JdId("x".into()),
+            &jd,
+            &sample_dataset(),
+            &sample_gap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let skills = &outcome.resume.skills_section.skills;
+        // The backed wording variant is surfaced for the ATS scan (its
+        // concept isn't otherwise on the page)...
+        assert!(
+            skills.iter().any(|s| s == "managing engineering"),
+            "got {skills:?}"
+        );
+        // ...and the unbacked phrase never reaches the page (backdoor shut).
+        assert!(!skills.iter().any(|s| s == "blockchain custody"));
+        // The mirror is recorded so the build is auditable.
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("mirrored") && w.contains("managing engineering"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mirror_is_skipped_when_its_concept_is_already_on_the_page() {
+        let mut jd = sample_jd();
+        jd.title = "Staff Architect".into();
+        jd.ats_phrases = vec!["managing engineering".into()];
+        let mock = MockLlmClient::default();
+        // This time the model lists "Engineering management" itself, so the
+        // concept IS on the page — the word-order variant would only read
+        // as keyword-stuffing and adds no coverage, so it's not mirrored.
         mock.enqueue(
             r#"{"summary":"Lead.",
                 "roles":[{"id":"role-1","bullets":[
@@ -1003,19 +1097,11 @@ mod tests {
         .unwrap();
 
         let skills = &outcome.resume.skills_section.skills;
-        // The backed wording variant is surfaced for the ATS scan...
+        assert!(skills.iter().any(|s| s == "Engineering management"));
+        // The redundant variant is gone.
         assert!(
-            skills.iter().any(|s| s == "managing engineering"),
+            !skills.iter().any(|s| s == "managing engineering"),
             "got {skills:?}"
-        );
-        // ...and the unbacked phrase never reaches the page (backdoor shut).
-        assert!(!skills.iter().any(|s| s == "blockchain custody"));
-        // The mirror is recorded so the build is auditable.
-        assert!(
-            outcome
-                .warnings
-                .iter()
-                .any(|w| w.contains("mirrored") && w.contains("managing engineering"))
         );
     }
 
@@ -1344,8 +1430,60 @@ mod tests {
             "Go".to_string(),
         ];
         // First survives the dupe; cap of 3 keeps the first three distinct.
-        let out = dedup_and_cap_skills(skills, 3);
+        let out = dedup_and_cap_skills(skills, 3, &[]);
         assert_eq!(out, vec!["Data Engineering", "Kubernetes", "Rust"]);
+    }
+
+    #[test]
+    fn skills_dedup_drops_a_token_subset_keeping_the_specific_one() {
+        // "remote-first" is a token-subset of "Remote-First Communication";
+        // listing both reads as keyword-stuffing, so the looser one goes.
+        let skills = vec![
+            "Remote-First Communication".to_string(),
+            "remote-first".to_string(),
+            "Rust".to_string(),
+        ];
+        let out = dedup_and_cap_skills(skills, 10, &[]);
+        assert_eq!(out, vec!["Remote-First Communication", "Rust"]);
+    }
+
+    #[test]
+    fn skills_dedup_orders_dont_matter_for_subset_collapse() {
+        // The subset can arrive first; the superset still wins.
+        let skills = vec![
+            "remote-first".to_string(),
+            "Remote-First Communication".to_string(),
+        ];
+        let out = dedup_and_cap_skills(skills, 10, &[]);
+        assert_eq!(out, vec!["Remote-First Communication"]);
+    }
+
+    #[test]
+    fn skills_dedup_never_drops_a_protected_jd_keyword() {
+        // If the JD's required keyword is the *subset* one, it must stay:
+        // it's the canonical wording coverage counts. Only the looser
+        // variant around it would be dropped, not this.
+        let protected = vec![keyword_key("remote-first")];
+        let skills = vec![
+            "remote-first".to_string(),
+            "Remote-First Communication".to_string(),
+        ];
+        let out = dedup_and_cap_skills(skills, 10, &protected);
+        // The protected subset survives; nothing subsumes the superset, so
+        // both remain (we never drop a protected keyword to thin the list).
+        assert_eq!(out, vec!["remote-first", "Remote-First Communication"]);
+    }
+
+    #[test]
+    fn skills_dedup_leaves_distinct_competencies_alone() {
+        // "backend engineering" and "data engineering" share only
+        // "engineering" — neither subsets the other, so both stay.
+        let skills = vec![
+            "backend engineering".to_string(),
+            "data engineering".to_string(),
+        ];
+        let out = dedup_and_cap_skills(skills, 10, &[]);
+        assert_eq!(out, vec!["backend engineering", "data engineering"]);
     }
 
     #[test]
