@@ -45,15 +45,25 @@ use crate::user::{Answer, AskError, Question, UserHandle};
 /// A leading question is one sentence; a single reworded bullet is short.
 const REPLY_BUDGET: u32 = 256;
 
-/// How many times the user may ask for another rewrite before the loop
-/// offers only take-it-or-keep-mine, so it always terminates.
-const MAX_REVISES: usize = 3;
+/// Loop caps for one strengthen session, sourced from config so they're
+/// tunable. `questions` bounds the interview (one opening question plus
+/// follow-ups on thin answers); `revises` bounds the rewrite-revision loop.
+/// Both exist only to guarantee termination, so any sane positive value
+/// works; `Default` carries the PRD's 3/3.
+#[derive(Debug, Clone, Copy)]
+pub struct InterviewLimits {
+    pub questions: usize,
+    pub revises: usize,
+}
 
-/// How many questions the interview may ask in total — one opening
-/// question plus follow-ups when an answer is too thin to write a strong,
-/// specific bullet from. Caps the conversation so it can't interrogate
-/// forever.
-const MAX_QUESTIONS: usize = 3;
+impl Default for InterviewLimits {
+    fn default() -> Self {
+        Self {
+            questions: 3,
+            revises: 3,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StrengthenError {
@@ -283,6 +293,7 @@ pub async fn strengthen_bullets(
     targets: &[StrengthenTarget],
     user: &dyn UserHandle,
     ctx: &AgentContext<'_>,
+    limits: InterviewLimits,
 ) -> Result<usize, AskError> {
     let mut changed = 0;
     let mut seen: Vec<BulletId> = Vec::new();
@@ -308,7 +319,7 @@ pub async fn strengthen_bullets(
         // question) once it has enough — capped so it never interrogates
         // forever. A blank answer ends the interview early.
         let mut transcript: Vec<QnA> = Vec::new();
-        for turn in 0..MAX_QUESTIONS {
+        for turn in 0..limits.questions {
             let question = match StrengthenInterviewAgent
                 .run(
                     ctx,
@@ -357,7 +368,7 @@ pub async fn strengthen_bullets(
         }
 
         // Format their facts into a crisp line they refine and approve.
-        let final_text = polish(ctx, &text, &facts, user).await?;
+        let final_text = polish(ctx, &text, &facts, user, limits.revises).await?;
         replace_bullet_text(dataset, &target.bullet_id, &final_text);
         changed += 1;
     }
@@ -373,6 +384,7 @@ async fn polish(
     original: &str,
     answer: &str,
     user: &dyn UserHandle,
+    max_revises: usize,
 ) -> Result<String, AskError> {
     let mut notes: Vec<String> = Vec::new();
     // First rewrite. If it can't be produced or trips the digit guard, the
@@ -381,7 +393,7 @@ async fn polish(
         return Ok(answer.to_string());
     };
 
-    let mut revises_left = MAX_REVISES;
+    let mut revises_left = max_revises;
     loop {
         // If the rewrite is just their words back, there's nothing to weigh.
         if rewrite == answer {
@@ -589,9 +601,15 @@ mod tests {
         user.answer(Answer::Choice(0)); // "Use this wording"
 
         let targets = [target("bullet-1", ObjectionKind::VagueVerb)];
-        let changed = strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let changed = strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(changed, 1);
         assert_eq!(
@@ -619,9 +637,15 @@ mod tests {
         user.answer(Answer::Choice(0)); // "Use this wording" (the revised line)
 
         let targets = [target("bullet-1", ObjectionKind::VagueVerb)];
-        strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             dataset.roles[0].bullets[0].text,
@@ -643,9 +667,15 @@ mod tests {
         user.answer(Answer::Choice(2)); // "Keep my own wording" (Use / Revise / Keep)
 
         let targets = [target("bullet-1", ObjectionKind::VagueVerb)];
-        strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             dataset.roles[0].bullets[0].text,
@@ -669,9 +699,15 @@ mod tests {
         // offered. If the code asked, ScriptedUser would error.
 
         let targets = [target("bullet-1", ObjectionKind::GenericPhrasing)];
-        strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             dataset.roles[0].bullets[0].text,
@@ -689,9 +725,15 @@ mod tests {
         user.answer(Answer::Text("   ".into())); // only supported it — leave honest
 
         let targets = [target("bullet-1", ObjectionKind::VagueVerb)];
-        let changed = strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let changed = strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(changed, 0);
         assert_eq!(dataset, before);
@@ -710,9 +752,15 @@ mod tests {
         user.answer(Answer::Choice(0)); // Use this wording
 
         let targets = [target("bullet-1", ObjectionKind::GenericPhrasing)];
-        strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             dataset.roles[0].bullets[0].text,
@@ -731,9 +779,15 @@ mod tests {
         let user = ScriptedUser::new();
 
         let targets = [target("bullet-99", ObjectionKind::VagueVerb)];
-        let changed = strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let changed = strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(changed, 0);
         assert!(mock.requests().is_empty());
@@ -757,9 +811,15 @@ mod tests {
         user.answer(Answer::Choice(0)); // Use this wording
 
         let targets = [target("bullet-1", ObjectionKind::GenericPhrasing)];
-        let changed = strengthen_bullets(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let changed = strengthen_bullets(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            InterviewLimits::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(changed, 1);
         assert_eq!(

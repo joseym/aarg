@@ -119,6 +119,39 @@ impl crate::agent::ModelResolver for AnthropicConfig {
     }
 }
 
+/// Tunable loop limits for `aarg tailor`. Each has a sensible default
+/// (the PRD's), so an absent `[limits]` table changes nothing — the table
+/// only exists for users who want a longer (or cheaper) loop. Resolved by
+/// hand-written `Default` rather than serde so a partial `[limits]` table
+/// still fills the rest from these values, not zeros.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Limits {
+    /// Hard cap on adversarial revision passes past the first draft
+    /// (PRD §6.4's anti-oscillation cap; default 2).
+    pub revisions: usize,
+    /// A draft scoring at least this is accepted without revising — raise
+    /// it to push the loop to keep trying, lower it to stop sooner.
+    pub acceptable_score: f32,
+    /// Max questions the strengthen interview may ask per bullet (one
+    /// opening question plus follow-ups on thin answers; default 3).
+    pub strengthen_questions: usize,
+    /// Max times the user may ask for another strengthen rewrite before the
+    /// loop offers only take-it-or-keep-mine (default 3).
+    pub strengthen_revises: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            revisions: 2,
+            acceptable_score: 0.85,
+            strengthen_questions: 3,
+            strengthen_revises: 3,
+        }
+    }
+}
+
 /// The contents of `config.toml`. Any field missing from the file falls
 /// back to its default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -126,6 +159,7 @@ impl crate::agent::ModelResolver for AnthropicConfig {
 pub struct Config {
     pub provider: Provider,
     pub anthropic: AnthropicConfig,
+    pub limits: Limits,
 }
 
 impl Config {
@@ -210,6 +244,7 @@ mod tests {
                 model: "claude-haiku-4-5".to_string(),
                 ..AnthropicConfig::default()
             },
+            ..Config::default()
         };
         config.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), config);
@@ -233,9 +268,31 @@ mod tests {
                     "claude-opus-4-8".to_string(),
                 )]),
             },
+            ..Config::default()
         };
         config.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn limits_default_to_the_prd_values() {
+        let limits = Limits::default();
+        assert_eq!(limits.revisions, 2);
+        assert_eq!(limits.strengthen_questions, 3);
+        assert_eq!(limits.strengthen_revises, 3);
+    }
+
+    #[test]
+    fn a_partial_limits_table_keeps_other_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Only one limit set; the rest must fall back to their defaults,
+        // not to zero.
+        std::fs::write(&path, "[limits]\nrevisions = 5\n").unwrap();
+        let config = Config::load_from(&path).unwrap();
+        assert_eq!(config.limits.revisions, 5);
+        assert_eq!(config.limits.strengthen_questions, 3);
+        assert_eq!(config.limits.acceptable_score, 0.85);
     }
 
     #[test]

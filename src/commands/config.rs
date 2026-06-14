@@ -61,5 +61,12 @@ pub async fn run() -> Result<(), CliError> {
             println!("  {agent_id}: {model}");
         }
     }
+
+    let limits = &config.limits;
+    println!("limits:");
+    println!("  revisions:            {}", limits.revisions);
+    println!("  acceptable score:     {:.2}", limits.acceptable_score);
+    println!("  strengthen questions: {}", limits.strengthen_questions);
+    println!("  strengthen revises:   {}", limits.strengthen_revises);
     Ok(())
 }

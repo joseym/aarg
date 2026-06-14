@@ -31,18 +31,12 @@ use crate::review::{
     AdversarialReport, AdversarialReviewerAgent, Objection, ObjectionKind, ObjectionTarget,
     ReviewInput, Severity,
 };
-use crate::strengthen::{self, StrengthenTarget};
+use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
 use crate::verify::{unbacked_keywords, verify_keywords};
 use crate::voice;
-
-/// How many revision passes the loop may take past the first draft.
-const MAX_REVISIONS: usize = 2;
-
-/// A draft scoring at least this well is done — no revision attempted.
-const ACCEPTABLE_SCORE: f32 = 0.85;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let mut dataset = store::load()?;
@@ -55,6 +49,15 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     };
     // Tailoring runs on the smart tier; show/record that model.
     let model = ctx.model.resolve("tailoring_v1", ModelTier::Smart);
+
+    // Loop limits come from config (with PRD defaults), so a longer or
+    // cheaper run is a config edit, not a recompile.
+    let max_revisions = config.limits.revisions;
+    let acceptable_score = config.limits.acceptable_score;
+    let interview_limits = InterviewLimits {
+        questions: config.limits.strengthen_questions,
+        revises: config.limits.strengthen_revises,
+    };
 
     let requirements = load_requirements(&path, &ctx).await?;
 
@@ -293,6 +296,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     &strengthen_targets,
                     user.as_ref(),
                     &ctx,
+                    interview_limits,
                 )
                 .await?;
                 if changed > 0 {
@@ -327,10 +331,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         }
     }
 
-    for iteration in 1..=MAX_REVISIONS {
+    for iteration in 1..=max_revisions {
         // Stop early when the draft is good enough or has nothing major
         // left to fix — no point spending tokens to polish a strong draft.
-        if best.score >= ACCEPTABLE_SCORE || !best.report.has_blocking_or_major() {
+        if best.score >= acceptable_score || !best.report.has_blocking_or_major() {
             break;
         }
         let objections: Vec<String> = best.report.actionable().map(format_objection).collect();
@@ -400,7 +404,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     let voiced_eval = evaluate(
                         &ctx,
                         &build.dir,
-                        MAX_REVISIONS + 1,
+                        max_revisions + 1,
                         voiced,
                         &requirements,
                         &dataset,
