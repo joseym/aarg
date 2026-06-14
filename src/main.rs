@@ -3,8 +3,8 @@
 //! library crate so it stays testable.
 
 use aarg::cli::{
-    Cli, Command, DatasetCommand, JdCommand, LlmCommand, RolesCommand, SkillsCommand, TraceCommand,
-    VoiceCommand,
+    Cli, Command, DatasetCommand, HistoryCommand, JdCommand, LlmCommand, RolesCommand,
+    SkillsCommand, TraceCommand, VoiceCommand,
 };
 use clap::Parser;
 
@@ -29,6 +29,11 @@ async fn main() -> miette::Result<()> {
         } => aarg::commands::jd::parse(path, json).await?,
         Command::Gap { jd, json } => aarg::commands::gap::run(jd, json).await?,
         Command::Tailor { jd } => aarg::commands::tailor::run(jd).await?,
+        Command::History { command: None } => aarg::commands::history::list()?,
+        Command::History {
+            command: Some(HistoryCommand::Rm { ids }),
+        } => aarg::commands::history::remove(ids).await?,
+        Command::Diff { from, to } => aarg::commands::history::diff(from, to)?,
         Command::Skills {
             command: SkillsCommand::Verify,
         } => aarg::commands::skills::verify().await?,

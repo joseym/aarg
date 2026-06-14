@@ -63,6 +63,18 @@ pub enum Command {
         #[command(subcommand)]
         command: RolesCommand,
     },
+    /// List past builds (or `history rm <id>` to delete one)
+    History {
+        #[command(subcommand)]
+        command: Option<HistoryCommand>,
+    },
+    /// Compare two builds field by field
+    Diff {
+        /// The earlier build id (e.g. 020)
+        from: String,
+        /// The later build id (e.g. 021)
+        to: String,
+    },
     /// Inspect recorded agent runs
     Trace {
         #[command(subcommand)]
@@ -90,6 +102,16 @@ pub enum DatasetCommand {
     Validate,
     /// Open the dataset in $EDITOR, then re-validate and save
     Edit,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HistoryCommand {
+    /// Delete one or more builds and all their artifacts
+    Rm {
+        /// Build ids to delete (e.g. 019 020)
+        #[arg(required = true)]
+        ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -271,6 +293,39 @@ mod tests {
                 command: SkillsCommand::Verify
             }
         ));
+    }
+
+    #[test]
+    fn history_parses_bare_and_with_rm() {
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "history"]).unwrap().command,
+            Command::History { command: None }
+        ));
+        let cmd = Cli::try_parse_from(["aarg", "history", "rm", "019", "020"])
+            .unwrap()
+            .command;
+        match cmd {
+            Command::History {
+                command: Some(HistoryCommand::Rm { ids }),
+            } => assert_eq!(ids, vec!["019", "020"]),
+            other => panic!("expected history rm, got {other:?}"),
+        }
+        // `rm` with no ids is a usage error, not an empty delete.
+        assert!(Cli::try_parse_from(["aarg", "history", "rm"]).is_err());
+    }
+
+    #[test]
+    fn diff_parses_two_build_ids() {
+        let cmd = Cli::try_parse_from(["aarg", "diff", "020", "021"])
+            .unwrap()
+            .command;
+        match cmd {
+            Command::Diff { from, to } => {
+                assert_eq!(from, "020");
+                assert_eq!(to, "021");
+            }
+            other => panic!("expected diff, got {other:?}"),
+        }
     }
 
     #[test]

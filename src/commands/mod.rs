@@ -9,6 +9,7 @@
 pub mod config;
 pub mod dataset;
 pub mod gap;
+pub mod history;
 pub mod ingest;
 pub mod init;
 pub mod jd;
@@ -238,6 +239,9 @@ pub enum CliError {
 
     #[error(transparent)]
     Build(#[from] BuildError),
+
+    #[error(transparent)]
+    History(#[from] crate::history::HistoryError),
 
     #[error(transparent)]
     #[diagnostic(help("save the posting text to a file and pass that path (or pipe it with `-`)"))]

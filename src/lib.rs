@@ -19,6 +19,7 @@ pub mod enrich;
 pub mod fetch;
 pub mod gap;
 pub mod guide;
+pub mod history;
 pub mod ingest;
 pub mod jd;
 pub mod keywords;
