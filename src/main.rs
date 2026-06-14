@@ -29,6 +29,7 @@ async fn main() -> miette::Result<()> {
         } => aarg::commands::jd::parse(path, json).await?,
         Command::Gap { jd, json } => aarg::commands::gap::run(jd, json).await?,
         Command::Tailor { jd } => aarg::commands::tailor::run(jd).await?,
+        Command::Attack { build } => aarg::commands::attack::run(build).await?,
         Command::History { command: None } => aarg::commands::history::list()?,
         Command::History {
             command: Some(HistoryCommand::Rm { ids }),

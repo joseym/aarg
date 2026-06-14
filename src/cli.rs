@@ -63,6 +63,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RolesCommand,
     },
+    /// Re-review a saved build with the adversarial reviewer (no re-tailor)
+    Attack {
+        /// Build id to re-review (e.g. 021)
+        build: String,
+    },
     /// List past builds (or `history rm <id>` to delete one)
     History {
         #[command(subcommand)]
@@ -316,6 +321,19 @@ mod tests {
                 command: Some(HistoryCommand::Rm { ids }),
             } if ids.is_empty()
         ));
+    }
+
+    #[test]
+    fn attack_parses_a_build_id() {
+        match Cli::try_parse_from(["aarg", "attack", "021"])
+            .unwrap()
+            .command
+        {
+            Command::Attack { build } => assert_eq!(build, "021"),
+            other => panic!("expected attack, got {other:?}"),
+        }
+        // A build id is required.
+        assert!(Cli::try_parse_from(["aarg", "attack"]).is_err());
     }
 
     #[test]

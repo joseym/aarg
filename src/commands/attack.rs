@@ -1,0 +1,95 @@
+//! `aarg attack <build>` (FR-3.7) — re-run the adversarial reviewer on a
+//! build's saved draft, without re-tailoring.
+//!
+//! The reviewer is non-deterministic and reads the *current* dataset, so a
+//! second pass is a useful second opinion: after backing a skill or
+//! dismissing an objection, attack tells you what the reviewer thinks now —
+//! for the cost of one review call, not a full Opus tailor + render loop.
+//! It's a read-only re-look: the build's stored report is left untouched.
+
+use crate::agent::{Agent, AgentContext, ModelTier};
+use crate::ats::AtsReport;
+use crate::commands::tailor::format_objection;
+use crate::commands::{CliError, configured_client};
+use crate::dataset::store;
+use crate::jd::JobRequirements;
+use crate::review::{AdversarialReviewerAgent, ReviewInput, Severity};
+use crate::style::{self, Spinner};
+use crate::tailor::TailoredResume;
+use crate::trace::Tracer;
+
+pub async fn run(build: String) -> Result<(), CliError> {
+    // The draft and the JD it was tailored for; coverage is reused from the
+    // stored ATS report (the draft hasn't changed, so coverage hasn't).
+    let resume: TailoredResume = crate::history::read_artifact(&build, "canonical.json")?;
+    let jd: JobRequirements = crate::history::read_artifact(&build, "jd.json")?;
+    let ats: AtsReport = crate::history::read_artifact(&build, "ats_report.json")?;
+
+    let dataset = store::load()?;
+    let (client, config) = configured_client().await?;
+    let tracer = Tracer::to_default_dir()?;
+    let ctx = AgentContext {
+        llm: &client,
+        model: &config.anthropic,
+        tracer: &tracer,
+    };
+    let model = ctx
+        .model
+        .resolve("adversarial_reviewer_v1", ModelTier::Smart);
+
+    let sp = Spinner::start(format!("re-reviewing build {build} (no re-tailor)"));
+    let run = AdversarialReviewerAgent
+        .run(
+            &ctx,
+            ReviewInput {
+                draft: resume,
+                jd,
+                dataset: dataset.clone(),
+            },
+        )
+        .await?;
+    sp.finish(style::done("re-reviewed"));
+
+    let report = run.output;
+    // Objections the user has already accepted are filtered from the view,
+    // same as a tailor run; the honest score still uses the full report.
+    let visible = report.without_dismissed(&dataset.metadata.dismissed_objections);
+    let score = 0.6 * report.overall_score + 0.4 * ats.coverage;
+
+    if !report.persona_notes.is_empty() {
+        eprintln!(
+            "\n{}",
+            style::bold(format!("reviewer verdict ({:.2})", report.overall_score))
+        );
+        eprintln!("  {}", report.persona_notes);
+    }
+    eprintln!(
+        "  {}  {}",
+        style::cyan(format!("score {score:.2}")),
+        style::dim(format!("(review · {:.0}% coverage)", ats.coverage * 100.0))
+    );
+
+    if visible.objections.is_empty() {
+        eprintln!("  {}", style::green("no open objections"));
+    } else {
+        eprintln!(
+            "\n{}",
+            style::bold(format!("{} objection(s)", visible.objections.len()))
+        );
+        for objection in &visible.objections {
+            let line = format_objection(objection);
+            // Blocking/major stand out; minors are dimmed.
+            match objection.severity {
+                Severity::Blocking | Severity::Major => {
+                    eprintln!("  {} {line}", style::yellow("•"))
+                }
+                Severity::Minor => eprintln!("  {}", style::dim(format!("· {line}"))),
+            }
+        }
+    }
+
+    if let Some(cost) = crate::pricing::cost_usd(model, &run.usage, &config.prices) {
+        eprintln!("\n{}", style::dim(format!("~${cost:.2} (review only)")));
+    }
+    Ok(())
+}

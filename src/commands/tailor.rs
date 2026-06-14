@@ -694,8 +694,8 @@ fn iteration_line(label: &str, eval: &Evaluation) -> String {
     )
 }
 
-/// One objection as a single revision-prompt line.
-fn format_objection(objection: &Objection) -> String {
+/// One objection as a single revision-prompt line. Shared with `attack`.
+pub(crate) fn format_objection(objection: &Objection) -> String {
     let target = match &objection.target {
         ObjectionTarget::Bullet(id) => id.0.clone(),
         ObjectionTarget::Summary => "summary".to_string(),

@@ -36,6 +36,20 @@ pub enum HistoryError {
 
     #[error("no build {id:?} in the history")]
     NotFound { id: String },
+
+    #[error("build {id:?} is missing or has an unreadable {artifact}")]
+    ReadArtifact { id: String, artifact: String },
+}
+
+/// Read one artifact of a build by id, with a typed error naming what was
+/// missing — for callers (like `attack`) that need a specific file rather
+/// than a whole summary.
+pub fn read_artifact<T: DeserializeOwned>(id: &str, artifact: &str) -> Result<T, HistoryError> {
+    let dir = builds_root()?.join(id);
+    read_json(&dir, artifact).ok_or_else(|| HistoryError::ReadArtifact {
+        id: id.to_string(),
+        artifact: artifact.to_string(),
+    })
 }
 
 /// The combined score the loop optimizes — mirrors `tailor::combined_score`

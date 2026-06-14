@@ -6,6 +6,7 @@
 //! place in the codebase where module errors are gathered into one type —
 //! everywhere below, errors stay module-specific.
 
+pub mod attack;
 pub mod config;
 pub mod dataset;
 pub mod gap;
