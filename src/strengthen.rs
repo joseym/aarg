@@ -264,6 +264,7 @@ Write ONE bullet that:
 - Leads with a strong, precise verb and states the concrete accomplishment.
 - Uses ONLY facts present in what the candidate said or in the original bullet. Add nothing — no number, no percentage, no scope, no team size, no level of ownership they did not state. If they said "helped with" or "supported", keep it a contribution; do not promote it to "led" or "owned".
 - Stays in plain, credible language they could defend in an interview. No buzzwords, no inflation, no invented metrics.
+- Uses no em-dashes ("—") — they read as machine-written. Join clauses with a comma, with "and", or as a second sentence; a colon is fine where it fits.
 
 If they gave revision notes, follow them — but the no-inflation rules above still bind, even if the note asks you to make the claim bigger.
 

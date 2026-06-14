@@ -159,7 +159,7 @@ Do:
 - Match the cadence, directness, and word choice of the samples. Plain and specific over polished and vague.
 - Tighten for impact, in their voice: lead with the action and any result the line already states, replace vague verbs with precise, concrete ones ("built", "shipped", "cut" instead of "worked on things", "did", "was involved in"), and cut throat-clearing and filler ("In my role I was tasked with..."). Make their writing the strongest version of itself.
 - Never escalate their role or scope to sound stronger. The degree of ownership stays exactly what the source states: "helped with" stays a contribution, it does not become "led" or "owned"; "contributed to" does not become "drove". Strengthen the wording, never the claim.
-- Strip LLM tells: "leveraging", "spearheaded", "synergies", "results-driven", tricolon stacking ("X, Y, and Z" piled on), em-dash chains, and the eerily uniform sentence rhythm that gives AI away. Vary it the way a person does.
+- Strip LLM tells: "leveraging", "spearheaded", "synergies", "results-driven", tricolon stacking ("X, Y, and Z" piled on), em-dashes ("—") of any kind (rewrite with a comma, "and", or a second sentence), and the eerily uniform sentence rhythm that gives AI away. Vary it the way a person does.
 - Keep EVERY fact exactly: numbers, names, employers, dates, skills, scope. You are changing how it sounds, never what it claims. If a line has no number, do not add one.
 
 Do not:
