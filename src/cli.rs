@@ -96,6 +96,8 @@ pub enum DatasetCommand {
 pub enum SkillsCommand {
     /// Interview: back unverified skills with evidence (or remove them)
     Verify,
+    /// Collapse redundant skills: auto-remove near-duplicates, then pick off the rest
+    Dedup,
 }
 
 #[derive(Debug, Subcommand)]
@@ -267,6 +269,18 @@ mod tests {
                 .command,
             Command::Skills {
                 command: SkillsCommand::Verify
+            }
+        ));
+    }
+
+    #[test]
+    fn skills_dedup_parses() {
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "skills", "dedup"])
+                .unwrap()
+                .command,
+            Command::Skills {
+                command: SkillsCommand::Dedup
             }
         ));
     }

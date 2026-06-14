@@ -32,6 +32,9 @@ async fn main() -> miette::Result<()> {
         Command::Skills {
             command: SkillsCommand::Verify,
         } => aarg::commands::skills::verify().await?,
+        Command::Skills {
+            command: SkillsCommand::Dedup,
+        } => aarg::commands::skills::dedup().await?,
         Command::Voice {
             command: VoiceCommand::Add { context },
         } => aarg::commands::voice::add(context).await?,

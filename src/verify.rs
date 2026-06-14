@@ -478,9 +478,29 @@ pub fn unbacked_keywords(
     // its seniority variants) as a verifiable skill.
     let title_key = keyword_key(&jd.title);
 
+    // Concepts an evidence-backed skill already covers. A candidate whose
+    // tokens are a subset of one of these is *already backed* (the mirror
+    // surfaces its wording, ats.rs credits it), so offering it would only
+    // mint a near-duplicate skill — exactly the bloat the tailor dedup
+    // then has to clean up. Same token-subset test the mirror uses.
+    let backed_keys: Vec<Vec<String>> = dataset
+        .skills
+        .skills
+        .iter()
+        .filter(|s| !s.evidence.is_empty())
+        .map(|s| keyword_key(&s.canonical_name))
+        .collect();
+
     let mut consider = |name: &str, category: SkillCategory| {
         let key = keyword_key(name);
         if key.is_empty() || key == title_key || declined.contains(&key) || seen.contains(&key) {
+            return;
+        }
+        // Already covered by a recorded skill's broader wording → not a gap.
+        if backed_keys
+            .iter()
+            .any(|bk| key.iter().all(|t| bk.contains(t)))
+        {
             return;
         }
         seen.push(key);
@@ -782,6 +802,81 @@ fn remove_skill(dataset: &mut ResumeDataset, id: &SkillId) {
     }
     for achievement in &mut dataset.achievements {
         achievement.skill_ids.retain(|s| s != id);
+    }
+}
+
+/// One redundant skill the dedup dropped, and the kept skill that already
+/// covers it — the auditable unit of a prune.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrunedSkill {
+    pub removed: String,
+    pub kept: String,
+}
+
+/// Remove recorded skills another recorded skill already subsumes: an exact
+/// normalized duplicate ("data engineering" / "Data Engineering"), or one
+/// whose tokens are a *proper subset* of another's ("remote-first" under
+/// "Remote-First Communication"). The more specific phrasing is kept, and
+/// only when that kept skill is itself evidence-backed, so the concept
+/// stays on the page. References are cleaned for every removal. Returns
+/// what was pruned, in removal order.
+///
+/// Deterministic and conservative on purpose: it never touches synonym
+/// pairs that aren't token-subsets ("operational excellence" vs
+/// "engineering excellence") — judging those needs a person, which is what
+/// the `skills dedup` command's manual pass is for.
+pub fn dedup_skills(dataset: &mut ResumeDataset) -> Vec<PrunedSkill> {
+    // Snapshot each skill's id, normalized key, name, and whether it's
+    // backed — so the comparison reads from a stable view while we decide.
+    let snapshot: Vec<(SkillId, Vec<String>, String, bool)> = dataset
+        .skills
+        .skills
+        .iter()
+        .map(|s| {
+            (
+                s.id.clone(),
+                keyword_key(&s.canonical_name),
+                s.canonical_name.clone(),
+                !s.evidence.is_empty(),
+            )
+        })
+        .collect();
+
+    let mut removed_ids: Vec<SkillId> = Vec::new();
+    let mut pruned: Vec<PrunedSkill> = Vec::new();
+    for (i, (id_a, key_a, name_a, _)) in snapshot.iter().enumerate() {
+        if key_a.is_empty() || removed_ids.contains(id_a) {
+            continue;
+        }
+        for (j, (id_b, key_b, name_b, backed_b)) in snapshot.iter().enumerate() {
+            if i == j || !backed_b || removed_ids.contains(id_b) {
+                continue;
+            }
+            let subset = key_a.iter().all(|t| key_b.contains(t));
+            let removable = (subset && key_a.len() < key_b.len()) // proper subset
+                || (*key_a == *key_b && i > j); // exact dup: keep the first
+            if removable {
+                removed_ids.push(id_a.clone());
+                pruned.push(PrunedSkill {
+                    removed: name_a.clone(),
+                    kept: name_b.clone(),
+                });
+                break;
+            }
+        }
+    }
+    for id in &removed_ids {
+        remove_skill(dataset, id);
+    }
+    pruned
+}
+
+/// Remove the named skills (by id) with full reference cleanup — the
+/// manual half of `skills dedup`, where a person picks redundant synonyms
+/// the deterministic pass can't safely judge. Unknown ids are ignored.
+pub fn remove_skills(dataset: &mut ResumeDataset, ids: &[SkillId]) {
+    for id in ids {
+        remove_skill(dataset, id);
     }
 }
 
@@ -1356,5 +1451,148 @@ mod tests {
         assert_eq!(parse_years(" 2.5 years "), Some(2.5));
         assert_eq!(parse_years(""), None);
         assert_eq!(parse_years("a while"), None);
+    }
+
+    /// A dataset with one role and the given skills (name, evidence-backed?).
+    fn dataset_with_skill_list(skills: &[(&str, bool)]) -> ResumeDataset {
+        let mut dataset = ResumeDataset::new(Contact {
+            full_name: "Ada".into(),
+            email: "ada@example.com".into(),
+            phone: None,
+            location: None,
+            links: Vec::new(),
+        });
+        dataset.roles.push(Role {
+            id: RoleId("role-1".into()),
+            company: "Acme".into(),
+            title: "Director".into(),
+            start: YearMonth {
+                year: 2019,
+                month: 4,
+            },
+            end: None,
+            location: None,
+            employment_type: EmploymentType::FullTime,
+            bullets: Vec::new(),
+            skill_ids: Vec::new(),
+            context: None,
+        });
+        for (i, (name, evidenced)) in skills.iter().enumerate() {
+            let id = SkillId(format!("skill-{}", i + 1));
+            dataset.skills.skills.push(Skill {
+                id: id.clone(),
+                canonical_name: (*name).into(),
+                aliases: Vec::new(),
+                category: SkillCategory::Domain,
+                proficiency: Proficiency::Proficient,
+                years: None,
+                last_used: None,
+                evidence: if *evidenced {
+                    vec![EvidenceRef::Role(RoleId("role-1".into()))]
+                } else {
+                    Vec::new()
+                },
+                verified: false,
+                verified_at: None,
+            });
+            dataset.skills.aliases.insert(name.to_lowercase(), id);
+        }
+        dataset
+    }
+
+    #[test]
+    fn unbacked_keywords_skips_a_concept_a_backed_skill_already_covers() {
+        // A recorded, evidence-backed skill whose tokens cover "remote-first".
+        let dataset = dataset_with_skill_list(&[("Remote-First Communication", true)]);
+        let gap = GapReport {
+            matched: Vec::new(),
+            weak: Vec::new(),
+            unknown: Vec::new(),
+        };
+        // "remote-first" is already covered (subset of the backed skill);
+        // "Kubernetes" is a genuine gap.
+        let jd = jd_with_phrases(&["remote-first", "Kubernetes"]);
+        let names: Vec<String> = unbacked_keywords(&dataset, &jd, &gap)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["Kubernetes"]);
+    }
+
+    #[test]
+    fn an_unbacked_skill_does_not_cover_a_concept() {
+        // The covering skill has NO evidence, so it can't suppress the
+        // candidate — the user still gets to back the concept.
+        let dataset = dataset_with_skill_list(&[("Remote-First Communication", false)]);
+        let gap = GapReport {
+            matched: Vec::new(),
+            weak: Vec::new(),
+            unknown: Vec::new(),
+        };
+        let jd = jd_with_phrases(&["remote-first"]);
+        let names: Vec<String> = unbacked_keywords(&dataset, &jd, &gap)
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["remote-first"]);
+    }
+
+    #[test]
+    fn dedup_removes_a_token_subset_keeping_the_backed_superset() {
+        let mut dataset = dataset_with_skill_list(&[
+            ("Remote-First Communication", true),
+            ("remote-first", true),
+        ]);
+        let pruned = dedup_skills(&mut dataset);
+
+        let names: Vec<String> = dataset
+            .skills
+            .skills
+            .iter()
+            .map(|s| s.canonical_name.clone())
+            .collect();
+        assert_eq!(names, vec!["Remote-First Communication"]);
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].removed, "remote-first");
+        assert_eq!(pruned[0].kept, "Remote-First Communication");
+        // The alias for the removed skill is cleaned up too.
+        assert!(!dataset.skills.aliases.contains_key("remote-first"));
+    }
+
+    #[test]
+    fn dedup_collapses_an_exact_normalized_duplicate() {
+        let mut dataset =
+            dataset_with_skill_list(&[("Data Engineering", true), ("data engineering", true)]);
+        let pruned = dedup_skills(&mut dataset);
+        // Exact key dup: the first (kept) survives, the later one goes.
+        assert_eq!(dataset.skills.skills.len(), 1);
+        assert_eq!(dataset.skills.skills[0].canonical_name, "Data Engineering");
+        assert_eq!(pruned.len(), 1);
+    }
+
+    #[test]
+    fn dedup_leaves_non_subset_synonyms_alone() {
+        // Share only "excellence" — neither subsets the other, so the
+        // deterministic pass keeps both (a person decides via the manual pass).
+        let mut dataset = dataset_with_skill_list(&[
+            ("operational excellence", true),
+            ("engineering excellence", true),
+        ]);
+        let pruned = dedup_skills(&mut dataset);
+        assert!(pruned.is_empty());
+        assert_eq!(dataset.skills.skills.len(), 2);
+    }
+
+    #[test]
+    fn dedup_keeps_a_subset_when_the_only_superset_is_unbacked() {
+        // The superset has no evidence, so removing the subset would drop
+        // the concept off the page entirely — keep both instead.
+        let mut dataset = dataset_with_skill_list(&[
+            ("Remote-First Communication", false),
+            ("remote-first", true),
+        ]);
+        let pruned = dedup_skills(&mut dataset);
+        assert!(pruned.is_empty());
+        assert_eq!(dataset.skills.skills.len(), 2);
     }
 }
