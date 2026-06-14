@@ -32,6 +32,7 @@ use crate::review::{
     ReviewInput, Severity,
 };
 use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
+use crate::style::{self, Spinner};
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
@@ -62,8 +63,20 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
 
     let requirements = load_requirements(&path, &ctx).await?;
 
-    eprintln!("analyzing the gap...");
+    eprintln!(
+        "\n{}",
+        style::bold(format!("{} @ {}", requirements.title, requirements.company))
+    );
+    eprintln!("{}", style::dim(format!("tailoring on {model}")));
+
+    let sp = Spinner::start("analyzing the gap");
     let mut gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+    sp.finish(style::done(format!(
+        "gap analyzed: {} matched, {} weak, {} unknown",
+        gap.matched.len(),
+        gap.weak.len(),
+        gap.unknown.len()
+    )));
 
     // When a person is driving, offer to back the JD keywords the
     // dataset can't yet support — unmatched skills *and* ATS phrases the
@@ -94,11 +107,12 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     // Only a newly added skill changes the gap; bare
                     // declines just get remembered, no re-analysis needed.
                     if outcome.verified > 0 {
-                        eprintln!(
-                            "recorded {} new skill(s); re-analyzing the gap...",
+                        let sp = Spinner::start(format!(
+                            "recorded {} new skill(s); re-analyzing the gap",
                             outcome.verified
-                        );
+                        ));
                         gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+                        sp.finish(style::done("gap re-analyzed"));
                     }
                 }
             }
@@ -137,8 +151,11 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
                     eprintln!(
-                        "added {} bullet(s) across {} role(s); tailoring with the fuller history...",
-                        outcome.bullets_added, outcome.roles_touched
+                        "{}",
+                        style::done(format!(
+                            "added {} bullet(s) across {} role(s)",
+                            outcome.bullets_added, outcome.roles_touched
+                        ))
                     );
                 }
             }
@@ -149,11 +166,9 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let jd_id = JdId(slug(&requirements.company, &requirements.title));
     builds::write_json(&build.dir, "jd.json", &requirements)?;
     builds::write_json(&build.dir, "gap_report.json", &gap)?;
+    eprintln!("{}", style::dim(format!("build {}", build.id.0)));
 
-    eprintln!(
-        "build {}: tailoring for {} @ {} with {model}...",
-        build.id.0, requirements.title, requirements.company
-    );
+    let sp = Spinner::start("tailoring the first draft");
     let first = tailor_resume(
         &ctx,
         build.id.clone(),
@@ -164,8 +179,9 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         None,
     )
     .await?;
+    sp.finish(style::done("first draft tailored"));
     for warning in &first.warnings {
-        eprintln!("warning: {warning}");
+        eprintln!("{} {warning}", style::yellow("warning:"));
     }
 
     let mut total = TokenUsage::default();
@@ -183,12 +199,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     .await?;
     add_usage(&mut total, best.review_usage);
     let starting_score = best.score;
-    eprintln!(
-        "iteration 0: score {:.2} ({} objections, {:.0}% coverage)",
-        best.score,
-        best.report.objections.len(),
-        best.ats_report.coverage * 100.0
-    );
+    eprintln!("{}", iteration_line("iteration 0", &best));
 
     // Metric capture: the reviewer flags bullets that state an outcome
     // without a number, but the loop can't invent one (the digit-runs
@@ -227,7 +238,8 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                 if added > 0 {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
-                    eprintln!("added {added} metric(s); re-tailoring with them...");
+                    let sp =
+                        Spinner::start(format!("added {added} metric(s); re-tailoring with them"));
                     let retailored = tailor_resume(
                         &ctx,
                         build.id.clone(),
@@ -238,6 +250,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                         None,
                     )
                     .await?;
+                    sp.finish(style::done(format!("folded in {added} metric(s)")));
                     add_usage(&mut total, retailored.usage);
                     best = evaluate(
                         &ctx,
@@ -250,7 +263,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     )
                     .await?;
                     add_usage(&mut total, best.review_usage);
-                    eprintln!("iteration 0 (with metrics): score {:.2}", best.score);
+                    eprintln!("{}", iteration_line("iteration 0 (with metrics)", &best));
                 }
             }
         }
@@ -303,7 +316,9 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                 if changed > 0 {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
-                    eprintln!("strengthened {changed} bullet(s); re-tailoring with them...");
+                    let sp = Spinner::start(format!(
+                        "strengthened {changed} bullet(s); re-tailoring with them"
+                    ));
                     let retailored = tailor_resume(
                         &ctx,
                         build.id.clone(),
@@ -314,6 +329,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                         None,
                     )
                     .await?;
+                    sp.finish(style::done(format!("strengthened {changed} bullet(s)")));
                     add_usage(&mut total, retailored.usage);
                     best = evaluate(
                         &ctx,
@@ -326,7 +342,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     )
                     .await?;
                     add_usage(&mut total, best.review_usage);
-                    eprintln!("iteration 0 (strengthened): score {:.2}", best.score);
+                    eprintln!("{}", iteration_line("iteration 0 (strengthened)", &best));
                 }
             }
         }
@@ -383,7 +399,12 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                         best.report
                             .objections
                             .retain(|o| !o.is_dismissed(&dataset.metadata.dismissed_objections));
-                        eprintln!("accepted {added} objection(s); they won't be flagged again");
+                        eprintln!(
+                            "{}",
+                            style::done(format!(
+                                "accepted {added} objection(s); they won't be flagged again"
+                            ))
+                        );
                     }
                 }
             }
@@ -397,10 +418,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
             break;
         }
         let objections: Vec<String> = best.report.actionable().map(format_objection).collect();
-        eprintln!(
-            "revising (pass {iteration}): addressing {} objections...",
+        let sp = Spinner::start(format!(
+            "revising (pass {iteration}): addressing {} objection(s)",
             objections.len()
-        );
+        ));
         let revised = tailor_resume(
             &ctx,
             build.id.clone(),
@@ -411,6 +432,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
             Some(RevisionContext { objections }),
         )
         .await?;
+        sp.finish(style::dim(format!("revision {iteration} drafted")));
         add_usage(&mut total, revised.usage);
 
         let candidate = evaluate(
@@ -424,7 +446,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         )
         .await?;
         add_usage(&mut total, candidate.review_usage);
-        eprintln!("iteration {iteration}: score {:.2}", candidate.score);
+        eprintln!(
+            "{}",
+            iteration_line(&format!("iteration {iteration}"), &candidate)
+        );
 
         // Score-must-improve: a revision that scored no better is
         // discarded, and the loop stops — the best draft is already in
@@ -432,7 +457,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         if candidate.score > best.score {
             best = candidate;
         } else {
-            eprintln!("that revision didn't improve the draft; keeping the best one");
+            eprintln!(
+                "{}",
+                style::dim("that revision didn't improve the draft; keeping the best one")
+            );
             break;
         }
     }
@@ -451,7 +479,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
             .iter()
             .map(|s| s.text.clone())
             .collect();
-        match voice::rewrite_to_voice(&ctx, &best.resume, &samples).await {
+        let sp = Spinner::start("voicing toward your writing samples");
+        let voiced_result = voice::rewrite_to_voice(&ctx, &best.resume, &samples).await;
+        sp.clear();
+        match voiced_result {
             Ok((voiced, stats)) => {
                 add_usage(&mut total, stats.usage);
                 if stats.rewritten > 0 {
@@ -473,20 +504,26 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     add_usage(&mut total, voiced_eval.review_usage);
                     if voiced_eval.score >= best.score {
                         eprintln!(
-                            "voice: rewrote {} line(s) toward your samples{reverted}",
-                            stats.rewritten
+                            "{}",
+                            style::done(format!(
+                                "voice: rewrote {} line(s) toward your samples{reverted}",
+                                stats.rewritten
+                            ))
                         );
                         best = voiced_eval;
                     } else {
                         eprintln!(
-                            "voice: the rewrite scored lower ({:.2} < {:.2}); kept the un-voiced draft",
-                            voiced_eval.score, best.score
+                            "{}",
+                            style::dim(format!(
+                                "voice: the rewrite scored lower ({:.2} < {:.2}); kept the un-voiced draft",
+                                voiced_eval.score, best.score
+                            ))
                         );
                     }
                 }
             }
             // Voice is a finish, not a gate: if it fails, ship the draft.
-            Err(e) => eprintln!("voice: skipped ({e})"),
+            Err(e) => eprintln!("{}", style::dim(format!("voice: skipped ({e})"))),
         }
     }
 
@@ -494,8 +531,9 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     builds::write_json(&build.dir, "canonical.json", &best.resume)?;
     builds::write_json(&build.dir, "adversarial_report.json", &best.report)?;
     builds::write_json(&build.dir, "ats_report.json", &best.ats_report)?;
-    eprintln!("rendering the best draft...");
+    let sp = Spinner::start("rendering the best draft");
     let pdf = render::render_ats(&build.dir, &best.resume)?;
+    sp.finish(style::done("rendered"));
     builds::write_json(
         &build.dir,
         "meta.json",
@@ -507,23 +545,40 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         },
     )?;
 
+    // The result summary: the reviewer's verdict, coverage, then where it
+    // landed. On stderr like the rest of the human output.
     if !best.report.persona_notes.is_empty() {
-        println!("\nreviewer: {}", best.report.persona_notes);
-    }
-    if best.score > starting_score {
-        println!(
-            "score improved {starting_score:.2} -> {:.2} after revision",
-            best.score
+        eprintln!(
+            "\n{}",
+            style::bold(format!(
+                "reviewer verdict ({:.2})",
+                best.report.overall_score
+            ))
         );
-    } else {
-        println!("score {:.2}", best.score);
+        eprintln!("  {}", best.report.persona_notes);
     }
     print_coverage(&best.ats_report);
-    println!("\nsaved build {}:", build.id.0);
-    println!("  {}", pdf.display());
-    println!(
-        "tokens: {} in, {} out",
-        total.input_tokens, total.output_tokens
+
+    let score = if best.score > starting_score {
+        style::cyan(format!(
+            "score {:.2} (up from {starting_score:.2})",
+            best.score
+        ))
+    } else {
+        style::cyan(format!("score {:.2}", best.score))
+    };
+    eprintln!(
+        "\n{}",
+        style::done(style::bold(format!("build {} saved", build.id.0)))
+    );
+    eprintln!("  {}", style::dim(pdf.display()));
+    eprintln!("  {score}");
+    eprintln!(
+        "  {}",
+        style::dim(format!(
+            "{} in / {} out tokens",
+            total.input_tokens, total.output_tokens
+        ))
     );
     Ok(())
 }
@@ -555,6 +610,7 @@ async fn evaluate(
         source,
     })?;
 
+    let sp = Spinner::start(format!("reviewing & scoring iteration {iteration}"));
     let run = AdversarialReviewerAgent
         .run(
             ctx,
@@ -570,6 +626,7 @@ async fn evaluate(
     let pdf = render::render_ats(&iter_dir, &resume)?;
     let page_text = ats::extract_pdf_text(&pdf)?;
     let ats_report = ats::keyword_coverage(jd, gap, dataset, &page_text);
+    sp.finish(style::dim(format!("iteration {iteration} reviewed")));
 
     // Score from the *full* report — accepting an objection stops the
     // churn, it must not inflate the honest assessment.
@@ -603,6 +660,20 @@ fn combined_score(report: &AdversarialReport, coverage: f32) -> f32 {
 fn add_usage(total: &mut TokenUsage, other: TokenUsage) {
     total.input_tokens += other.input_tokens;
     total.output_tokens += other.output_tokens;
+}
+
+/// A one-line iteration summary: the label, the score in cyan, and the
+/// objection count and coverage as dim context.
+fn iteration_line(label: &str, eval: &Evaluation) -> String {
+    format!(
+        "{label}  {}  {}",
+        style::cyan(format!("score {:.2}", eval.score)),
+        style::dim(format!(
+            "{} objection(s), {:.0}% coverage",
+            eval.report.objections.len(),
+            eval.ats_report.coverage * 100.0
+        ))
+    )
 }
 
 /// One objection as a single revision-prompt line.
@@ -660,23 +731,56 @@ fn print_coverage(report: &AtsReport) {
         .filter(|h| h.kind == KeywordKind::RequiredSkill)
         .count();
 
-    println!(
-        "\nkeyword coverage: {required_hits}/{required_total} required ({:.0}%)",
-        report.coverage * 100.0
+    let pct = format!("{:.0}%", report.coverage * 100.0);
+    let pct = if report.coverage >= 1.0 {
+        style::green(pct)
+    } else {
+        style::yellow(pct)
+    };
+    eprintln!(
+        "\n{} {}",
+        style::bold("keyword coverage"),
+        style::dim(format!("{required_hits}/{required_total} required ({pct})"))
     );
-    for miss in &report.keyword_misses {
-        match &miss.evidence {
-            EvidenceStatus::Backed { dataset_skill } => println!(
-                "  miss: {:?} ({}) - recorded as {:?}, but it didn't reach the page",
-                miss.phrase,
-                kind_label(miss.kind),
-                dataset_skill
-            ),
-            EvidenceStatus::Unbacked => println!(
-                "  miss: {:?} ({}) - no supporting evidence in the dataset; not inserted",
-                miss.phrase,
-                kind_label(miss.kind)
-            ),
+
+    // Two honest groups: keywords you *have* but that didn't reach the page
+    // (a placement issue), and keywords with no backing evidence (never
+    // inserted — the never-fabricate line in plain sight).
+    let backed: Vec<_> = report
+        .keyword_misses
+        .iter()
+        .filter(|m| matches!(m.evidence, EvidenceStatus::Backed { .. }))
+        .collect();
+    let unbacked: Vec<_> = report
+        .keyword_misses
+        .iter()
+        .filter(|m| matches!(m.evidence, EvidenceStatus::Unbacked))
+        .collect();
+
+    if !backed.is_empty() {
+        eprintln!("  {}", style::yellow("missing, but you have the evidence:"));
+        for miss in &backed {
+            if let EvidenceStatus::Backed { dataset_skill } = &miss.evidence {
+                eprintln!(
+                    "    {} {}",
+                    miss.phrase,
+                    style::dim(format!(
+                        "({}) — recorded as {:?}, didn't reach the page",
+                        kind_label(miss.kind),
+                        dataset_skill
+                    ))
+                );
+            }
+        }
+    }
+    if !unbacked.is_empty() {
+        eprintln!("  {}", style::dim("missing, no evidence (never inserted):"));
+        for miss in &unbacked {
+            eprintln!(
+                "    {} {}",
+                style::dim(miss.phrase.clone()),
+                style::dim(format!("({})", kind_label(miss.kind)))
+            );
         }
     }
 }

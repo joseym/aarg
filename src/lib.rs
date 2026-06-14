@@ -28,6 +28,7 @@ pub mod render;
 pub mod review;
 pub mod secrets;
 pub mod strengthen;
+pub mod style;
 pub mod tailor;
 pub mod terminal;
 pub mod verify;
