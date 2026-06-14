@@ -31,6 +31,7 @@ use crate::review::{
     AdversarialReport, AdversarialReviewerAgent, Objection, ObjectionKind, ObjectionTarget,
     ReviewInput, Severity,
 };
+use crate::strengthen::{self, StrengthenTarget};
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
@@ -246,6 +247,81 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                     .await?;
                     add_usage(&mut total, best.review_usage);
                     eprintln!("iteration 0 (with metrics): score {:.2}", best.score);
+                }
+            }
+        }
+    }
+
+    // Strengthen copilot: the reviewer also flags bullets for weak wording
+    // — vague verbs, unsupported or generic claims, missed JD emphasis. The
+    // loop can't rephrase a line stronger than the truth allows (that's the
+    // inflation never-fabricate forbids), so copilot the person: a leading
+    // question per flagged bullet, and their restatement — their own words —
+    // replaces it. Runs after metric capture so a freshly quantified bullet
+    // is judged on its latest text, and re-tailors from the corrected
+    // history. A piped/CI run skips this silently.
+    let strengthen_targets: Vec<StrengthenTarget> = best
+        .report
+        .objections
+        .iter()
+        .filter(|o| strengthen::is_strengthenable(o.kind))
+        .filter_map(|o| match &o.target {
+            ObjectionTarget::Bullet(id) => Some(StrengthenTarget {
+                bullet_id: id.clone(),
+                kind: o.kind,
+                concern: o.message.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+    if !strengthen_targets.is_empty() {
+        let user = auto_user();
+        if user.is_interactive() {
+            let wants = user
+                .confirm(
+                    &format!(
+                        "the reviewer flagged {} bullet(s) as weakly worded — restate them in your own words?",
+                        strengthen_targets.len()
+                    ),
+                    true,
+                )
+                .await
+                .unwrap_or(false);
+            if wants {
+                let changed = strengthen::strengthen_bullets(
+                    &mut dataset,
+                    &strengthen_targets,
+                    user.as_ref(),
+                    &ctx,
+                )
+                .await?;
+                if changed > 0 {
+                    dataset.metadata.updated_at = Utc::now();
+                    store::save(&dataset)?;
+                    eprintln!("strengthened {changed} bullet(s); re-tailoring with them...");
+                    let retailored = tailor_resume(
+                        &ctx,
+                        build.id.clone(),
+                        jd_id.clone(),
+                        &requirements,
+                        &dataset,
+                        &gap,
+                        None,
+                    )
+                    .await?;
+                    add_usage(&mut total, retailored.usage);
+                    best = evaluate(
+                        &ctx,
+                        &build.dir,
+                        0,
+                        retailored.resume,
+                        &requirements,
+                        &dataset,
+                        &gap,
+                    )
+                    .await?;
+                    add_usage(&mut total, best.review_usage);
+                    eprintln!("iteration 0 (strengthened): score {:.2}", best.score);
                 }
             }
         }
