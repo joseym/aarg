@@ -150,6 +150,7 @@ impl ResumeDataset {
                 updated_at: now,
                 source_files: Vec::new(),
                 declined_skills: Vec::new(),
+                dismissed_objections: Vec::new(),
             },
         }
     }
@@ -389,6 +390,25 @@ pub struct DatasetMetadata {
     /// "no". `#[serde(default)]` keeps older dataset files loading.
     #[serde(default)]
     pub declined_skills: Vec<String>,
+    /// Reviewer objections the user has accepted as intentional, so the
+    /// adversarial loop stops re-litigating them across runs. The same
+    /// "remember a settled decision" idea as `declined_skills`, one rung up.
+    #[serde(default)]
+    pub dismissed_objections: Vec<DismissedObjection>,
+}
+
+/// A reviewer objection the user accepted as intentional. Stored as a
+/// stable `(target, kind)` signature, not the objection's free-text
+/// message — the wording varies run to run, but *what it's about* doesn't.
+/// Kept as plain strings so the data model stays decoupled from the review
+/// taxonomy; `review.rs` computes the signature from an `Objection`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DismissedObjection {
+    /// What the objection targets: `"bullet:<id>"`, `"summary"`,
+    /// `"skills"`, `"layout"`, or `"overall"`.
+    pub target: String,
+    /// The objection kind's stable tag, e.g. `"vague_verb"`.
+    pub kind: String,
 }
 
 #[cfg(test)]

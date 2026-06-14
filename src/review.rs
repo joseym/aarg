@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{Agent, AgentContext, ModelTier};
-use crate::dataset::types::{BulletId, ResumeDataset};
+use crate::dataset::types::{BulletId, DismissedObjection, ResumeDataset};
 use crate::jd::JobRequirements;
 use crate::llm::LlmError;
 use crate::tailor::TailoredResume;
@@ -73,6 +73,24 @@ impl AdversarialReport {
         self.actionable()
             .any(|o| matches!(o.severity, Severity::Blocking | Severity::Major))
     }
+
+    /// A copy with every objection the user has accepted removed — what the
+    /// loop acts on, the copilots offer, and the display shows. The
+    /// `overall_score` and `persona_notes` are deliberately left untouched:
+    /// accepting a concern stops it being re-litigated, it does not pretend
+    /// the weakness is gone, so the honest score still reflects it.
+    pub fn without_dismissed(&self, dismissed: &[DismissedObjection]) -> AdversarialReport {
+        AdversarialReport {
+            objections: self
+                .objections
+                .iter()
+                .filter(|o| !o.is_dismissed(dismissed))
+                .cloned()
+                .collect(),
+            overall_score: self.overall_score,
+            persona_notes: self.persona_notes.clone(),
+        }
+    }
 }
 
 /// One structured complaint about the draft.
@@ -85,6 +103,51 @@ pub struct Objection {
     pub message: String,
     /// A concrete fix — but never one that adds an unsupported fact.
     pub suggestion: Option<String>,
+}
+
+impl Objection {
+    /// The stable `(target, kind)` signature a dismissal matches on. The
+    /// message is free text that varies run to run; what the objection is
+    /// *about* — which line, what kind of flaw — does not, so that's the key.
+    fn signature(&self) -> (String, String) {
+        let target = match &self.target {
+            ObjectionTarget::Bullet(id) => format!("bullet:{}", id.0),
+            ObjectionTarget::Summary => "summary".to_string(),
+            ObjectionTarget::SkillsSection => "skills".to_string(),
+            ObjectionTarget::Layout => "layout".to_string(),
+            ObjectionTarget::Overall => "overall".to_string(),
+        };
+        (target, kind_tag(self.kind).to_string())
+    }
+
+    /// This objection as a record to persist when the user accepts it.
+    pub fn dismissal(&self) -> DismissedObjection {
+        let (target, kind) = self.signature();
+        DismissedObjection { target, kind }
+    }
+
+    /// Whether the user has accepted this objection (matched by signature).
+    pub fn is_dismissed(&self, dismissed: &[DismissedObjection]) -> bool {
+        let (target, kind) = self.signature();
+        dismissed
+            .iter()
+            .any(|d| d.target == target && d.kind == kind)
+    }
+}
+
+/// The stable tag for an objection kind, used as the dismissal key. Matches
+/// the serde `snake_case` names and must not drift, or a persisted
+/// dismissal would stop matching its objection.
+fn kind_tag(kind: ObjectionKind) -> &'static str {
+    match kind {
+        ObjectionKind::NoMetric => "no_metric",
+        ObjectionKind::VagueVerb => "vague_verb",
+        ObjectionKind::UnsupportedClaim => "unsupported_claim",
+        ObjectionKind::GenericPhrasing => "generic_phrasing",
+        ObjectionKind::JdMismatch => "jd_mismatch",
+        ObjectionKind::LayoutDense => "layout_dense",
+        ObjectionKind::Other => "other",
+    }
 }
 
 /// What part of the draft an objection is about.
@@ -619,5 +682,71 @@ mod tests {
         let msg = &req.messages[0].content;
         assert!(msg.contains("[bullet-1]"));
         assert!(msg.contains("strong in Rust"));
+    }
+
+    fn objection(target: ObjectionTarget, kind: ObjectionKind) -> Objection {
+        Objection {
+            target,
+            severity: Severity::Major,
+            kind,
+            scope: ObjectionScope::Canonical,
+            message: "wording varies run to run".into(),
+            suggestion: None,
+        }
+    }
+
+    #[test]
+    fn a_dismissal_matches_by_target_and_kind_not_message() {
+        let o = objection(
+            ObjectionTarget::Bullet(BulletId("bullet-15".into())),
+            ObjectionKind::VagueVerb,
+        );
+        let dismissed = vec![o.dismissal()];
+
+        // Same target+kind, totally different message → still dismissed.
+        let mut other = objection(
+            ObjectionTarget::Bullet(BulletId("bullet-15".into())),
+            ObjectionKind::VagueVerb,
+        );
+        other.message = "an entirely different complaint".into();
+        assert!(other.is_dismissed(&dismissed));
+
+        // Same bullet, different kind → not dismissed.
+        let different_kind = objection(
+            ObjectionTarget::Bullet(BulletId("bullet-15".into())),
+            ObjectionKind::GenericPhrasing,
+        );
+        assert!(!different_kind.is_dismissed(&dismissed));
+
+        // Same kind, different bullet → not dismissed.
+        let different_bullet = objection(
+            ObjectionTarget::Bullet(BulletId("bullet-9".into())),
+            ObjectionKind::VagueVerb,
+        );
+        assert!(!different_bullet.is_dismissed(&dismissed));
+    }
+
+    #[test]
+    fn without_dismissed_filters_objections_but_keeps_the_score() {
+        let report = AdversarialReport {
+            objections: vec![
+                objection(ObjectionTarget::Summary, ObjectionKind::JdMismatch),
+                objection(
+                    ObjectionTarget::Bullet(BulletId("bullet-15".into())),
+                    ObjectionKind::VagueVerb,
+                ),
+            ],
+            overall_score: 0.74,
+            persona_notes: "would interview".into(),
+        };
+        let dismissed = vec![report.objections[1].dismissal()];
+
+        let visible = report.without_dismissed(&dismissed);
+
+        assert_eq!(visible.objections.len(), 1);
+        assert_eq!(visible.objections[0].target, ObjectionTarget::Summary);
+        // Accepting a concern doesn't inflate the honest score.
+        assert_eq!(visible.overall_score, 0.74);
+        assert_eq!(visible.persona_notes, "would interview");
     }
 }

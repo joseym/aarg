@@ -35,6 +35,7 @@ use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
+use crate::user::{Answer, Question};
 use crate::verify::{unbacked_keywords, verify_keywords};
 use crate::voice;
 
@@ -331,6 +332,64 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         }
     }
 
+    // Objection dismissal: a remaining objection the user judges
+    // intentional ("this 2013 line stays one sentence") can be accepted, so
+    // it's neither auto-revised this run nor flagged on future ones —
+    // remembered like a declined skill and filtered at evaluate time. The
+    // score is untouched: accepting a weakness stops the churn, it doesn't
+    // pretend it's gone. Interactive only; a piped/CI run skips it.
+    if !best.report.objections.is_empty() {
+        let user = auto_user();
+        if user.is_interactive() {
+            let wants = user
+                .confirm(
+                    &format!(
+                        "accept any of the {} remaining objection(s) as intentional, so they stop being flagged?",
+                        best.report.objections.len()
+                    ),
+                    false,
+                )
+                .await
+                .unwrap_or(false);
+            if wants {
+                let options: Vec<String> = best
+                    .report
+                    .objections
+                    .iter()
+                    .map(format_objection)
+                    .collect();
+                if let Answer::Choices(picks) = user
+                    .ask(Question::MultiSelect {
+                        prompt: "select objections to accept (they won't be raised again)".into(),
+                        options,
+                    })
+                    .await?
+                {
+                    let mut added = 0;
+                    for pick in &picks {
+                        if let Some(objection) = best.report.objections.get(*pick) {
+                            let dismissal = objection.dismissal();
+                            if !dataset.metadata.dismissed_objections.contains(&dismissal) {
+                                dataset.metadata.dismissed_objections.push(dismissal);
+                                added += 1;
+                            }
+                        }
+                    }
+                    if added > 0 {
+                        dataset.metadata.updated_at = Utc::now();
+                        store::save(&dataset)?;
+                        // Drop them from this run's draft too, so the
+                        // revision loop below doesn't act on them.
+                        best.report
+                            .objections
+                            .retain(|o| !o.is_dismissed(&dataset.metadata.dismissed_objections));
+                        eprintln!("accepted {added} objection(s); they won't be flagged again");
+                    }
+                }
+            }
+        }
+    }
+
     for iteration in 1..=max_revisions {
         // Stop early when the draft is good enough or has nothing major
         // left to fix — no point spending tokens to polish a strong draft.
@@ -512,11 +571,18 @@ async fn evaluate(
     let page_text = ats::extract_pdf_text(&pdf)?;
     let ats_report = ats::keyword_coverage(jd, gap, dataset, &page_text);
 
+    // Score from the *full* report — accepting an objection stops the
+    // churn, it must not inflate the honest assessment.
     let score = combined_score(&report, ats_report.coverage);
 
     builds::write_json(&iter_dir, "draft.json", &resume)?;
+    // The on-disk artifact is the reviewer's full, unedited record.
     builds::write_json(&iter_dir, "adversarial_report.json", &report)?;
     builds::write_json(&iter_dir, "ats_report.json", &ats_report)?;
+
+    // What the loop, copilots, and display work from has the user's
+    // accepted objections filtered out, so they're not re-litigated.
+    let report = report.without_dismissed(&dataset.metadata.dismissed_objections);
 
     Ok(Evaluation {
         resume,
