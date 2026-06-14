@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{Agent, AgentContext, Tool};
+use crate::agent::{Agent, AgentContext, ModelTier, Tool};
 use crate::dataset::types::SkillCategory;
 use crate::llm::LlmError;
 
@@ -133,6 +133,11 @@ impl Agent for JdParserAgent {
 
     fn id(&self) -> &'static str {
         "jd_parser_v1"
+    }
+    fn model_tier(&self) -> ModelTier {
+        // Pulling structured fields out of a posting is mechanical — the
+        // cheap tier handles it fine.
+        ModelTier::Cheap
     }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
@@ -280,7 +285,7 @@ mod tests {
     fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
         AgentContext {
             llm: mock,
-            model: "test-model",
+            model: &"test-model",
             tracer: &crate::trace::Tracer::DISABLED,
         }
     }

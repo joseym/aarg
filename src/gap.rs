@@ -26,7 +26,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{Agent, AgentContext, AgentRun, run_agent};
+use crate::agent::{Agent, AgentContext, AgentRun, ModelTier, run_agent};
 use crate::dataset::types::{Proficiency, ResumeDataset, Skill, SkillId};
 use crate::jd::{JdSkill, JobRequirements};
 use crate::llm::{LlmError, TokenUsage};
@@ -114,6 +114,11 @@ impl Agent for GapAnalyzerAgent {
 
     fn id(&self) -> &'static str {
         "gap_analyzer_v1"
+    }
+    fn model_tier(&self) -> ModelTier {
+        // Matching dataset evidence against JD requirements is structured
+        // comparison; the cheap tier keeps this cheap.
+        ModelTier::Cheap
     }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
@@ -318,7 +323,7 @@ mod tests {
     fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
         AgentContext {
             llm: mock,
-            model: "test-model",
+            model: &"test-model",
             tracer: &crate::trace::Tracer::DISABLED,
         }
     }

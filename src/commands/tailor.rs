@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
-use crate::agent::{Agent, AgentContext};
+use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::ats::{self, AtsReport, EvidenceStatus, KeywordKind};
 use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::{CliError, configured_client, load_requirements};
@@ -49,10 +49,11 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let tracer = Tracer::to_default_dir()?;
     let ctx = AgentContext {
         llm: &client,
-        model: &config.anthropic.model,
+        model: &config.anthropic,
         tracer: &tracer,
     };
-    let model = ctx.model;
+    // Tailoring runs on the smart tier; show/record that model.
+    let model = ctx.model.resolve("tailoring_v1", ModelTier::Smart);
 
     let requirements = load_requirements(&path, &ctx).await?;
 

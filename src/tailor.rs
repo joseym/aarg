@@ -34,7 +34,7 @@ use crate::keywords::keyword_key;
 use crate::mirror;
 use async_trait::async_trait;
 
-use crate::agent::{Agent, AgentContext};
+use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::llm::{LlmError, TokenUsage};
 
 /// Selection output is compact (IDs + reworded lines), but resumes with
@@ -172,6 +172,11 @@ impl Agent for TailoringAgent {
 
     fn id(&self) -> &'static str {
         "tailoring_v1"
+    }
+    fn model_tier(&self) -> ModelTier {
+        // Rewriting bullets to a JD without overstating the truth is the
+        // judgment-heaviest step in the pipeline — it runs on the smart tier.
+        ModelTier::Smart
     }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
@@ -760,7 +765,7 @@ mod tests {
     fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
         AgentContext {
             llm: mock,
-            model: "test-model",
+            model: &"test-model",
             tracer: &crate::trace::Tracer::DISABLED,
         }
     }

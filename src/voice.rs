@@ -21,7 +21,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::Agent;
+use crate::agent::{Agent, ModelTier};
 use crate::llm::{LlmError, TokenUsage};
 use crate::tailor::{TailoredResume, digit_runs};
 
@@ -106,6 +106,11 @@ impl Agent for VoiceRewriteAgent {
 
     fn id(&self) -> &'static str {
         "voice_rewrite_v1"
+    }
+    fn model_tier(&self) -> ModelTier {
+        // Matching the user's register while strengthening wording without
+        // inflating the claim is a fine-grained writing task — smart tier.
+        ModelTier::Smart
     }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
@@ -363,7 +368,7 @@ mod tests {
     fn ctx<'a>(mock: &'a MockLlmClient) -> AgentContext<'a> {
         AgentContext {
             llm: mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         }
     }

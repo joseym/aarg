@@ -27,7 +27,7 @@ use crate::dataset::types::{
 };
 use async_trait::async_trait;
 
-use crate::agent::{Agent, AgentContext};
+use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::llm::LlmError;
 
 /// Generous output budget: a long resume serializes to a lot of JSON.
@@ -70,6 +70,11 @@ impl Agent for IngestResumeAgent {
 
     fn id(&self) -> &'static str {
         "ingest_resume_v1"
+    }
+    fn model_tier(&self) -> ModelTier {
+        // Extracting roles and skills from resume text is structured
+        // parsing, not judgment — the cheap tier suffices.
+        ModelTier::Cheap
     }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
@@ -549,7 +554,7 @@ mod tests {
     fn test_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
         AgentContext {
             llm: mock,
-            model: "test-model",
+            model: &"test-model",
             tracer: &crate::trace::Tracer::DISABLED,
         }
     }

@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::agent::AgentContext;
+use crate::agent::{AgentContext, ModelTier};
 use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::ingest::ingest_resume;
@@ -29,11 +29,15 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let tracer = Tracer::to_default_dir()?;
     let ctx = AgentContext {
         llm: &client,
-        model: &config.anthropic.model,
+        model: &config.anthropic,
         tracer: &tracer,
     };
 
-    println!("ingesting {} with {}...", path.display(), ctx.model);
+    println!(
+        "ingesting {} with {}...",
+        path.display(),
+        ctx.model.resolve("ingest_resume_v1", ModelTier::Cheap)
+    );
     let mut outcome = ingest_resume(&ctx, &text).await?;
     outcome.dataset.metadata.source_files = vec![path.display().to_string()];
 

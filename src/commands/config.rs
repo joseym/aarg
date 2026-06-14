@@ -1,6 +1,7 @@
 //! `aarg config` — show the effective configuration and where it comes
 //! from. Read-only: the file is edited by hand or via `aarg init`.
 
+use crate::agent::{ModelResolver, ModelTier};
 use crate::commands::CliError;
 use crate::config::Config;
 use crate::secrets;
@@ -31,7 +32,34 @@ pub async fn run() -> Result<(), CliError> {
         }
     );
     println!("provider:    {}", config.provider.name());
-    println!("model:       {}", config.anthropic.model);
+    println!(
+        "model:       {} (fallback for unpinned tiers)",
+        config.anthropic.model
+    );
     println!("api key:     {key_status}");
+
+    // Each agent runs on a tier; the tier resolves to a model here. The
+    // `agent_id` passed to `resolve` only matters when a per-agent pin
+    // exists, so a representative id per tier is enough to show the model.
+    let anthropic = &config.anthropic;
+    println!("tiers:");
+    println!(
+        "  cheap (parse/match):   {}",
+        anthropic.resolve("jd_parser_v1", ModelTier::Cheap)
+    );
+    println!(
+        "  mid   (interview):     {}",
+        anthropic.resolve("metric_interview_v1", ModelTier::Mid)
+    );
+    println!(
+        "  smart (tailor/review): {}",
+        anthropic.resolve("tailoring_v1", ModelTier::Smart)
+    );
+    if !anthropic.agents.is_empty() {
+        println!("per-agent overrides:");
+        for (agent_id, model) in &anthropic.agents {
+            println!("  {agent_id}: {model}");
+        }
+    }
     Ok(())
 }

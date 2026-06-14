@@ -19,7 +19,7 @@ pub async fn parse(path: PathBuf, json: bool) -> Result<(), CliError> {
     let tracer = Tracer::to_default_dir()?;
     let ctx = AgentContext {
         llm: &client,
-        model: &config.anthropic.model,
+        model: &config.anthropic,
         tracer: &tracer,
     };
 

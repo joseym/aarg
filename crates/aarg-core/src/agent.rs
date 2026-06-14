@@ -27,6 +27,42 @@ use serde::de::DeserializeOwned;
 use crate::llm::{CompletionRequest, LlmClient, LlmError, Message, TokenUsage};
 use crate::trace::{Trace, TraceOutcome, Tracer, trace_id};
 
+/// How much model an agent's job needs. A parser is happy on the cheap
+/// tier; tailoring and review want the strong one. The agent declares the
+/// tier; config maps each tier to a concrete model id per provider, so
+/// the same agent code runs on Anthropic or (later) Ollama unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTier {
+    /// Structured extraction and matching — fast and cheap is fine.
+    Cheap,
+    /// The default: interview questions, guidance — moderate judgment.
+    Mid,
+    /// Tailoring, adversarial review, voice — the judgment and writing.
+    Smart,
+}
+
+/// Resolves an agent + tier to a concrete model id. Implemented by the
+/// config in the binary; `&str`/`String` implement it too so a test (or a
+/// single-model setup) can pass one model that answers for every tier.
+/// (The impls are on `&str`/`String`, not `str`, because `AgentContext`
+/// holds a `&dyn ModelResolver` and a bare `&str` can't be unsized into a
+/// trait object — `&"m"` resolves to the `&str` impl instead.)
+pub trait ModelResolver: Send + Sync {
+    fn resolve(&self, agent_id: &str, tier: ModelTier) -> &str;
+}
+
+impl ModelResolver for &str {
+    fn resolve(&self, _agent_id: &str, _tier: ModelTier) -> &str {
+        self
+    }
+}
+
+impl ModelResolver for String {
+    fn resolve(&self, _agent_id: &str, _tier: ModelTier) -> &str {
+        self
+    }
+}
+
 /// Everything an agent needs from its surroundings. Borrowed, because
 /// today a single command owns the client, the config, and the tracer
 /// for exactly one run at a time; shared ownership can be introduced
@@ -34,8 +70,9 @@ use crate::trace::{Trace, TraceOutcome, Tracer, trace_id};
 // EXERCISE(EX-014)
 pub struct AgentContext<'a> {
     pub llm: &'a dyn LlmClient,
-    /// The model requests go to, resolved by the caller from config.
-    pub model: &'a str,
+    /// Maps each agent's tier to a concrete model id (config in
+    /// production; a bare `&str` in tests, answering for every tier).
+    pub model: &'a dyn ModelResolver,
     /// Where runs get recorded. Tests pass `&Tracer::DISABLED`.
     pub tracer: &'a Tracer,
 }
@@ -106,6 +143,13 @@ pub trait Agent: Send + Sync {
     /// max_tokens for the reply — sized to the wire shape.
     fn reply_budget(&self) -> u32;
 
+    /// How much model this agent's job needs. Defaults to the mid tier;
+    /// parsers override down to `Cheap`, tailoring/review/voice up to
+    /// `Smart`. The context's resolver turns this into a model id.
+    fn model_tier(&self) -> ModelTier {
+        ModelTier::Mid
+    }
+
     /// Render the typed input into the user message.
     fn user_message(&self, input: &Self::Input) -> String;
 
@@ -160,6 +204,11 @@ where
 {
     let started_at = chrono::Utc::now();
     let timer = std::time::Instant::now();
+    // Resolve the concrete model once from the agent's declared tier.
+    let model = ctx
+        .model
+        .resolve(agent.id(), agent.model_tier())
+        .to_string();
     // Serialized up front: `input` is moved into `assemble` later, and
     // the failure paths still want to record what the run was asked.
     let input_json = serde_json::to_value(&input).unwrap_or(serde_json::Value::Null);
@@ -185,7 +234,7 @@ where
             agent: agent.id().to_string(),
             started_at,
             duration_ms: u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX),
-            model: ctx.model.to_string(),
+            model: model.clone(),
             input: input_json.clone(),
             system: agent.system_prompt().to_string(),
             messages: messages.to_vec(),
@@ -199,7 +248,7 @@ where
     let mut tool_rounds = 0;
     loop {
         let request = CompletionRequest {
-            model: ctx.model.to_string(),
+            model: model.clone(),
             max_tokens: agent.reply_budget(),
             system: Some(agent.system_prompt().to_string()),
             messages: messages.clone(),
@@ -416,7 +465,7 @@ mod tests {
         mock.enqueue("```json\n{\"value\": 40}\n```");
         let ctx = AgentContext {
             llm: &mock,
-            model: "test-model",
+            model: &"test-model",
             tracer: &Tracer::DISABLED,
         };
 
@@ -441,7 +490,7 @@ mod tests {
         mock.enqueue("{\"value\": 40}");
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
 
@@ -469,7 +518,7 @@ mod tests {
         mock.enqueue("Still prose, still not JSON.");
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
 
@@ -575,7 +624,7 @@ mod tests {
         mock.enqueue("{\"value\": 42}");
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
 
@@ -609,7 +658,7 @@ mod tests {
         mock.enqueue("{\"value\": 7}");
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
 
@@ -634,7 +683,7 @@ mod tests {
         }
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
 
@@ -655,7 +704,7 @@ mod tests {
         mock.enqueue("{\"value\": 40}");
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &tracer,
         };
 

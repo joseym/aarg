@@ -20,7 +20,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{Agent, AgentContext};
+use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::dataset::types::{BulletId, ResumeDataset};
 use crate::jd::JobRequirements;
 use crate::llm::LlmError;
@@ -174,6 +174,11 @@ impl Agent for AdversarialReviewerAgent {
 
     fn id(&self) -> &'static str {
         "adversarial_reviewer_v1"
+    }
+    fn model_tier(&self) -> ModelTier {
+        // The reviewer has to catch overstatement and unbacked claims a
+        // weaker model would wave through — it runs on the smart tier.
+        ModelTier::Smart
     }
     fn system_prompt(&self) -> &str {
         SYSTEM_PROMPT
@@ -484,7 +489,7 @@ mod tests {
         mock.enqueue(reply);
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
         review_draft(&ctx, sample_draft(), sample_jd(), dataset())
@@ -595,7 +600,7 @@ mod tests {
         mock.enqueue(r#"{"overall_score": 0.7, "persona_notes": "ok", "objections": []}"#);
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
         review_draft(&ctx, sample_draft(), sample_jd(), dataset())

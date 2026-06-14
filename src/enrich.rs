@@ -282,7 +282,7 @@ mod tests {
     fn ctx<'a>(mock: &'a MockLlmClient) -> AgentContext<'a> {
         AgentContext {
             llm: mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         }
     }

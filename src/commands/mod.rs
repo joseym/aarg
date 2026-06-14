@@ -21,7 +21,7 @@ pub mod voice;
 
 use std::path::{Path, PathBuf};
 
-use crate::agent::AgentContext;
+use crate::agent::{AgentContext, ModelTier};
 use crate::ats::AtsError;
 use crate::builds::BuildError;
 use crate::config::{Config, ConfigError};
@@ -65,7 +65,10 @@ pub(crate) async fn load_requirements(
     if arg_str.starts_with("https://") || arg_str.starts_with("http://") {
         eprintln!("fetching {arg_str}...");
         let text = crate::fetch::fetch_jd(&arg_str).await?;
-        eprintln!("parsing the posting with {}...", ctx.model);
+        eprintln!(
+            "parsing the posting with {}...",
+            ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+        );
         let mut requirements = crate::jd::parse_jd(ctx, &text).await?;
         requirements.source_url = Some(arg_str.into_owned());
         Ok(requirements)
@@ -80,7 +83,11 @@ pub(crate) async fn load_requirements(
         })
     } else {
         let text = read_text_input(arg)?;
-        eprintln!("parsing {} with {}...", arg.display(), ctx.model);
+        eprintln!(
+            "parsing {} with {}...",
+            arg.display(),
+            ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+        );
         Ok(crate::jd::parse_jd(ctx, &text).await?)
     }
 }

@@ -24,7 +24,7 @@ pub async fn verify() -> Result<(), CliError> {
     let ctx = match (&provider, &tracer) {
         (Some((client, config)), Some(tracer)) => Some(AgentContext {
             llm: client,
-            model: &config.anthropic.model,
+            model: &config.anthropic,
             tracer,
         }),
         _ => None,

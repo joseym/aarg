@@ -145,7 +145,7 @@ mod tests {
         );
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
 
@@ -196,7 +196,7 @@ mod tests {
         mock.enqueue(r#"{"reply": "Right — so it does count."}"#);
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
 

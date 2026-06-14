@@ -1125,7 +1125,7 @@ mod tests {
         );
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
         let user = ScriptedUser::new();
@@ -1264,7 +1264,7 @@ mod tests {
         );
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
         let user = ScriptedUser::new();
@@ -1309,7 +1309,7 @@ mod tests {
         mock.enqueue(r#"{"reply": "Yes — typed front-end code counts."}"#);
         let ctx = AgentContext {
             llm: &mock,
-            model: "m",
+            model: &"m",
             tracer: &Tracer::DISABLED,
         };
         let user = ScriptedUser::new();
