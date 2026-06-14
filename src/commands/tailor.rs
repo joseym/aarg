@@ -32,7 +32,7 @@ use crate::review::{
     ReviewInput, Severity,
 };
 use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
-use crate::style::{self, Spinner};
+use crate::style::{self, Spinner, StreamReporter};
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
@@ -44,10 +44,15 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = Tracer::to_default_dir()?;
+    // Live progress + running cost for the long smart-tier calls, so the
+    // loop is visibly working and the user can interrupt (FR-3.8). The spine
+    // drives it for streamed runs; cheap/interactive calls leave it idle.
+    let reporter = StreamReporter::new(config.prices.clone());
     let ctx = AgentContext {
         llm: &client,
         model: &config.anthropic,
         tracer: &tracer,
+        sink: Some(&reporter),
     };
     // Tailoring runs on the smart tier; show/record that model.
     let model = ctx.model.resolve("tailoring_v1", ModelTier::Smart);
@@ -168,7 +173,8 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     builds::write_json(&build.dir, "gap_report.json", &gap)?;
     eprintln!("{}", style::dim(format!("build {}", build.id.0)));
 
-    let sp = Spinner::start("tailoring the first draft");
+    // The streamed smart-tier calls below (tailoring, review, voice) show a
+    // live token/cost line via the reporter instead of a spinner.
     let first = tailor_resume(
         &ctx,
         build.id.clone(),
@@ -179,7 +185,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         None,
     )
     .await?;
-    sp.finish(style::done("first draft tailored"));
+    eprintln!("{}", style::done("first draft tailored"));
     for warning in &first.warnings {
         eprintln!("{} {warning}", style::yellow("warning:"));
     }
@@ -238,8 +244,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                 if added > 0 {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
-                    let sp =
-                        Spinner::start(format!("added {added} metric(s); re-tailoring with them"));
+                    eprintln!(
+                        "{}",
+                        style::dim(format!("added {added} metric(s); re-tailoring"))
+                    );
                     let retailored = tailor_resume(
                         &ctx,
                         build.id.clone(),
@@ -250,7 +258,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                         None,
                     )
                     .await?;
-                    sp.finish(style::done(format!("folded in {added} metric(s)")));
+                    eprintln!("{}", style::done(format!("folded in {added} metric(s)")));
                     add_usage(&mut total, retailored.usage);
                     best = evaluate(
                         &ctx,
@@ -316,9 +324,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                 if changed > 0 {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
-                    let sp = Spinner::start(format!(
-                        "strengthened {changed} bullet(s); re-tailoring with them"
-                    ));
+                    eprintln!(
+                        "{}",
+                        style::dim(format!("strengthened {changed} bullet(s); re-tailoring"))
+                    );
                     let retailored = tailor_resume(
                         &ctx,
                         build.id.clone(),
@@ -329,7 +338,10 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
                         None,
                     )
                     .await?;
-                    sp.finish(style::done(format!("strengthened {changed} bullet(s)")));
+                    eprintln!(
+                        "{}",
+                        style::done(format!("strengthened {changed} bullet(s)"))
+                    );
                     add_usage(&mut total, retailored.usage);
                     best = evaluate(
                         &ctx,
@@ -418,10 +430,13 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
             break;
         }
         let objections: Vec<String> = best.report.actionable().map(format_objection).collect();
-        let sp = Spinner::start(format!(
-            "revising (pass {iteration}): addressing {} objection(s)",
-            objections.len()
-        ));
+        let count = objections.len();
+        eprintln!(
+            "{}",
+            style::dim(format!(
+                "revising (pass {iteration}): addressing {count} objection(s)"
+            ))
+        );
         let revised = tailor_resume(
             &ctx,
             build.id.clone(),
@@ -432,7 +447,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
             Some(RevisionContext { objections }),
         )
         .await?;
-        sp.finish(style::dim(format!("revision {iteration} drafted")));
+        eprintln!("{}", style::dim(format!("revision {iteration} drafted")));
         add_usage(&mut total, revised.usage);
 
         let candidate = evaluate(
@@ -479,9 +494,9 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
             .iter()
             .map(|s| s.text.clone())
             .collect();
-        let sp = Spinner::start("voicing toward your writing samples");
+        // Streams via the reporter when there are lines to rewrite; a draft
+        // with nothing flagged returns immediately and shows nothing.
         let voiced_result = voice::rewrite_to_voice(&ctx, &best.resume, &samples).await;
-        sp.clear();
         match voiced_result {
             Ok((voiced, stats)) => {
                 add_usage(&mut total, stats.usage);
@@ -628,7 +643,9 @@ async fn evaluate(
         source,
     })?;
 
-    let sp = Spinner::start(format!("reviewing & scoring iteration {iteration}"));
+    // The review streams (a live token/cost line via the reporter); the
+    // render and scoring that follow are deterministic, so a plain spinner
+    // covers them.
     let run = AdversarialReviewerAgent
         .run(
             ctx,
@@ -641,6 +658,7 @@ async fn evaluate(
         .await?;
     let report = run.output;
 
+    let sp = Spinner::start(format!("rendering & scoring iteration {iteration}"));
     let pdf = render::render_ats(&iter_dir, &resume)?;
     let page_text = ats::extract_pdf_text(&pdf)?;
     let ats_report = ats::keyword_coverage(jd, gap, dataset, &page_text);

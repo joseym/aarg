@@ -147,6 +147,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         let reply = VerificationGuideAgent
@@ -198,6 +199,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         VerificationGuideAgent

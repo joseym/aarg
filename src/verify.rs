@@ -1222,6 +1222,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
         let user = ScriptedUser::new();
         user.answer(Answer::Choices(Vec::new())); // checklist: nothing checked
@@ -1361,6 +1362,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
         let user = ScriptedUser::new();
         user.answer(Answer::Choices(vec![0])); // check it
@@ -1406,6 +1408,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
         let user = ScriptedUser::new();
         // With a guide present, "let me explain" is option 4. Choosing it

@@ -29,6 +29,7 @@ pub async fn verify() -> Result<(), CliError> {
             llm: client,
             model: &config.anthropic,
             tracer,
+            sink: None,
         }),
         _ => None,
     };

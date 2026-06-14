@@ -21,6 +21,7 @@ pub async fn parse(path: PathBuf, json: bool) -> Result<(), CliError> {
         llm: &client,
         model: &config.anthropic,
         tracer: &tracer,
+        sink: None,
     };
 
     let requirements = load_requirements(&path, &ctx).await?;

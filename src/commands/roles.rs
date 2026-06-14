@@ -36,6 +36,7 @@ pub async fn enrich(id: Option<String>) -> Result<(), CliError> {
         llm: &client,
         model: &config.anthropic,
         tracer: &tracer,
+        sink: None,
     };
     let user = auto_user();
 

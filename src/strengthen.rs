@@ -577,6 +577,7 @@ mod tests {
             llm: mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         }
     }
 

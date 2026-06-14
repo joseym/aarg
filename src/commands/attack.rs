@@ -32,6 +32,7 @@ pub async fn run(build: String) -> Result<(), CliError> {
         llm: &client,
         model: &config.anthropic,
         tracer: &tracer,
+        sink: None,
     };
     let model = ctx
         .model

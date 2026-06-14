@@ -554,6 +554,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
         review_draft(&ctx, sample_draft(), sample_jd(), dataset())
             .await
@@ -665,6 +666,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
         review_draft(&ctx, sample_draft(), sample_jd(), dataset())
             .await

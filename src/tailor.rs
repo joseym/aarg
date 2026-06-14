@@ -812,6 +812,7 @@ mod tests {
             llm: mock,
             model: &"test-model",
             tracer: &crate::trace::Tracer::DISABLED,
+            sink: None,
         }
     }
 

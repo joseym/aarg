@@ -31,6 +31,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         llm: &client,
         model: &config.anthropic,
         tracer: &tracer,
+        sink: None,
     };
 
     println!(

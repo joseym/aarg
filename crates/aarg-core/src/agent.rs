@@ -21,10 +21,13 @@
 //! trait until four functions demanded it.
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::llm::{CompletionRequest, LlmClient, LlmError, Message, TokenUsage};
+use crate::llm::{
+    CompletionRequest, CompletionResponse, LlmClient, LlmError, Message, StreamEvent, TokenUsage,
+};
 use crate::trace::{Trace, TraceOutcome, Tracer, trace_id};
 
 /// How much model an agent's job needs. A parser is happy on the cheap
@@ -63,6 +66,21 @@ impl ModelResolver for String {
     }
 }
 
+/// A live view of a streamed run, so a long, expensive call shows its
+/// output and cost accruing instead of being a silent wait — which is
+/// what makes it interruptible (PRD §6.4). The spine drives it around a
+/// streamed call: `begin` once, `delta` per text chunk, `end` with the
+/// final usage. The runtime stays ignorant of terminals and pricing;
+/// the implementation (in the binary) renders it however it likes.
+pub trait StreamSink: Send + Sync {
+    /// A streamed call is starting for `agent_id` on model `model`.
+    fn begin(&self, agent_id: &str, model: &str);
+    /// The next chunk of generated text.
+    fn delta(&self, chunk: &str);
+    /// The call finished; `usage` is the provider's final token count.
+    fn end(&self, usage: TokenUsage);
+}
+
 /// Everything an agent needs from its surroundings. Borrowed, because
 /// today a single command owns the client, the config, and the tracer
 /// for exactly one run at a time; shared ownership can be introduced
@@ -75,6 +93,11 @@ pub struct AgentContext<'a> {
     pub model: &'a dyn ModelResolver,
     /// Where runs get recorded. Tests pass `&Tracer::DISABLED`.
     pub tracer: &'a Tracer,
+    /// Optional live-progress sink. When present, the long, expensive
+    /// (smart-tier) runs stream so the user sees output and cost building
+    /// and can interrupt; `None` everywhere streaming isn't wanted —
+    /// tests, cheap parsers, piped runs.
+    pub sink: Option<&'a dyn StreamSink>,
 }
 
 /// What a run produced: the agent's typed output plus the accounting
@@ -244,6 +267,14 @@ where
         });
     };
 
+    // Stream the long, expensive runs when a sink is listening: the
+    // smart-tier work (tailoring, review, voice) is where live output and
+    // cost matter, and where there's enough of it to be worth showing.
+    // Streaming carries no tool calls this phase, so a tooled agent always
+    // takes the blocking path.
+    let should_stream =
+        ctx.sink.is_some() && tool_specs.is_empty() && agent.model_tier() == ModelTier::Smart;
+
     let mut attempt = 1;
     let mut tool_rounds = 0;
     loop {
@@ -255,7 +286,7 @@ where
             temperature: None,
             tools: tool_specs.clone(),
         };
-        let response = match ctx.llm.complete(request).await {
+        let response = match complete_or_stream(ctx, agent.id(), request, should_stream).await {
             Ok(response) => response,
             Err(error) => {
                 finish(
@@ -381,6 +412,70 @@ where
     }
 }
 
+/// One model turn: stream it when the caller asked (driving the sink for
+/// live progress), otherwise a plain blocking completion. Either way it
+/// yields the same `CompletionResponse` — accumulated text plus the final
+/// usage — so the rest of the spine doesn't care which path produced it.
+/// The sink is driven `begin → delta* → end`, and `end` runs even on a
+/// mid-stream error so the display is always torn down.
+async fn complete_or_stream(
+    ctx: &AgentContext<'_>,
+    agent_id: &str,
+    request: CompletionRequest,
+    stream_it: bool,
+) -> Result<CompletionResponse, LlmError> {
+    if !stream_it {
+        return ctx.llm.complete(request).await;
+    }
+
+    let model = request.model.clone();
+    let mut events = ctx.llm.stream(request).await?;
+    if let Some(sink) = ctx.sink {
+        sink.begin(agent_id, &model);
+    }
+
+    let mut text = String::new();
+    let mut usage = TokenUsage::default();
+    let mut stop_reason = None;
+    let mut stream_error = None;
+    while let Some(event) = events.next().await {
+        match event {
+            Ok(StreamEvent::TextDelta(chunk)) => {
+                if let Some(sink) = ctx.sink {
+                    sink.delta(&chunk);
+                }
+                text.push_str(&chunk);
+            }
+            Ok(StreamEvent::Done {
+                stop_reason: reason,
+                usage: final_usage,
+            }) => {
+                stop_reason = reason;
+                usage = final_usage;
+            }
+            Err(error) => {
+                stream_error = Some(error);
+                break;
+            }
+        }
+    }
+
+    if let Some(sink) = ctx.sink {
+        sink.end(usage);
+    }
+    if let Some(error) = stream_error {
+        return Err(error);
+    }
+
+    Ok(CompletionResponse {
+        text,
+        tool_calls: Vec::new(),
+        model,
+        stop_reason,
+        usage,
+    })
+}
+
 /// Models often wrap JSON in ```fences``` despite instructions; strip
 /// one outer fence pair (and its info string, e.g. ```json) if present.
 /// Phase 1 carried four private copies of this; the extraction is where
@@ -467,6 +562,7 @@ mod tests {
             llm: &mock,
             model: &"test-model",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         let run = EchoAgent.run(&ctx, 2).await.unwrap();
@@ -492,6 +588,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         let run = EchoAgent.run(&ctx, 2).await.unwrap();
@@ -520,6 +617,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         match EchoAgent.run(&ctx, 1).await.unwrap_err() {
@@ -626,6 +724,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         let run = ToolboxAgent::new().run(&ctx, 21).await.unwrap();
@@ -660,6 +759,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         let run = ToolboxAgent::new().run(&ctx, 7).await.unwrap();
@@ -685,6 +785,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &Tracer::DISABLED,
+            sink: None,
         };
 
         let err = ToolboxAgent::new().run(&ctx, 1).await.unwrap_err();
@@ -706,6 +807,7 @@ mod tests {
             llm: &mock,
             model: &"m",
             tracer: &tracer,
+            sink: None,
         };
 
         EchoAgent.run(&ctx, 2).await.unwrap();
@@ -730,6 +832,130 @@ mod tests {
         // without an override still sends None.
         let temperature_implemented = false;
         assert!(temperature_implemented);
+    }
+
+    /// A sink that records everything the spine drives through it, so a
+    /// test can assert a run streamed (and what it streamed).
+    #[derive(Default)]
+    struct RecordingSink {
+        began: std::sync::Mutex<Vec<(String, String)>>,
+        deltas: std::sync::Mutex<Vec<String>>,
+        ended: std::sync::Mutex<Vec<TokenUsage>>,
+    }
+
+    impl StreamSink for RecordingSink {
+        fn begin(&self, agent_id: &str, model: &str) {
+            self.began
+                .lock()
+                .unwrap()
+                .push((agent_id.to_string(), model.to_string()));
+        }
+        fn delta(&self, chunk: &str) {
+            self.deltas.lock().unwrap().push(chunk.to_string());
+        }
+        fn end(&self, usage: TokenUsage) {
+            self.ended.lock().unwrap().push(usage);
+        }
+    }
+
+    /// EchoAgent's contract on the smart tier — the only thing that makes a
+    /// run eligible to stream.
+    struct SmartEcho;
+
+    #[async_trait]
+    impl Agent for SmartEcho {
+        type Input = i64;
+        type Wire = EchoWire;
+        type Output = i64;
+        type Error = EchoError;
+
+        fn id(&self) -> &'static str {
+            "echo_smart"
+        }
+        fn system_prompt(&self) -> &str {
+            "Reply with {\"value\": <the number>}."
+        }
+        fn reply_budget(&self) -> u32 {
+            16
+        }
+        fn model_tier(&self) -> ModelTier {
+            ModelTier::Smart
+        }
+        fn user_message(&self, input: &i64) -> String {
+            format!("the number is {input}")
+        }
+        fn bad_reply(&self, snippet: String, source: serde_json::Error) -> EchoError {
+            EchoError::BadReply { snippet, source }
+        }
+        fn assemble(&self, wire: EchoWire, input: i64) -> Result<i64, EchoError> {
+            Ok(wire.value + input)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_smart_run_streams_through_the_sink() {
+        let mock = MockLlmClient::default();
+        mock.enqueue("{\"value\": 40}");
+        let sink = RecordingSink::default();
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &"smart-model",
+            tracer: &Tracer::DISABLED,
+            sink: Some(&sink),
+        };
+
+        let run = SmartEcho.run(&ctx, 2).await.unwrap();
+
+        // Same result the blocking path would produce.
+        assert_eq!(run.output, 42);
+        // The sink saw the whole lifecycle: one begin (agent id + model),
+        // deltas that concatenate to the reply, one end with usage.
+        let began = sink.began.lock().unwrap();
+        assert_eq!(
+            began.as_slice(),
+            &[("echo_smart".into(), "smart-model".into())]
+        );
+        let joined: String = sink.deltas.lock().unwrap().concat();
+        assert_eq!(joined, "{\"value\": 40}");
+        assert_eq!(sink.ended.lock().unwrap().len(), 1);
+        assert!(sink.ended.lock().unwrap()[0].output_tokens > 0);
+    }
+
+    #[tokio::test]
+    async fn a_mid_tier_run_does_not_stream_even_with_a_sink() {
+        let mock = MockLlmClient::default();
+        mock.enqueue("{\"value\": 40}");
+        let sink = RecordingSink::default();
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: Some(&sink),
+        };
+
+        // EchoAgent is the default mid tier — too short to be worth
+        // streaming, so the blocking path is used and the sink stays idle.
+        let run = EchoAgent.run(&ctx, 2).await.unwrap();
+
+        assert_eq!(run.output, 42);
+        assert!(sink.began.lock().unwrap().is_empty());
+        assert!(sink.deltas.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_smart_run_without_a_sink_still_completes() {
+        let mock = MockLlmClient::default();
+        mock.enqueue("{\"value\": 40}");
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        };
+
+        // No sink: smart tier or not, the blocking path runs unchanged.
+        let run = SmartEcho.run(&ctx, 2).await.unwrap();
+        assert_eq!(run.output, 42);
     }
 
     #[test]
