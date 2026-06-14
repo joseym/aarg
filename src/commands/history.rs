@@ -6,7 +6,10 @@
 //! aarg's human output; stdout stays clean for a future `--json`.
 
 use crate::commands::CliError;
+use crate::config::Config;
 use crate::history::{self, BuildDiff};
+use crate::llm::TokenUsage;
+use crate::pricing;
 use crate::style;
 use crate::terminal::auto_user;
 use crate::user::{Answer, Question};
@@ -18,16 +21,31 @@ pub fn list() -> Result<(), CliError> {
         eprintln!("no builds yet — run `aarg tailor <jd>`");
         return Ok(());
     }
+    // Prices come from config (built-in family defaults otherwise).
+    let prices = Config::load()?.prices;
+    let mut total = 0.0;
+
     eprintln!("{}", style::bold(format!("{} build(s)", builds.len())));
     for b in &builds {
+        let usage = TokenUsage {
+            input_tokens: b.tokens_in,
+            output_tokens: b.tokens_out,
+        };
+        let cost = pricing::cost_usd(&b.model, &usage, &prices);
+        if let Some(c) = cost {
+            total += c;
+        }
+        let cost_cell = cost.map_or_else(|| "    —".to_string(), |c| format!("~${c:.2}"));
         eprintln!(
-            "  {}  {}  {}  {}",
+            "  {}  {}  {}  {}  {}",
             style::bold(format!("{:>3}", b.id)),
             style::cyan(format!("{:.2}", b.score)),
+            style::dim(format!("{cost_cell:>7}")),
             b.target,
             style::dim(format!("{} · {} obj", b.created_at, b.objections))
         );
     }
+    eprintln!("{}", style::dim(format!("total ~${total:.2}")));
     Ok(())
 }
 

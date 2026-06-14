@@ -573,13 +573,31 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     );
     eprintln!("  {}", style::dim(pdf.display()));
     eprintln!("  {score}");
-    eprintln!(
-        "  {}",
-        style::dim(format!(
+
+    // Cost estimate (and a budget nudge), priced at the tailoring model.
+    let cost = crate::pricing::cost_usd(model, &total, &config.prices);
+    let cost_note = match cost {
+        Some(c) => format!(
+            "~${c:.2}  ·  {} in / {} out tokens",
+            total.input_tokens, total.output_tokens
+        ),
+        None => format!(
             "{} in / {} out tokens",
             total.input_tokens, total.output_tokens
-        ))
-    );
+        ),
+    };
+    eprintln!("  {}", style::dim(cost_note));
+    if let (Some(c), Some(budget)) = (cost, config.limits.budget_usd)
+        && c > budget
+    {
+        eprintln!(
+            "  {}",
+            style::yellow(format!(
+                "over your ${budget:.2} budget by ${:.2}",
+                c - budget
+            ))
+        );
+    }
     Ok(())
 }
 

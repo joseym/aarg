@@ -139,6 +139,9 @@ pub struct Limits {
     /// Max times the user may ask for another strengthen rewrite before the
     /// loop offers only take-it-or-keep-mine (default 3).
     pub strengthen_revises: usize,
+    /// Warn when a build's estimated cost exceeds this many dollars. `None`
+    /// (the default) means no budget warning.
+    pub budget_usd: Option<f64>,
 }
 
 impl Default for Limits {
@@ -148,6 +151,7 @@ impl Default for Limits {
             acceptable_score: 0.85,
             strengthen_questions: 3,
             strengthen_revises: 3,
+            budget_usd: None,
         }
     }
 }
@@ -160,6 +164,10 @@ pub struct Config {
     pub provider: Provider,
     pub anthropic: AnthropicConfig,
     pub limits: Limits,
+    /// Per-model price overrides (dollars per million tokens), keyed by
+    /// model id. Absent models fall back to `pricing`'s built-in family
+    /// rates; an empty table (the default) uses the built-ins for all.
+    pub prices: std::collections::BTreeMap<String, crate::pricing::Price>,
 }
 
 impl Config {
@@ -270,6 +278,23 @@ mod tests {
             },
             ..Config::default()
         };
+        config.save_to(&path).unwrap();
+        assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn prices_and_budget_round_trip_through_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut config = Config::default();
+        config.limits.budget_usd = Some(1.50);
+        config.prices.insert(
+            "claude-opus-4-8".to_string(),
+            crate::pricing::Price {
+                input_per_mtok: 12.0,
+                output_per_mtok: 60.0,
+            },
+        );
         config.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), config);
     }

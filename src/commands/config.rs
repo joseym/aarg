@@ -68,5 +68,12 @@ pub async fn run() -> Result<(), CliError> {
     println!("  acceptable score:     {:.2}", limits.acceptable_score);
     println!("  strengthen questions: {}", limits.strengthen_questions);
     println!("  strengthen revises:   {}", limits.strengthen_revises);
+    println!(
+        "  budget:               {}",
+        match limits.budget_usd {
+            Some(b) => format!("${b:.2} per build"),
+            None => "none".to_string(),
+        }
+    );
     Ok(())
 }
