@@ -65,8 +65,8 @@ pub enum Command {
     },
     /// Re-review a saved build with the adversarial reviewer (no re-tailor)
     Attack {
-        /// Build id to re-review (e.g. 021)
-        build: String,
+        /// Build id to re-review (e.g. 021); omit to pick one interactively
+        build: Option<String>,
     },
     /// List past builds (or `history rm <id>` to delete one)
     History {
@@ -324,16 +324,19 @@ mod tests {
     }
 
     #[test]
-    fn attack_parses_a_build_id() {
+    fn attack_parses_with_and_without_a_build_id() {
         match Cli::try_parse_from(["aarg", "attack", "021"])
             .unwrap()
             .command
         {
-            Command::Attack { build } => assert_eq!(build, "021"),
+            Command::Attack { build } => assert_eq!(build.as_deref(), Some("021")),
             other => panic!("expected attack, got {other:?}"),
         }
-        // A build id is required.
-        assert!(Cli::try_parse_from(["aarg", "attack"]).is_err());
+        // The build id is optional — omitting it means "pick interactively".
+        match Cli::try_parse_from(["aarg", "attack"]).unwrap().command {
+            Command::Attack { build } => assert_eq!(build, None),
+            other => panic!("expected attack, got {other:?}"),
+        }
     }
 
     #[test]
