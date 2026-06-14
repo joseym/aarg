@@ -9,6 +9,7 @@ use crate::commands::CliError;
 use crate::history::{self, BuildDiff};
 use crate::style;
 use crate::terminal::auto_user;
+use crate::user::{Answer, Question};
 
 /// `aarg history` — every build, newest first.
 pub fn list() -> Result<(), CliError> {
@@ -127,11 +128,51 @@ fn truncate(text: &str) -> String {
     format!("{kept}…")
 }
 
-/// `aarg history rm <id>...` — delete builds. Destructive (removes the PDF
-/// and every artifact), so it confirms first and a non-interactive run
-/// declines by default rather than deleting unprompted.
+/// `aarg history rm [id...]` — delete builds. With no ids, offer a
+/// checklist of the builds to pick from. Destructive (removes the PDF and
+/// every artifact), so it confirms first and a non-interactive run declines
+/// by default rather than deleting unprompted.
 pub async fn remove(ids: Vec<String>) -> Result<(), CliError> {
     let user = auto_user();
+
+    // No ids given: let the user tick the ones to remove off a list.
+    let ids = if ids.is_empty() {
+        let builds = history::list()?;
+        if builds.is_empty() {
+            eprintln!("no builds to remove");
+            return Ok(());
+        }
+        if !user.is_interactive() {
+            eprintln!("specify build ids to remove, e.g. `aarg history rm 019 020`");
+            return Ok(());
+        }
+        let options: Vec<String> = builds
+            .iter()
+            .map(|b| format!("{}  {:.2}  {}  {}", b.id, b.score, b.target, b.created_at))
+            .collect();
+        match user
+            .ask(Question::MultiSelect {
+                prompt: "select builds to remove (space toggles, enter confirms)".into(),
+                options,
+            })
+            .await?
+        {
+            Answer::Choices(picks) => picks
+                .iter()
+                .filter_map(|&i| builds.get(i))
+                .map(|b| b.id.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    } else {
+        ids
+    };
+
+    if ids.is_empty() {
+        eprintln!("nothing selected — nothing deleted");
+        return Ok(());
+    }
+
     eprintln!(
         "{} {}",
         style::yellow("about to permanently delete build(s):"),

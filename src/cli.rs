@@ -106,10 +106,9 @@ pub enum DatasetCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum HistoryCommand {
-    /// Delete one or more builds and all their artifacts
+    /// Delete builds and all their artifacts (no ids = pick from a list)
     Rm {
-        /// Build ids to delete (e.g. 019 020)
-        #[arg(required = true)]
+        /// Build ids to delete (e.g. 019 020); omit to choose interactively
         ids: Vec<String>,
     },
 }
@@ -310,8 +309,13 @@ mod tests {
             } => assert_eq!(ids, vec!["019", "020"]),
             other => panic!("expected history rm, got {other:?}"),
         }
-        // `rm` with no ids is a usage error, not an empty delete.
-        assert!(Cli::try_parse_from(["aarg", "history", "rm"]).is_err());
+        // `rm` with no ids is allowed — it means "pick interactively".
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "history", "rm"]).unwrap().command,
+            Command::History {
+                command: Some(HistoryCommand::Rm { ids }),
+            } if ids.is_empty()
+        ));
     }
 
     #[test]
