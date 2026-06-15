@@ -20,6 +20,7 @@ pub mod ping;
 pub mod roles;
 pub mod skills;
 pub mod tailor;
+pub mod templates;
 pub mod trace;
 pub mod voice;
 
@@ -361,6 +362,13 @@ pub enum CliError {
     #[error("could not determine the current directory")]
     #[diagnostic(help("run from an existing directory, or pass `aarg init --dir <path>`"))]
     CurrentDir(#[source] std::io::Error),
+
+    #[error(transparent)]
+    Template(#[from] crate::templates::TemplateError),
+
+    #[error("no template named {name:?}")]
+    #[diagnostic(help("run `aarg templates list` to see the available templates"))]
+    UnknownTemplate { name: String },
 }
 
 /// Reject labels that are empty or carry the `:` that separates provider
@@ -382,7 +390,7 @@ pub(crate) fn validate_key_label(label: &str) -> Result<&str, CliError> {
 pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
     use crate::cli::{
         Command, DatasetCommand, HistoryCommand, JdCommand, KeyCommand, LlmCommand, RolesCommand,
-        SkillsCommand, TraceCommand, VoiceCommand,
+        SkillsCommand, TemplatesCommand, TraceCommand, VoiceCommand,
     };
     match command {
         Command::Init { global, dir } => init::run(global, dir).await?,
@@ -452,6 +460,12 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             command: LlmCommand::Ping,
         } => ping::run().await?,
         Command::Completions { shell } => completions::run(shell)?,
+        Command::Templates {
+            command: TemplatesCommand::List,
+        } => templates::list().await?,
+        Command::Templates {
+            command: TemplatesCommand::Use { name },
+        } => templates::use_template(name).await?,
     }
     Ok(())
 }

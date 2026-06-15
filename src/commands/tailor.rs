@@ -19,6 +19,7 @@ use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::ats::{self, AtsReport, EvidenceStatus, KeywordKind};
 use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::{CliError, configured_client, load_requirements};
+use crate::config::Config;
 use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
 use crate::enrich;
@@ -35,9 +36,10 @@ use crate::review::{
 use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
 use crate::style::{self, Spinner, StreamReporter};
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
+use crate::templates;
 use crate::terminal::auto_user;
 use crate::user::{Answer, Question};
-use crate::variant::{self, Variant, VariantAdapterAgent, VariantInput};
+use crate::variant::{self, TemplateId, Variant, VariantAdapterAgent, VariantInput};
 use crate::verify::{unbacked_keywords, verify_keywords};
 use crate::voice;
 
@@ -563,15 +565,24 @@ pub async fn run(
     // variant's payload JSON (ats_payload.json / human_payload.json) too.
     let mut pdfs: Vec<(Variant, PathBuf)> = Vec::new();
     let mut readability_reports: Vec<(Variant, ReadabilityReport)> = Vec::new();
+    // The template id that lands in `meta.json` — the ATS one when it renders
+    // (the "upload this" PDF), else the human one.
+    let mut meta_template = String::new();
     if variants.contains(&Variant::Ats) {
+        let chosen = resolve_ats_template(&config)?;
         let sp = Spinner::start("rendering the ATS resume");
-        let ats = variant::ats_payload(&best.resume);
-        let pdf = render::render(&build.dir, &ats, &render::Template::ats())?;
+        let mut ats = variant::ats_payload(&best.resume);
+        ats.template = TemplateId(chosen.id.clone());
+        let pdf = render::render(&build.dir, &ats, &chosen.template)?;
         sp.finish(style::done("ATS resume rendered"));
         check_readability(&pdf, &ats, Variant::Ats, &mut readability_reports);
         pdfs.push((Variant::Ats, pdf));
+        meta_template = chosen.id;
     }
     if variants.contains(&Variant::Human) {
+        // Resolve the template before the LLM call so a bad name/path fails
+        // fast rather than after the (expensive) reshaping.
+        let chosen = resolve_human_template(&human_template, &config)?;
         let sp = Spinner::start("reshaping for a human reader");
         let run = VariantAdapterAgent
             .run(
@@ -594,15 +605,16 @@ pub async fn run(
         // The guarantee behind the LLM rewording: a variant may differ in
         // presentation, never in claims. A divergence fails the build.
         variant::check_claims(&best.resume, &human)?;
+        let mut human = human;
+        human.template = TemplateId(chosen.id.clone());
         let sp = Spinner::start("rendering the human resume");
-        let template = match &human_template {
-            Some(path) => render::Template::User(path.clone()),
-            None => render::Template::human(),
-        };
-        let pdf = render::render(&build.dir, &human, &template)?;
+        let pdf = render::render(&build.dir, &human, &chosen.template)?;
         sp.finish(style::done("human resume rendered"));
         check_readability(&pdf, &human, Variant::Human, &mut readability_reports);
         pdfs.push((Variant::Human, pdf));
+        if meta_template.is_empty() {
+            meta_template = chosen.id;
+        }
     }
     if !readability_reports.is_empty() {
         let by_variant: std::collections::BTreeMap<String, &ReadabilityReport> =
@@ -618,7 +630,7 @@ pub async fn run(
         &BuildMeta {
             created_at: Utc::now(),
             model: model.to_string(),
-            template: "ats/classic".into(),
+            template: meta_template,
             tailor_usage: total,
         },
     )?;
@@ -718,6 +730,54 @@ struct Evaluation {
 
 /// Review, render, and score one draft, writing its artifacts under
 /// `iterations/<iteration>/`.
+/// A resolved template plus the id to stamp into the payload and `meta.json`.
+struct ChosenTemplate {
+    id: String,
+    template: render::Template,
+}
+
+/// The ATS template to render with: the configured built-in (default
+/// `classic`). ATS is built-in only, so this never reads a user file.
+fn resolve_ats_template(config: &Config) -> Result<ChosenTemplate, CliError> {
+    let name = config.templates.ats_name();
+    Ok(ChosenTemplate {
+        id: format!("ats/{name}"),
+        template: templates::resolve(name, Variant::Ats)?,
+    })
+}
+
+/// The human template to render with. An explicit `--template` wins — a file
+/// path is used directly, anything else is treated as a template name — else
+/// the configured default (a name, default `modern`).
+fn resolve_human_template(
+    arg: &Option<PathBuf>,
+    config: &Config,
+) -> Result<ChosenTemplate, CliError> {
+    if let Some(value) = arg {
+        if value.is_file() {
+            let stem = value
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("custom");
+            return Ok(ChosenTemplate {
+                id: format!("human/{stem}"),
+                template: render::Template::User(value.clone()),
+            });
+        }
+        let name = value.to_string_lossy().into_owned();
+        let template = templates::resolve(&name, Variant::Human)?;
+        return Ok(ChosenTemplate {
+            id: format!("human/{name}"),
+            template,
+        });
+    }
+    let name = config.templates.human_name();
+    Ok(ChosenTemplate {
+        id: format!("human/{name}"),
+        template: templates::resolve(name, Variant::Human)?,
+    })
+}
+
 async fn evaluate(
     ctx: &AgentContext<'_>,
     build_dir: &Path,

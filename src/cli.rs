@@ -141,6 +141,11 @@ pub enum Command {
         /// Which shell to generate for
         shell: clap_complete::Shell,
     },
+    /// List resume templates or set the default for a variant
+    Templates {
+        #[command(subcommand)]
+        command: TemplatesCommand,
+    },
 }
 
 // EXERCISE(EX-004)
@@ -148,6 +153,17 @@ pub enum Command {
 pub enum LlmCommand {
     /// Send a tiny request to verify the key, model, and connectivity
     Ping,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TemplatesCommand {
+    /// List the available templates, marking the active one per variant
+    List,
+    /// Make a template the default (its variant is inferred from the name)
+    Use {
+        /// Template name, e.g. `minimal` (ATS) or `technical` (human)
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
