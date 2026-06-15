@@ -29,6 +29,7 @@ const ATS_TEMPLATE: &str = include_str!("../templates/ats/classic.typ");
 const ATS_MINIMAL_TEMPLATE: &str = include_str!("../templates/ats/minimal.typ");
 const HUMAN_TEMPLATE: &str = include_str!("../templates/human/modern.typ");
 const HUMAN_TECHNICAL_TEMPLATE: &str = include_str!("../templates/human/technical.typ");
+const HUMAN_EDITORIAL_TEMPLATE: &str = include_str!("../templates/human/editorial.typ");
 const SHARED_LIB: &str = include_str!("../templates/_shared/aarg-template-lib.typ");
 
 /// The shared library's staged filename — templates import it by this name.
@@ -134,6 +135,12 @@ pub const BUILTINS: &[Builtin] = &[
         variant: Variant::Human,
         filename: "technical.typ",
         source: HUMAN_TECHNICAL_TEMPLATE,
+    },
+    Builtin {
+        name: "editorial",
+        variant: Variant::Human,
+        filename: "editorial.typ",
+        source: HUMAN_EDITORIAL_TEMPLATE,
     },
 ];
 
