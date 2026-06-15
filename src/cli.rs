@@ -136,6 +136,11 @@ pub enum Command {
         #[command(subcommand)]
         command: LlmCommand,
     },
+    /// Print a shell completion script (source it from your shell's rc file)
+    Completions {
+        /// Which shell to generate for
+        shell: clap_complete::Shell,
+    },
 }
 
 // EXERCISE(EX-004)

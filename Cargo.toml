@@ -17,6 +17,7 @@ aarg-core = { path = "crates/aarg-core" }
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
+clap_complete = "4.6.1"
 directories = "6.0.0"
 indicatif = "0.18.4"
 inquire = "0.9.4"

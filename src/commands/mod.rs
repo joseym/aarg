@@ -7,6 +7,7 @@
 //! everywhere below, errors stay module-specific.
 
 pub mod attack;
+pub mod completions;
 pub mod config;
 pub mod dataset;
 pub mod gap;
@@ -450,6 +451,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         Command::Llm {
             command: LlmCommand::Ping,
         } => ping::run().await?,
+        Command::Completions { shell } => completions::run(shell)?,
     }
     Ok(())
 }
