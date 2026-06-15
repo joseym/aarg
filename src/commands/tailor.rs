@@ -42,7 +42,16 @@ use crate::variant::{self, Variant, VariantAdapterAgent, VariantInput};
 use crate::verify::{unbacked_keywords, verify_keywords};
 use crate::voice;
 
-pub async fn run(path: PathBuf, variants: Vec<Variant>) -> Result<(), CliError> {
+pub async fn run(
+    path: PathBuf,
+    variants: Vec<Variant>,
+    human_template: Option<PathBuf>,
+) -> Result<(), CliError> {
+    // A custom template applies to the human variant; reject it up front if
+    // that variant won't be rendered, rather than silently ignoring it.
+    if human_template.is_some() && !variants.contains(&Variant::Human) {
+        return Err(CliError::TemplateWithoutHuman);
+    }
     let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = Tracer::to_default_dir()?;
@@ -587,7 +596,11 @@ pub async fn run(path: PathBuf, variants: Vec<Variant>) -> Result<(), CliError> 
         // presentation, never in claims. A divergence fails the build.
         variant::check_claims(&best.resume, &human)?;
         let sp = Spinner::start("rendering the human resume");
-        let pdf = render::render(&build.dir, &human, &render::Template::human())?;
+        let template = match &human_template {
+            Some(path) => render::Template::User(path.clone()),
+            None => render::Template::human(),
+        };
+        let pdf = render::render(&build.dir, &human, &template)?;
         sp.finish(style::done("human resume rendered"));
         check_readability(&pdf, &human, Variant::Human, &mut readability_reports);
         pdfs.push((Variant::Human, pdf));

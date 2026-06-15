@@ -75,6 +75,11 @@ pub enum Command {
         /// Which PDF(s) to render: ats, human, or both (default)
         #[arg(long, value_enum, default_value_t = VariantArg::Both)]
         variant: VariantArg,
+        /// Render the human variant with your own Typst template (a `.typ`
+        /// file reading the variant-payload JSON). The ATS layout stays the
+        /// built-in parser-safe one.
+        #[arg(long, value_name = "PATH")]
+        template: Option<std::path::PathBuf>,
     },
     /// Maintain the skills in your dataset
     Skills {
@@ -309,13 +314,30 @@ mod tests {
     fn tailor_takes_a_jd_path_and_defaults_to_both_variants() {
         let cli = Cli::try_parse_from(["aarg", "tailor", "jd.txt"]).unwrap();
         match cli.command {
-            Command::Tailor { jd, variant } => {
+            Command::Tailor {
+                jd,
+                variant,
+                template,
+            } => {
                 assert_eq!(jd, std::path::PathBuf::from("jd.txt"));
                 assert_eq!(variant, VariantArg::Both);
+                assert_eq!(template, None);
             }
             other => panic!("expected tailor, got {other:?}"),
         }
         assert!(Cli::try_parse_from(["aarg", "tailor"]).is_err());
+    }
+
+    #[test]
+    fn tailor_template_flag_parses_a_path() {
+        let cli =
+            Cli::try_parse_from(["aarg", "tailor", "jd.txt", "--template", "my.typ"]).unwrap();
+        match cli.command {
+            Command::Tailor { template, .. } => {
+                assert_eq!(template, Some(std::path::PathBuf::from("my.typ")));
+            }
+            other => panic!("expected tailor, got {other:?}"),
+        }
     }
 
     #[test]

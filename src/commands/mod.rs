@@ -306,4 +306,10 @@ pub enum CliError {
         "a variant projection made a claim the canonical draft doesn't; the build was refused to keep the two PDFs honest. This is a bug in the variant adapter, not your data."
     ))]
     ClaimDivergence(#[from] ClaimDivergence),
+
+    #[error("--template customizes the human variant, but it isn't being rendered")]
+    #[diagnostic(help(
+        "drop --variant ats, or use --variant human / --variant both so the human PDF (the one your template renders) is produced"
+    ))]
+    TemplateWithoutHuman,
 }
