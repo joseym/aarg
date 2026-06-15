@@ -10,16 +10,45 @@
 use std::io::{IsTerminal, Read};
 
 use chrono::Utc;
+use inquire::Confirm;
 
 use crate::commands::CliError;
 use crate::dataset::store;
-use crate::dataset::types::{SampleId, VoiceSample};
+use crate::dataset::types::{ResumeDataset, SampleId, VoiceSample};
 
 /// Capture a writing sample and append it to the dataset. Interactively
 /// (a terminal with `$EDITOR` set) this opens an editor — write, save,
 /// quit; otherwise it reads stdin, so `aarg voice add < sample.txt` and
 /// scripted input still work.
 pub async fn add(context: Option<String>) -> Result<(), CliError> {
+    let mut dataset = store::load()?;
+    // An explicit `voice add` that yields nothing is a user error.
+    let Some(id) = capture_into(&mut dataset, context)? else {
+        return Err(CliError::EmptyVoiceSample);
+    };
+    store::save(&dataset)?;
+    let chars = dataset
+        .voice_samples
+        .last()
+        .map(|sample| sample.text.chars().count())
+        .unwrap_or(0);
+    println!(
+        "captured {} ({chars} chars) · {} sample(s) total (previous version backed up)",
+        id.0,
+        dataset.voice_samples.len()
+    );
+    Ok(())
+}
+
+/// Read one writing sample (an editor when interactive with `$EDITOR`, else
+/// stdin) and append it to `dataset`, returning the new sample's id.
+/// `Ok(None)` means nothing was provided — the caller decides whether a
+/// blank sample is an error (`add`) or simply nothing to do (onboarding).
+/// Shared by `aarg voice add` and the onboarding offer below.
+fn capture_into(
+    dataset: &mut ResumeDataset,
+    context: Option<String>,
+) -> Result<Option<SampleId>, CliError> {
     let interactive = std::io::stdin().is_terminal();
     let text = if interactive && crate::commands::editor_available() {
         read_via_editor()?
@@ -28,12 +57,9 @@ pub async fn add(context: Option<String>) -> Result<(), CliError> {
     };
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Err(CliError::EmptyVoiceSample);
+        return Ok(None);
     }
-
-    let mut dataset = store::load()?;
-    let id = next_sample_id(&dataset);
-    let chars = text.chars().count();
+    let id = next_sample_id(dataset);
     dataset.voice_samples.push(VoiceSample {
         id: id.clone(),
         text,
@@ -41,14 +67,42 @@ pub async fn add(context: Option<String>) -> Result<(), CliError> {
         context: context.filter(|c| !c.trim().is_empty()),
     });
     dataset.metadata.updated_at = Utc::now();
-    store::save(&dataset)?;
+    Ok(Some(id))
+}
 
-    println!(
-        "captured {} ({chars} chars) · {} sample(s) total (previous version backed up)",
-        id.0,
-        dataset.voice_samples.len()
-    );
-    Ok(())
+/// Offer to capture a writing sample at onboarding (after `ingest`), so the
+/// voice rewrite has an anchor from the first build. Interactive only: a
+/// piped or CI run skips silently (the sample can be added later with
+/// `aarg voice add`), so onboarding never blocks a script. Returns whether
+/// a sample was added, so the caller knows to persist the dataset again.
+pub(crate) fn offer_onboarding_sample(dataset: &mut ResumeDataset) -> Result<bool, CliError> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    let proceed = Confirm::new("Capture a writing voice sample now?")
+        .with_help_message(
+            "anchors voice rewrites to your own style; add more later with `aarg voice add`",
+        )
+        .with_default(true)
+        .prompt()?;
+    if !proceed {
+        println!("skipped — add one anytime with `aarg voice add`.");
+        return Ok(false);
+    }
+    match capture_into(dataset, Some("onboarding".to_string()))? {
+        Some(id) => {
+            println!(
+                "captured {} · {} sample(s) total.",
+                id.0,
+                dataset.voice_samples.len()
+            );
+            Ok(true)
+        }
+        None => {
+            println!("nothing captured — add one anytime with `aarg voice add`.");
+            Ok(false)
+        }
+    }
 }
 
 /// The instructional header an editor capture opens with. Stripped
@@ -191,6 +245,16 @@ mod tests {
             context: None,
         });
         assert_eq!(next_sample_id(&dataset), SampleId("sample-5".into()));
+    }
+
+    #[test]
+    fn onboarding_offer_is_a_noop_without_a_terminal() {
+        // Under `cargo test` stdin is not a tty, so the offer must skip
+        // cleanly and leave the dataset untouched — onboarding never blocks
+        // a piped or CI run.
+        let mut dataset = empty_dataset();
+        assert!(!offer_onboarding_sample(&mut dataset).unwrap());
+        assert!(dataset.voice_samples.is_empty());
     }
 
     #[test]

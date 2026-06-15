@@ -60,5 +60,14 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     if replacing {
         println!("(the previous dataset was backed up to dataset.json.bak)");
     }
+
+    // Onboarding: offer to capture a writing sample now so voice rewrites
+    // have an anchor from the first build. The dataset is already saved
+    // above, so a declined or interrupted capture never loses the ingest;
+    // we persist again only if a sample was actually added. Interactive
+    // only — a piped or CI run skips this silently.
+    if super::voice::offer_onboarding_sample(&mut outcome.dataset)? {
+        store::save(&outcome.dataset)?;
+    }
     Ok(())
 }
