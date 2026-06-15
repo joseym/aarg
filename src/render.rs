@@ -21,18 +21,21 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::variant::VariantPayload;
+use crate::variant::{Variant, VariantPayload};
 
 /// The shipped templates and the shared library, embedded at compile time so
 /// a fresh install renders with zero setup.
 const ATS_TEMPLATE: &str = include_str!("../templates/ats/classic.typ");
+const ATS_MINIMAL_TEMPLATE: &str = include_str!("../templates/ats/minimal.typ");
 const HUMAN_TEMPLATE: &str = include_str!("../templates/human/modern.typ");
+const HUMAN_TECHNICAL_TEMPLATE: &str = include_str!("../templates/human/technical.typ");
 const SHARED_LIB: &str = include_str!("../templates/_shared/aarg-template-lib.typ");
 
 /// The shared library's staged filename — templates import it by this name.
 const SHARED_LIB_NAME: &str = "aarg-template-lib.typ";
 
 /// A resolvable template: a built-in (embedded) or a user-supplied file.
+#[derive(Debug)]
 pub enum Template {
     Builtin {
         /// The filename to stage it under (templates import each other by name).
@@ -82,6 +85,57 @@ impl Template {
         }
     }
 }
+
+/// A shipped template: its public name, the variant it serves, and its
+/// source embedded at compile time. This list is the single registry every
+/// name-based lookup (the `templates` module, `aarg templates list`)
+/// consults, so adding a built-in is one entry here plus its `.typ` file.
+pub struct Builtin {
+    pub name: &'static str,
+    pub variant: Variant,
+    pub filename: &'static str,
+    pub source: &'static str,
+}
+
+impl Builtin {
+    /// The renderable `Template` for this built-in.
+    pub fn template(&self) -> Template {
+        Template::Builtin {
+            filename: self.filename,
+            source: self.source,
+        }
+    }
+}
+
+/// Every shipped template. ATS templates must stay parser-safe (they are the
+/// ones uploaded to applicant trackers); human templates are free to be
+/// designed.
+pub const BUILTINS: &[Builtin] = &[
+    Builtin {
+        name: "classic",
+        variant: Variant::Ats,
+        filename: "classic.typ",
+        source: ATS_TEMPLATE,
+    },
+    Builtin {
+        name: "minimal",
+        variant: Variant::Ats,
+        filename: "minimal.typ",
+        source: ATS_MINIMAL_TEMPLATE,
+    },
+    Builtin {
+        name: "modern",
+        variant: Variant::Human,
+        filename: "modern.typ",
+        source: HUMAN_TEMPLATE,
+    },
+    Builtin {
+        name: "technical",
+        variant: Variant::Human,
+        filename: "technical.typ",
+        source: HUMAN_TECHNICAL_TEMPLATE,
+    },
+];
 
 /// Everything that can go wrong while rendering.
 #[derive(Debug, thiserror::Error)]
