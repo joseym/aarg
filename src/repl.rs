@@ -136,9 +136,32 @@ pub async fn run() -> Result<(), CliError> {
 /// parser uses — so completions never drift from the real commands.
 struct AargCompleter;
 
+/// A positional argument some commands accept whose values aren't in the
+/// grammar but can be looked up live: build ids and stored key labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dynamic {
+    None,
+    BuildIds,
+    KeyLabels,
+}
+
 impl Completer for AargCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
-        let (start, values) = candidates(line, pos);
+        let (start, mut values, dynamic) = candidates(line, pos);
+
+        // Fold in live values for the positional we're on (build ids, key
+        // labels). The lookup touches the filesystem, so it only runs here
+        // (on Tab), never in the pure grammar walk above.
+        let word = &line[start.min(line.len())..pos.min(line.len())];
+        let live = match dynamic {
+            Dynamic::None => Vec::new(),
+            Dynamic::BuildIds => build_ids(),
+            Dynamic::KeyLabels => key_labels(),
+        };
+        values.extend(live.into_iter().filter(|value| value.starts_with(word)));
+        values.sort();
+        values.dedup();
+
         values
             .into_iter()
             .map(|value| Suggestion {
@@ -155,6 +178,22 @@ impl Completer for AargCompleter {
     }
 }
 
+/// Stored build ids, newest-first as `history` lists them. An unreadable
+/// builds directory just yields no completions.
+fn build_ids() -> Vec<String> {
+    crate::history::list()
+        .map(|builds| builds.into_iter().map(|build| build.id).collect())
+        .unwrap_or_default()
+}
+
+/// Labels of the API keys recorded in config. An unreadable config yields
+/// no completions.
+fn key_labels() -> Vec<String> {
+    crate::config::Config::load()
+        .map(|config| config.anthropic.keys)
+        .unwrap_or_default()
+}
+
 /// The completion candidates for `line` at byte position `pos`, plus the
 /// byte index where the word under the cursor starts (the span to replace).
 /// Pure, so the grammar walk is unit-testable without a terminal.
@@ -162,8 +201,9 @@ impl Completer for AargCompleter {
 /// It walks the clap command tree by the words already typed: at the root
 /// it offers commands (and the REPL built-ins); after a command it offers
 /// that command's subcommands; a word starting with `-` offers long flags.
-/// Positional argument values (a JD path, a build id) are not completed.
-fn candidates(line: &str, pos: usize) -> (usize, Vec<String>) {
+/// Most positional values aren't completed, but a few are looked up live
+/// (see the returned [`Dynamic`]): build ids and stored key labels.
+fn candidates(line: &str, pos: usize) -> (usize, Vec<String>, Dynamic) {
     let prefix = &line[..pos.min(line.len())];
     // The word under the cursor begins just after the last whitespace.
     let word_start = prefix
@@ -174,19 +214,32 @@ fn candidates(line: &str, pos: usize) -> (usize, Vec<String>) {
     // The command path already typed before the current word.
     let path: Vec<&str> = prefix[..word_start].split_whitespace().collect();
 
-    // Descend the command tree as far as the path matches subcommands.
+    // Descend the command tree as far as the path matches subcommands,
+    // counting how many words were consumed getting there.
     let root = Cli::command();
     let mut command = &root;
+    let mut consumed = 0;
     for token in &path {
         match command
             .get_subcommands()
             .find(|sub| sub.get_name() == *token || sub.get_all_aliases().any(|a| a == *token))
         {
-            Some(sub) => command = sub,
-            // A positional or flag value: stop — arg values aren't completed.
+            Some(sub) => {
+                command = sub;
+                consumed += 1;
+            }
+            // A positional or flag value: stop — subcommands end here.
             None => break,
         }
     }
+
+    // Words typed under the command that aren't flags are positional values
+    // already given; their count is the index of the one being completed.
+    let positional_index = path[consumed..]
+        .iter()
+        .filter(|token| !token.starts_with('-'))
+        .count();
+    let dynamic = dynamic_for(command.get_name(), positional_index, word);
 
     let mut pool: Vec<String> = Vec::new();
     if word.starts_with('-') {
@@ -212,7 +265,27 @@ fn candidates(line: &str, pos: usize) -> (usize, Vec<String>) {
     pool.retain(|candidate| candidate.starts_with(word));
     pool.sort();
     pool.dedup();
-    (word_start, pool)
+    (word_start, pool, dynamic)
+}
+
+/// Which live-looked-up values, if any, complete the `positional_index`-th
+/// positional of `command`. Pure (no I/O): the actual lookup happens in the
+/// `Completer` impl, so this stays unit-testable. A flag word completes no
+/// positional.
+fn dynamic_for(command: &str, positional_index: usize, word: &str) -> Dynamic {
+    if word.starts_with('-') {
+        return Dynamic::None;
+    }
+    match command {
+        // `attack <build>` and `diff <from> <to>` take build ids.
+        "attack" if positional_index == 0 => Dynamic::BuildIds,
+        "diff" if positional_index <= 1 => Dynamic::BuildIds,
+        // `history rm <ids...>` is variadic — keep offering build ids.
+        "rm" => Dynamic::BuildIds,
+        // `key use <label>` and `key remove <label>` take stored labels.
+        "use" | "remove" if positional_index == 0 => Dynamic::KeyLabels,
+        _ => Dynamic::None,
+    }
 }
 
 #[cfg(test)]
@@ -286,7 +359,7 @@ mod tests {
 
     #[test]
     fn after_a_command_its_subcommands_are_offered() {
-        let (start, values) = candidates("key ", 4);
+        let (start, values, _) = candidates("key ", 4);
         // The new word starts at the cursor (nothing to replace yet).
         assert_eq!(start, 4);
         for sub in ["list", "add", "use", "remove"] {
@@ -298,7 +371,7 @@ mod tests {
 
     #[test]
     fn a_subcommand_prefix_narrows_and_reports_its_span() {
-        let (start, values) = candidates("key re", 6);
+        let (start, values, _) = candidates("key re", 6);
         // The span replaces the partial word "re" (starts at byte 4).
         assert_eq!(start, 4);
         assert_eq!(values, vec!["remove".to_string()]);
@@ -311,5 +384,41 @@ mod tests {
         assert!(values.contains(&"--template".to_string()));
         // Subcommand names are not offered when completing a flag.
         assert!(!values.contains(&"key".to_string()));
+    }
+
+    // Helper: the dynamic-value intent for a line completed at its end.
+    fn dynamic(line: &str) -> Dynamic {
+        candidates(line, line.len()).2
+    }
+
+    #[test]
+    fn build_id_positionals_are_flagged_for_live_lookup() {
+        // `attack <build>`: first positional.
+        assert_eq!(dynamic("attack "), Dynamic::BuildIds);
+        assert_eq!(dynamic("attack 02"), Dynamic::BuildIds);
+        // `diff <from> <to>`: both positionals.
+        assert_eq!(dynamic("diff "), Dynamic::BuildIds);
+        assert_eq!(dynamic("diff 020 "), Dynamic::BuildIds);
+        // `history rm <ids...>`: variadic, stays on build ids.
+        assert_eq!(dynamic("history rm "), Dynamic::BuildIds);
+        assert_eq!(dynamic("history rm 019 "), Dynamic::BuildIds);
+    }
+
+    #[test]
+    fn key_label_positionals_are_flagged_for_live_lookup() {
+        assert_eq!(dynamic("key use "), Dynamic::KeyLabels);
+        assert_eq!(dynamic("key remove pe"), Dynamic::KeyLabels);
+        // `key add <label>` names a NEW label, so nothing to suggest.
+        assert_eq!(dynamic("key add "), Dynamic::None);
+    }
+
+    #[test]
+    fn commands_without_completable_positionals_stay_static() {
+        // A JD path is not completed from the grammar.
+        assert_eq!(dynamic("tailor "), Dynamic::None);
+        // A flag word never triggers a positional lookup.
+        assert_eq!(dynamic("attack -"), Dynamic::None);
+        // Past the second positional, diff has no more ids to give.
+        assert_eq!(dynamic("diff 020 021 "), Dynamic::None);
     }
 }
