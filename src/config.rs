@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 /// The model used for Anthropic requests when the user has not picked one.
 pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-4-5-20251001";
 
+/// The label a key is filed under when the user never names one — the
+/// single-key case, and what a legacy (pre-labels) key is adopted as.
+pub const DEFAULT_KEY_LABEL: &str = "default";
+
 /// Everything that can go wrong while locating, reading, parsing, or
 /// writing the config file.
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +90,17 @@ pub struct AnthropicConfig {
     /// Per-agent overrides by agent id ("tailoring_v1" -> model), the
     /// highest-priority resolution step.
     pub agents: std::collections::BTreeMap<String, String>,
+    /// Labels of the API keys stored for this provider, e.g. `["personal",
+    /// "work"]`. The secrets themselves live in the OS keychain (see the
+    /// `secrets` module); this is only the registry of which labels exist,
+    /// because the keychain can't be enumerated portably. Empty means no
+    /// labeled key yet — a legacy single key may still live in the bare
+    /// keychain slot (see `secrets::load_legacy_key`).
+    pub keys: Vec<String>,
+    /// Which stored key (a `keys` label) requests use by default. `None`
+    /// resolves to the sole key when there is exactly one, otherwise to the
+    /// conventional `DEFAULT_KEY_LABEL`. See `active_label`.
+    pub active_key: Option<String>,
 }
 
 impl Default for AnthropicConfig {
@@ -94,6 +109,41 @@ impl Default for AnthropicConfig {
             model: DEFAULT_ANTHROPIC_MODEL.to_string(),
             tiers: ModelTiers::default(),
             agents: std::collections::BTreeMap::new(),
+            keys: Vec::new(),
+            active_key: None,
+        }
+    }
+}
+
+impl AnthropicConfig {
+    /// The key label requests use by default: an explicit `active_key` if
+    /// set, else the sole stored key, else the conventional default label.
+    /// (A one-off `AARG_KEY` env override is applied above this, at the
+    /// call site in `configured_client`.)
+    pub fn active_label(&self) -> &str {
+        if let Some(active) = &self.active_key {
+            return active;
+        }
+        match self.keys.as_slice() {
+            [only] => only,
+            _ => DEFAULT_KEY_LABEL,
+        }
+    }
+
+    /// Record that a key labeled `label` now exists (idempotent). The secret
+    /// is stored separately, in the keychain.
+    pub fn register_key(&mut self, label: &str) {
+        if !self.keys.iter().any(|existing| existing == label) {
+            self.keys.push(label.to_string());
+        }
+    }
+
+    /// Forget a key label, clearing `active_key` if it pointed at it. The
+    /// caller is responsible for deleting the secret from the keychain.
+    pub fn forget_key(&mut self, label: &str) {
+        self.keys.retain(|existing| existing != label);
+        if self.active_key.as_deref() == Some(label) {
+            self.active_key = None;
         }
     }
 }
@@ -275,11 +325,76 @@ mod tests {
                     "tailoring_v1".to_string(),
                     "claude-opus-4-8".to_string(),
                 )]),
+                ..AnthropicConfig::default()
             },
             ..Config::default()
         };
         config.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn keys_and_active_key_round_trip_through_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            anthropic: AnthropicConfig {
+                keys: vec!["personal".to_string(), "work".to_string()],
+                active_key: Some("work".to_string()),
+                ..AnthropicConfig::default()
+            },
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn active_label_prefers_explicit_then_sole_then_default() {
+        // No keys, no active: the conventional default label.
+        let none = AnthropicConfig::default();
+        assert_eq!(none.active_label(), DEFAULT_KEY_LABEL);
+
+        // Exactly one key and no explicit active: that sole key.
+        let sole = AnthropicConfig {
+            keys: vec!["personal".to_string()],
+            ..AnthropicConfig::default()
+        };
+        assert_eq!(sole.active_label(), "personal");
+
+        // Several keys, no explicit active: fall back to the default label
+        // rather than guess which of several the user meant.
+        let several = AnthropicConfig {
+            keys: vec!["personal".to_string(), "work".to_string()],
+            ..AnthropicConfig::default()
+        };
+        assert_eq!(several.active_label(), DEFAULT_KEY_LABEL);
+
+        // An explicit active wins over everything.
+        let explicit = AnthropicConfig {
+            keys: vec!["personal".to_string(), "work".to_string()],
+            active_key: Some("work".to_string()),
+            ..AnthropicConfig::default()
+        };
+        assert_eq!(explicit.active_label(), "work");
+    }
+
+    #[test]
+    fn register_key_is_idempotent_and_forget_clears_active() {
+        let mut config = AnthropicConfig::default();
+        config.register_key("work");
+        config.register_key("work"); // no duplicate
+        config.register_key("personal");
+        assert_eq!(
+            config.keys,
+            vec!["work".to_string(), "personal".to_string()]
+        );
+
+        config.active_key = Some("work".to_string());
+        config.forget_key("work");
+        assert_eq!(config.keys, vec!["personal".to_string()]);
+        // Forgetting the active key clears the pointer so it can't dangle.
+        assert_eq!(config.active_key, None);
     }
 
     #[test]
@@ -366,6 +481,7 @@ mod tests {
                 "tailoring_v1".to_string(),
                 "pinned".to_string(),
             )]),
+            ..AnthropicConfig::default()
         };
         // The per-agent pin beats the tier it would otherwise resolve to.
         assert_eq!(config.resolve("tailoring_v1", ModelTier::Smart), "pinned");
