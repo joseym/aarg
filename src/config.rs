@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 /// The model used for Anthropic requests when the user has not picked one.
@@ -221,12 +220,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// The directory holding aarg's configuration (e.g. `~/.config/aarg`
-    /// on Linux), chosen per-OS by the `directories` crate.
+    /// The directory holding aarg's configuration — the active workspace's
+    /// `.aarg/` when one is in use, otherwise the per-OS config directory
+    /// (e.g. `~/.config/aarg` on Linux). Resolved by the `workspace` module.
     pub fn dir() -> Result<PathBuf, ConfigError> {
-        ProjectDirs::from("", "", "aarg")
-            .map(|dirs| dirs.config_dir().to_path_buf())
-            .ok_or(ConfigError::NoHomeDir)
+        crate::workspace::config_dir().ok_or(ConfigError::NoHomeDir)
     }
 
     /// Full path of `config.toml`.
@@ -240,7 +238,9 @@ impl Config {
         Self::load_from(&Self::path()?)
     }
 
-    fn load_from(path: &Path) -> Result<Self, ConfigError> {
+    /// Load the config from an explicit path. Used by `init` to target a
+    /// workspace it is creating, before discovery would find it.
+    pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -265,7 +265,9 @@ impl Config {
         self.save_to(&Self::path()?)
     }
 
-    fn save_to(&self, path: &Path) -> Result<(), ConfigError> {
+    /// Write the config to an explicit path, creating parent directories.
+    /// Used by `init` to write into a workspace it is creating.
+    pub fn save_to(&self, path: &Path) -> Result<(), ConfigError> {
         let text = toml::to_string_pretty(self)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ConfigError::Write {

@@ -35,6 +35,7 @@ pub async fn run() -> Result<(), CliError> {
         Err(error) => format!("unknown ({error})"),
     };
 
+    println!("workspace:   {}", crate::workspace::locate().describe());
     println!(
         "config file: {}{}",
         path.display(),

@@ -39,3 +39,4 @@ pub mod terminal;
 pub mod variant;
 pub mod verify;
 pub mod voice;
+pub mod workspace;

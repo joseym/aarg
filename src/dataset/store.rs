@@ -21,7 +21,6 @@ use std::fs::{self, File, TryLockError};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
 use serde::Deserialize;
 
 use crate::dataset::types::{ResumeDataset, SCHEMA_VERSION};
@@ -69,12 +68,11 @@ pub enum DatasetError {
     Serialize(#[source] serde_json::Error),
 }
 
-/// The directory the dataset lives in — the same per-OS config directory
-/// as `config.toml` (PRD §8).
+/// The directory the dataset lives in — the same directory as
+/// `config.toml`: the active workspace's `.aarg/`, else the per-OS config
+/// directory. Resolved by the `workspace` module.
 pub fn dir() -> Result<PathBuf, DatasetError> {
-    ProjectDirs::from("", "", "aarg")
-        .map(|dirs| dirs.config_dir().to_path_buf())
-        .ok_or(DatasetError::NoHomeDir)
+    crate::workspace::config_dir().ok_or(DatasetError::NoHomeDir)
 }
 
 /// Load the dataset from its default location.

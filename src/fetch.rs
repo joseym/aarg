@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use async_trait::async_trait;
-use directories::ProjectDirs;
 use serde::Deserialize;
 
 use crate::agent::{Tool, ToolError};
@@ -374,10 +373,11 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// `~/.cache/aarg/jd_cache` (per-OS equivalent).
+/// `jd_cache/` under the active workspace's cache directory (the `.aarg/`
+/// workspace, else `~/.cache/aarg`). Resolved by the `workspace` module.
 fn cache_dir() -> Result<PathBuf, FetchError> {
-    ProjectDirs::from("", "", "aarg")
-        .map(|dirs| dirs.cache_dir().join("jd_cache"))
+    crate::workspace::cache_dir()
+        .map(|dir| dir.join("jd_cache"))
         .ok_or(FetchError::NoHomeDir)
 }
 

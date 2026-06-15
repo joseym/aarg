@@ -12,7 +12,6 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::TokenUsage;
@@ -51,10 +50,11 @@ pub struct BuildMeta {
     pub tailor_usage: TokenUsage,
 }
 
-/// Where builds live: the per-OS data directory.
+/// Where builds live: `builds/` under the active workspace's `.aarg/`, else
+/// under the per-OS data directory. Resolved by the `workspace` module.
 pub fn builds_root() -> Result<PathBuf, BuildError> {
-    ProjectDirs::from("", "", "aarg")
-        .map(|dirs| dirs.data_dir().join("builds"))
+    crate::workspace::data_dir()
+        .map(|dir| dir.join("builds"))
         .ok_or(BuildError::NoHomeDir)
 }
 
