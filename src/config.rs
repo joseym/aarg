@@ -15,6 +15,10 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-haiku-4-5-20251001";
 /// single-key case, and what a legacy (pre-labels) key is adopted as.
 pub const DEFAULT_KEY_LABEL: &str = "default";
 
+/// The template each variant renders with when the user hasn't picked one.
+pub const DEFAULT_ATS_TEMPLATE: &str = "classic";
+pub const DEFAULT_HUMAN_TEMPLATE: &str = "modern";
+
 /// Everything that can go wrong while locating, reading, parsing, or
 /// writing the config file.
 #[derive(Debug, thiserror::Error)]
@@ -205,6 +209,29 @@ impl Default for Limits {
     }
 }
 
+/// Which template each variant renders with. A `None` falls back to the
+/// shipped default (`classic` for ATS, `modern` for human); names resolve
+/// through the `templates` module (a built-in, or a user file under the
+/// workspace `templates/` directory).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TemplatesConfig {
+    pub ats: Option<String>,
+    pub human: Option<String>,
+}
+
+impl TemplatesConfig {
+    /// The ATS template name to render with (configured, else the default).
+    pub fn ats_name(&self) -> &str {
+        self.ats.as_deref().unwrap_or(DEFAULT_ATS_TEMPLATE)
+    }
+
+    /// The human template name to render with (configured, else the default).
+    pub fn human_name(&self) -> &str {
+        self.human.as_deref().unwrap_or(DEFAULT_HUMAN_TEMPLATE)
+    }
+}
+
 /// The contents of `config.toml`. Any field missing from the file falls
 /// back to its default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -213,6 +240,8 @@ pub struct Config {
     pub provider: Provider,
     pub anthropic: AnthropicConfig,
     pub limits: Limits,
+    /// Which template each variant renders with.
+    pub templates: TemplatesConfig,
     /// Per-model price overrides (dollars per million tokens), keyed by
     /// model id. Absent models fall back to `pricing`'s built-in family
     /// rates; an empty table (the default) uses the built-ins for all.
@@ -379,6 +408,29 @@ mod tests {
             ..AnthropicConfig::default()
         };
         assert_eq!(explicit.active_label(), "work");
+    }
+
+    #[test]
+    fn templates_round_trip_and_default_to_the_shipped_names() {
+        // Defaults when nothing is configured.
+        let defaults = TemplatesConfig::default();
+        assert_eq!(defaults.ats_name(), "classic");
+        assert_eq!(defaults.human_name(), "modern");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            templates: TemplatesConfig {
+                ats: Some("minimal".to_string()),
+                human: Some("technical".to_string()),
+            },
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(loaded.templates.ats_name(), "minimal");
+        assert_eq!(loaded.templates.human_name(), "technical");
     }
 
     #[test]
