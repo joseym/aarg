@@ -37,10 +37,11 @@ use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
 use crate::trace::Tracer;
 use crate::user::{Answer, Question};
+use crate::variant::{self, Variant, VariantAdapterAgent, VariantInput};
 use crate::verify::{unbacked_keywords, verify_keywords};
 use crate::voice;
 
-pub async fn run(path: PathBuf) -> Result<(), CliError> {
+pub async fn run(path: PathBuf, variants: Vec<Variant>) -> Result<(), CliError> {
     let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = Tracer::to_default_dir()?;
@@ -546,9 +547,50 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     builds::write_json(&build.dir, "canonical.json", &best.resume)?;
     builds::write_json(&build.dir, "adversarial_report.json", &best.report)?;
     builds::write_json(&build.dir, "ats_report.json", &best.ats_report)?;
-    let sp = Spinner::start("rendering the best draft");
-    let pdf = render::render_ats(&build.dir, &best.resume)?;
-    sp.finish(style::done("rendered"));
+    // Render the requested variant(s). The ATS payload is a deterministic
+    // projection of the canonical draft; the human variant is reworded by the
+    // adapter and then checked against the canonical, so the two PDFs can
+    // differ in presentation but never in claims. `render` writes each
+    // variant's payload JSON (ats_payload.json / human_payload.json) too.
+    let mut pdfs: Vec<(Variant, PathBuf)> = Vec::new();
+    if variants.contains(&Variant::Ats) {
+        let sp = Spinner::start("rendering the ATS resume");
+        let pdf = render::render(
+            &build.dir,
+            &variant::ats_payload(&best.resume),
+            &render::Template::ats(),
+        )?;
+        sp.finish(style::done("ATS resume rendered"));
+        pdfs.push((Variant::Ats, pdf));
+    }
+    if variants.contains(&Variant::Human) {
+        let sp = Spinner::start("reshaping for a human reader");
+        let run = VariantAdapterAgent
+            .run(
+                &ctx,
+                VariantInput {
+                    draft: best.resume.clone(),
+                    variant: Variant::Human,
+                },
+            )
+            .await?;
+        add_usage(&mut total, run.usage);
+        let human = run.output;
+        sp.finish(style::done("reshaped for a human reader"));
+        // Re-review the reword and revert any overclaim to the canonical text
+        // — the non-numeric backstop, matching the voice pass (the digit and
+        // skill/role guards already caught fabricated numbers and entities).
+        let (human, review_usage) =
+            variant::vet_human(&ctx, &best.resume, human, &requirements, &dataset).await?;
+        add_usage(&mut total, review_usage);
+        // The guarantee behind the LLM rewording: a variant may differ in
+        // presentation, never in claims. A divergence fails the build.
+        variant::check_claims(&best.resume, &human)?;
+        let sp = Spinner::start("rendering the human resume");
+        let pdf = render::render(&build.dir, &human, &render::Template::human())?;
+        sp.finish(style::done("human resume rendered"));
+        pdfs.push((Variant::Human, pdf));
+    }
     builds::write_json(
         &build.dir,
         "meta.json",
@@ -586,7 +628,13 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         "\n{}",
         style::done(style::bold(format!("build {} saved", build.id.0)))
     );
-    eprintln!("  {}", style::dim(pdf.display()));
+    for (v, pdf) in &pdfs {
+        eprintln!(
+            "  {}  {}",
+            style::dim(pdf.display()),
+            style::dim(format!("— {}", v.purpose()))
+        );
+    }
     eprintln!("  {score}");
 
     // Cost estimate (and a budget nudge), priced at the tailoring model.
@@ -659,7 +707,12 @@ async fn evaluate(
     let report = run.output;
 
     let sp = Spinner::start(format!("rendering & scoring iteration {iteration}"));
-    let pdf = render::render_ats(&iter_dir, &resume)?;
+    // Coverage is an ATS concern: render the deterministic ATS projection.
+    let pdf = render::render(
+        &iter_dir,
+        &variant::ats_payload(&resume),
+        &render::Template::ats(),
+    )?;
     let page_text = ats::extract_pdf_text(&pdf)?;
     let ats_report = ats::keyword_coverage(jd, gap, dataset, &page_text);
     sp.finish(style::dim(format!("iteration {iteration} reviewed")));

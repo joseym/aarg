@@ -1,26 +1,87 @@
-//! Rendering the canonical resume to a PDF by shelling out to the
-//! `typst` binary (FR-1.6, PRD §9.2).
+//! Rendering a variant payload to a PDF by shelling out to the `typst`
+//! binary (FR-1.6 / FR-5.2, PRD §9.2).
 //!
 //! Everything typst needs is staged *inside the build directory*: the
-//! payload JSON and a copy of the template. That keeps typst's project
-//! root simple (a template resolves `json(sys.inputs.data)` relative to
+//! payload JSON, a copy of the template, and the shared template library.
+//! That keeps typst's project root simple (a template resolves
+//! `json(sys.inputs.data)` and `#import "aarg-template-lib.typ"` relative to
 //! itself, and typst refuses paths outside its root), and it makes every
-//! build self-documenting — the exact template that produced the PDF
-//! sits next to it.
+//! build self-documenting — the exact template that produced the PDF sits
+//! next to it.
 //!
-//! The payload is passed **by path**, never inlined into the command
-//! line: real resumes would blow past OS argument-length limits and
-//! invite shell-escaping bugs.
+//! The payload is passed **by path**, never inlined into the command line:
+//! real resumes would blow past OS argument-length limits and invite
+//! shell-escaping bugs.
+//!
+//! A template is a `Template`: a built-in embedded at compile time (the
+//! zero-setup default) or a user-supplied `.typ` file. Both are staged the
+//! same way, so a custom layout is a first-class input — the CLI surface to
+//! point at one lands in Phase 6, but the renderer already handles it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::tailor::TailoredResume;
+use crate::variant::VariantPayload;
 
-/// The shipped ATS template, embedded at compile time so a fresh install
-/// renders with zero setup. (User-editable template overrides are a
-/// Phase 6 feature.)
+/// The shipped templates and the shared library, embedded at compile time so
+/// a fresh install renders with zero setup.
 const ATS_TEMPLATE: &str = include_str!("../templates/ats/classic.typ");
+const HUMAN_TEMPLATE: &str = include_str!("../templates/human/modern.typ");
+const SHARED_LIB: &str = include_str!("../templates/_shared/aarg-template-lib.typ");
+
+/// The shared library's staged filename — templates import it by this name.
+const SHARED_LIB_NAME: &str = "aarg-template-lib.typ";
+
+/// A resolvable template: a built-in (embedded) or a user-supplied file.
+pub enum Template {
+    Builtin {
+        /// The filename to stage it under (templates import each other by name).
+        filename: &'static str,
+        source: &'static str,
+    },
+    User(PathBuf),
+}
+
+impl Template {
+    /// The built-in ATS template ("classic").
+    pub fn ats() -> Self {
+        Template::Builtin {
+            filename: "classic.typ",
+            source: ATS_TEMPLATE,
+        }
+    }
+
+    /// The built-in human template ("modern").
+    pub fn human() -> Self {
+        Template::Builtin {
+            filename: "modern.typ",
+            source: HUMAN_TEMPLATE,
+        }
+    }
+
+    /// The `(filename, source)` to stage. A user template is read from disk;
+    /// a built-in is already in the binary.
+    fn resolve(&self) -> Result<(String, String), RenderError> {
+        match self {
+            Template::Builtin { filename, source } => {
+                Ok(((*filename).to_string(), (*source).to_string()))
+            }
+            Template::User(path) => {
+                let source =
+                    std::fs::read_to_string(path).map_err(|source| RenderError::TemplateRead {
+                        path: path.clone(),
+                        source,
+                    })?;
+                let filename = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("template.typ")
+                    .to_string();
+                Ok((filename, source))
+            }
+        }
+    }
+}
 
 /// Everything that can go wrong while rendering.
 #[derive(Debug, thiserror::Error)]
@@ -34,6 +95,13 @@ pub enum RenderError {
     #[error("could not run typst")]
     Spawn(#[source] std::io::Error),
 
+    #[error("could not read the template {path}")]
+    TemplateRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("could not write {path}")]
     Write {
         path: PathBuf,
@@ -45,33 +113,46 @@ pub enum RenderError {
     Payload(#[from] serde_json::Error),
 }
 
-/// Render the ATS PDF into the build directory, returning the PDF path.
-/// Stages `ats_payload.json` and `classic.typ` alongside it.
-pub fn render_ats(build_dir: &Path, resume: &TailoredResume) -> Result<PathBuf, RenderError> {
-    render_ats_with("typst", build_dir, resume)
+/// Render `payload` with `template` into the build directory, returning the
+/// PDF path. The output filename and the payload JSON name come from the
+/// payload's variant (`resume.ats.pdf` / `resume.human.pdf`).
+pub fn render(
+    build_dir: &Path,
+    payload: &VariantPayload,
+    template: &Template,
+) -> Result<PathBuf, RenderError> {
+    render_with("typst", build_dir, payload, template)
 }
 
 /// The testable core: the typst program name is a parameter so tests can
 /// point it at a stub script (or at nothing) without a real install.
-fn render_ats_with(
+fn render_with(
     typst: &str,
     build_dir: &Path,
-    resume: &TailoredResume,
+    payload: &VariantPayload,
+    template: &Template,
 ) -> Result<PathBuf, RenderError> {
     let write = |name: &str, contents: &[u8]| -> Result<(), RenderError> {
         let path = build_dir.join(name);
         std::fs::write(&path, contents).map_err(|source| RenderError::Write { path, source })
     };
-    write("ats_payload.json", &serde_json::to_vec_pretty(resume)?)?;
-    write("classic.typ", ATS_TEMPLATE.as_bytes())?;
+
+    let payload_name = payload.variant.payload_name();
+    let out_name = payload.variant.pdf_name();
+    let (template_file, template_src) = template.resolve()?;
+
+    write(payload_name, &serde_json::to_vec_pretty(payload)?)?;
+    write(&template_file, template_src.as_bytes())?;
+    // Staged for any template that imports it; harmless for those that don't.
+    write(SHARED_LIB_NAME, SHARED_LIB.as_bytes())?;
 
     let output = Command::new(typst)
         .args([
             "compile",
             "--input",
-            "data=ats_payload.json",
-            "classic.typ",
-            "resume.ats.pdf",
+            &format!("data={payload_name}"),
+            &template_file,
+            out_name,
         ])
         .current_dir(build_dir)
         .output();
@@ -82,7 +163,7 @@ fn render_ats_with(
         Ok(out) if !out.status.success() => Err(RenderError::TypstFailed {
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         }),
-        Ok(_) => Ok(build_dir.join("resume.ats.pdf")),
+        Ok(_) => Ok(build_dir.join(out_name)),
     }
 }
 
@@ -94,6 +175,7 @@ mod tests {
     use crate::tailor::{
         BuildId, JdId, SkillsSection, TailoredBullet, TailoredResume, TailoredRole,
     };
+    use crate::variant::ats_payload;
 
     fn sample_resume() -> TailoredResume {
         TailoredResume {
@@ -144,11 +226,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn staging_writes_payload_and_template_next_to_the_output() {
+    fn staging_writes_payload_template_and_lib_next_to_the_output() {
         let dir = tempfile::tempdir().unwrap();
         let stub = stub_typst(dir.path(), "exit 0");
 
-        let pdf = render_ats_with(&stub, dir.path(), &sample_resume()).unwrap();
+        let pdf = render_with(
+            &stub,
+            dir.path(),
+            &ats_payload(&sample_resume()),
+            &Template::ats(),
+        )
+        .unwrap();
 
         assert_eq!(pdf, dir.path().join("resume.ats.pdf"));
         let payload = std::fs::read_to_string(dir.path().join("ats_payload.json")).unwrap();
@@ -157,6 +245,30 @@ mod tests {
         assert!(payload.contains("Senior Engineer"));
         let template = std::fs::read_to_string(dir.path().join("classic.typ")).unwrap();
         assert!(template.contains("json(sys.inputs.data)"));
+        // The shared lib is staged for templates that import it.
+        assert!(dir.path().join("aarg-template-lib.typ").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_user_template_is_a_first_class_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = stub_typst(dir.path(), "exit 0");
+        // A user-supplied template read from an arbitrary path.
+        let custom = dir.path().join("my-layout.typ");
+        std::fs::write(&custom, "#let data = json(sys.inputs.data)\n").unwrap();
+
+        let pdf = render_with(
+            &stub,
+            dir.path(),
+            &ats_payload(&sample_resume()),
+            &Template::User(custom),
+        )
+        .unwrap();
+
+        assert_eq!(pdf, dir.path().join("resume.ats.pdf"));
+        // The user's template was staged under its own filename.
+        assert!(dir.path().join("my-layout.typ").exists());
     }
 
     #[cfg(unix)]
@@ -165,7 +277,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let stub = stub_typst(dir.path(), "echo 'error: unknown variable' >&2; exit 1");
 
-        let err = render_ats_with(&stub, dir.path(), &sample_resume()).unwrap_err();
+        let err = render_with(
+            &stub,
+            dir.path(),
+            &ats_payload(&sample_resume()),
+            &Template::ats(),
+        )
+        .unwrap_err();
         match err {
             RenderError::TypstFailed { stderr } => {
                 assert!(stderr.contains("unknown variable"));
@@ -177,12 +295,26 @@ mod tests {
     #[test]
     fn a_missing_binary_is_the_install_error_not_a_panic() {
         let dir = tempfile::tempdir().unwrap();
-        let err = render_ats_with(
+        let err = render_with(
             "/definitely/not/a/real/typst-binary",
             dir.path(),
-            &sample_resume(),
+            &ats_payload(&sample_resume()),
+            &Template::ats(),
         )
         .unwrap_err();
         assert!(matches!(err, RenderError::TypstMissing));
+    }
+
+    #[test]
+    fn a_missing_user_template_is_a_typed_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = render_with(
+            "typst",
+            dir.path(),
+            &ats_payload(&sample_resume()),
+            &Template::User("/no/such/template.typ".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, RenderError::TemplateRead { .. }));
     }
 }

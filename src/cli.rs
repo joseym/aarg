@@ -4,7 +4,7 @@
 //! and dispatches to the `commands` module, which keeps the argument
 //! grammar testable without running anything.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// AARG: the Adversarial Agentic Resume Generator.
 #[derive(Debug, Parser)]
@@ -12,6 +12,31 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Which resume PDF(s) `tailor` renders. Both variants are projections of
+/// one canonical draft and are guaranteed to make the same claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum VariantArg {
+    /// The parser-safe ATS PDF only.
+    Ats,
+    /// The designed human-reader PDF only.
+    Human,
+    /// Both (the default).
+    Both,
+}
+
+impl VariantArg {
+    /// The variants to render at finalize, in output order.
+    pub fn variants(self) -> Vec<crate::variant::Variant> {
+        use crate::variant::Variant;
+        match self {
+            VariantArg::Ats => vec![Variant::Ats],
+            VariantArg::Human => vec![Variant::Human],
+            VariantArg::Both => vec![Variant::Ats, Variant::Human],
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -43,10 +68,13 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Tailor your resume to a job description and render the ATS PDF
+    /// Tailor your resume to a job description and render the PDF(s)
     Tailor {
         /// JD text file, Greenhouse/Lever URL, `jd parse --json` output, or "-"
         jd: std::path::PathBuf,
+        /// Which PDF(s) to render: ats, human, or both (default)
+        #[arg(long, value_enum, default_value_t = VariantArg::Both)]
+        variant: VariantArg,
     },
     /// Maintain the skills in your dataset
     Skills {
@@ -278,13 +306,27 @@ mod tests {
     }
 
     #[test]
-    fn tailor_takes_a_jd_path() {
+    fn tailor_takes_a_jd_path_and_defaults_to_both_variants() {
         let cli = Cli::try_parse_from(["aarg", "tailor", "jd.txt"]).unwrap();
         match cli.command {
-            Command::Tailor { jd } => assert_eq!(jd, std::path::PathBuf::from("jd.txt")),
+            Command::Tailor { jd, variant } => {
+                assert_eq!(jd, std::path::PathBuf::from("jd.txt"));
+                assert_eq!(variant, VariantArg::Both);
+            }
             other => panic!("expected tailor, got {other:?}"),
         }
         assert!(Cli::try_parse_from(["aarg", "tailor"]).is_err());
+    }
+
+    #[test]
+    fn tailor_variant_flag_parses() {
+        let cli = Cli::try_parse_from(["aarg", "tailor", "jd.txt", "--variant", "human"]).unwrap();
+        match cli.command {
+            Command::Tailor { variant, .. } => assert_eq!(variant, VariantArg::Human),
+            other => panic!("expected tailor, got {other:?}"),
+        }
+        // An unknown variant is rejected.
+        assert!(Cli::try_parse_from(["aarg", "tailor", "jd.txt", "--variant", "fancy"]).is_err());
     }
 
     #[test]

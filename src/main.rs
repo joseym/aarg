@@ -28,7 +28,9 @@ async fn main() -> miette::Result<()> {
             command: JdCommand::Parse { path, json },
         } => aarg::commands::jd::parse(path, json).await?,
         Command::Gap { jd, json } => aarg::commands::gap::run(jd, json).await?,
-        Command::Tailor { jd } => aarg::commands::tailor::run(jd).await?,
+        Command::Tailor { jd, variant } => {
+            aarg::commands::tailor::run(jd, variant.variants()).await?
+        }
         Command::Attack { build } => aarg::commands::attack::run(build).await?,
         Command::History { command: None } => aarg::commands::history::list()?,
         Command::History {
