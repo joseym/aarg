@@ -39,6 +39,7 @@ use crate::secrets::{self, SecretsError};
 use crate::tailor::TailorError;
 use crate::trace::TraceError;
 use crate::user::AskError;
+use crate::variant::{ClaimDivergence, VariantError};
 
 /// Load the config, fetch the stored API key, and build the provider
 /// client — the preamble every LLM-backed command starts with. Extracted
@@ -296,4 +297,13 @@ pub enum CliError {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error(transparent)]
+    Variant(#[from] VariantError),
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "a variant projection made a claim the canonical draft doesn't; the build was refused to keep the two PDFs honest. This is a bug in the variant adapter, not your data."
+    ))]
+    ClaimDivergence(#[from] ClaimDivergence),
 }

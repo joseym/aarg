@@ -34,5 +34,6 @@ pub mod strengthen;
 pub mod style;
 pub mod tailor;
 pub mod terminal;
+pub mod variant;
 pub mod verify;
 pub mod voice;
