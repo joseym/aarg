@@ -313,3 +313,70 @@ pub enum CliError {
     ))]
     TemplateWithoutHuman,
 }
+
+/// Run one parsed command. Extracted so the binary's `main` and the
+/// interactive REPL go through the exact same dispatch — the REPL is a
+/// wrapper over this, not a parallel implementation.
+pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
+    use crate::cli::{
+        Command, DatasetCommand, HistoryCommand, JdCommand, LlmCommand, RolesCommand,
+        SkillsCommand, TraceCommand, VoiceCommand,
+    };
+    match command {
+        Command::Init => init::run().await?,
+        Command::Config => config::run().await?,
+        Command::Ingest { path } => ingest::run(path).await?,
+        Command::Dataset {
+            command: DatasetCommand::Show,
+        } => dataset::show().await?,
+        Command::Dataset {
+            command: DatasetCommand::Validate,
+        } => dataset::validate().await?,
+        Command::Dataset {
+            command: DatasetCommand::Edit,
+        } => dataset::edit().await?,
+        Command::Jd {
+            command: JdCommand::Parse { path, json },
+        } => jd::parse(path, json).await?,
+        Command::Gap { jd, json } => gap::run(jd, json).await?,
+        Command::Tailor {
+            jd,
+            variant,
+            template,
+        } => tailor::run(jd, variant.variants(), template).await?,
+        Command::Attack { build } => attack::run(build).await?,
+        Command::History { command: None } => history::list()?,
+        Command::History {
+            command: Some(HistoryCommand::Rm { ids }),
+        } => history::remove(ids).await?,
+        Command::Diff { from, to } => history::diff(from, to)?,
+        Command::Skills {
+            command: SkillsCommand::Verify,
+        } => skills::verify().await?,
+        Command::Skills {
+            command: SkillsCommand::Dedup,
+        } => skills::dedup().await?,
+        Command::Voice {
+            command: VoiceCommand::Add { context },
+        } => voice::add(context).await?,
+        Command::Voice {
+            command: VoiceCommand::List,
+        } => voice::list().await?,
+        Command::Voice {
+            command: VoiceCommand::Remove { id },
+        } => voice::remove(id).await?,
+        Command::Roles {
+            command: RolesCommand::Enrich { id },
+        } => roles::enrich(id).await?,
+        Command::Trace {
+            command: TraceCommand::Last,
+        } => trace::last().await?,
+        Command::Trace {
+            command: TraceCommand::Show { id },
+        } => trace::show(id).await?,
+        Command::Llm {
+            command: LlmCommand::Ping,
+        } => ping::run().await?,
+    }
+    Ok(())
+}

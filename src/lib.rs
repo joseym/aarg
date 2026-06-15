@@ -29,6 +29,7 @@ pub mod mirror;
 pub mod pricing;
 pub mod readability;
 pub mod render;
+pub mod repl;
 pub mod review;
 pub mod secrets;
 pub mod strengthen;

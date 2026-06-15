@@ -10,8 +10,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Debug, Parser)]
 #[command(name = "aarg", version, about)]
 pub struct Cli {
+    /// `None` when invoked bare (`aarg`) — that drops into the interactive REPL.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// Which resume PDF(s) `tailor` renders. Both variants are projections of
@@ -218,11 +219,17 @@ mod tests {
     #[test]
     fn top_level_commands_parse() {
         assert!(matches!(
-            Cli::try_parse_from(["aarg", "init"]).unwrap().command,
+            Cli::try_parse_from(["aarg", "init"])
+                .unwrap()
+                .command
+                .unwrap(),
             Command::Init
         ));
         assert!(matches!(
-            Cli::try_parse_from(["aarg", "config"]).unwrap().command,
+            Cli::try_parse_from(["aarg", "config"])
+                .unwrap()
+                .command
+                .unwrap(),
             Command::Config
         ));
     }
@@ -230,7 +237,7 @@ mod tests {
     #[test]
     fn ingest_takes_a_path_and_requires_one() {
         let cli = Cli::try_parse_from(["aarg", "ingest", "resume.md"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Ingest { path } => {
                 assert_eq!(path, std::path::PathBuf::from("resume.md"));
             }
@@ -244,7 +251,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "dataset", "show"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Dataset {
                 command: DatasetCommand::Show
             }
@@ -252,7 +260,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "dataset", "validate"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Dataset {
                 command: DatasetCommand::Validate
             }
@@ -260,7 +269,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "dataset", "edit"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Dataset {
                 command: DatasetCommand::Edit
             }
@@ -272,7 +282,7 @@ mod tests {
     #[test]
     fn jd_parse_takes_a_path_and_an_optional_json_flag() {
         let cli = Cli::try_parse_from(["aarg", "jd", "parse", "jd.txt"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Jd {
                 command: JdCommand::Parse { path, json },
             } => {
@@ -284,7 +294,7 @@ mod tests {
 
         let cli = Cli::try_parse_from(["aarg", "jd", "parse", "-", "--json"]).unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Command::Jd {
                 command: JdCommand::Parse { json: true, .. }
             }
@@ -294,7 +304,7 @@ mod tests {
     #[test]
     fn gap_takes_a_jd_path_and_an_optional_json_flag() {
         let cli = Cli::try_parse_from(["aarg", "gap", "jd.txt"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Gap { jd, json } => {
                 assert_eq!(jd, std::path::PathBuf::from("jd.txt"));
                 assert!(!json);
@@ -304,7 +314,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "gap", "-", "--json"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Gap { json: true, .. }
         ));
         assert!(Cli::try_parse_from(["aarg", "gap"]).is_err());
@@ -313,7 +324,7 @@ mod tests {
     #[test]
     fn tailor_takes_a_jd_path_and_defaults_to_both_variants() {
         let cli = Cli::try_parse_from(["aarg", "tailor", "jd.txt"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Tailor {
                 jd,
                 variant,
@@ -332,7 +343,7 @@ mod tests {
     fn tailor_template_flag_parses_a_path() {
         let cli =
             Cli::try_parse_from(["aarg", "tailor", "jd.txt", "--template", "my.typ"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Tailor { template, .. } => {
                 assert_eq!(template, Some(std::path::PathBuf::from("my.typ")));
             }
@@ -343,7 +354,7 @@ mod tests {
     #[test]
     fn tailor_variant_flag_parses() {
         let cli = Cli::try_parse_from(["aarg", "tailor", "jd.txt", "--variant", "human"]).unwrap();
-        match cli.command {
+        match cli.command.unwrap() {
             Command::Tailor { variant, .. } => assert_eq!(variant, VariantArg::Human),
             other => panic!("expected tailor, got {other:?}"),
         }
@@ -356,7 +367,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "skills", "verify"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Skills {
                 command: SkillsCommand::Verify
             }
@@ -366,12 +378,16 @@ mod tests {
     #[test]
     fn history_parses_bare_and_with_rm() {
         assert!(matches!(
-            Cli::try_parse_from(["aarg", "history"]).unwrap().command,
+            Cli::try_parse_from(["aarg", "history"])
+                .unwrap()
+                .command
+                .unwrap(),
             Command::History { command: None }
         ));
         let cmd = Cli::try_parse_from(["aarg", "history", "rm", "019", "020"])
             .unwrap()
-            .command;
+            .command
+            .unwrap();
         match cmd {
             Command::History {
                 command: Some(HistoryCommand::Rm { ids }),
@@ -380,7 +396,7 @@ mod tests {
         }
         // `rm` with no ids is allowed — it means "pick interactively".
         assert!(matches!(
-            Cli::try_parse_from(["aarg", "history", "rm"]).unwrap().command,
+            Cli::try_parse_from(["aarg", "history", "rm"]).unwrap().command.unwrap(),
             Command::History {
                 command: Some(HistoryCommand::Rm { ids }),
             } if ids.is_empty()
@@ -392,12 +408,17 @@ mod tests {
         match Cli::try_parse_from(["aarg", "attack", "021"])
             .unwrap()
             .command
+            .unwrap()
         {
             Command::Attack { build } => assert_eq!(build.as_deref(), Some("021")),
             other => panic!("expected attack, got {other:?}"),
         }
         // The build id is optional — omitting it means "pick interactively".
-        match Cli::try_parse_from(["aarg", "attack"]).unwrap().command {
+        match Cli::try_parse_from(["aarg", "attack"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
             Command::Attack { build } => assert_eq!(build, None),
             other => panic!("expected attack, got {other:?}"),
         }
@@ -407,7 +428,8 @@ mod tests {
     fn diff_parses_two_build_ids() {
         let cmd = Cli::try_parse_from(["aarg", "diff", "020", "021"])
             .unwrap()
-            .command;
+            .command
+            .unwrap();
         match cmd {
             Command::Diff { from, to } => {
                 assert_eq!(from, "020");
@@ -422,7 +444,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "skills", "dedup"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Skills {
                 command: SkillsCommand::Dedup
             }
@@ -434,7 +457,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "voice", "list"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Voice {
                 command: VoiceCommand::List
             }
@@ -442,6 +466,7 @@ mod tests {
         match Cli::try_parse_from(["aarg", "voice", "add", "--context", "blog post"])
             .unwrap()
             .command
+            .unwrap()
         {
             Command::Voice {
                 command: VoiceCommand::Add { context },
@@ -451,6 +476,7 @@ mod tests {
         match Cli::try_parse_from(["aarg", "voice", "remove", "sample-2"])
             .unwrap()
             .command
+            .unwrap()
         {
             Command::Voice {
                 command: VoiceCommand::Remove { id },
@@ -466,6 +492,7 @@ mod tests {
         match Cli::try_parse_from(["aarg", "roles", "enrich"])
             .unwrap()
             .command
+            .unwrap()
         {
             Command::Roles {
                 command: RolesCommand::Enrich { id },
@@ -475,6 +502,7 @@ mod tests {
         match Cli::try_parse_from(["aarg", "roles", "enrich", "role-3"])
             .unwrap()
             .command
+            .unwrap()
         {
             Command::Roles {
                 command: RolesCommand::Enrich { id },
@@ -488,7 +516,8 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["aarg", "trace", "last"])
                 .unwrap()
-                .command,
+                .command
+                .unwrap(),
             Command::Trace {
                 command: TraceCommand::Last
             }
@@ -496,6 +525,7 @@ mod tests {
         match Cli::try_parse_from(["aarg", "trace", "show", "some-id"])
             .unwrap()
             .command
+            .unwrap()
         {
             Command::Trace {
                 command: TraceCommand::Show { id },
@@ -509,7 +539,7 @@ mod tests {
     fn llm_ping_parses_as_a_nested_subcommand() {
         let cli = Cli::try_parse_from(["aarg", "llm", "ping"]).unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Command::Llm {
                 command: LlmCommand::Ping
             }
@@ -528,6 +558,7 @@ mod tests {
     #[test]
     fn unknown_commands_are_rejected() {
         assert!(Cli::try_parse_from(["aarg", "frobnicate"]).is_err());
-        assert!(Cli::try_parse_from(["aarg"]).is_err());
+        // Bare `aarg` is valid now — no subcommand means the interactive REPL.
+        assert!(Cli::try_parse_from(["aarg"]).unwrap().command.is_none());
     }
 }
