@@ -13,12 +13,11 @@ use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::store;
 use crate::gap::{GapReport, Weakness, analyze_gap};
 use crate::jd::{Importance, JobRequirements};
-use crate::trace::Tracer;
 
 pub async fn run(path: PathBuf, json: bool) -> Result<(), CliError> {
     let dataset = store::load()?;
     let (client, config) = configured_client().await?;
-    let tracer = Tracer::to_default_dir()?;
+    let tracer = super::default_tracer()?;
     let ctx = AgentContext {
         llm: &client,
         model: &config.anthropic,

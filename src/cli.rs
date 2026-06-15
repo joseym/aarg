@@ -42,8 +42,15 @@ impl VariantArg {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Set up aarg: pick a provider and store its API key in the OS keychain
-    Init,
+    /// Set up aarg: create a workspace here and store an API key in the keychain
+    Init {
+        /// Use the global per-user config instead of a local `.aarg` workspace
+        #[arg(long, conflicts_with = "dir")]
+        global: bool,
+        /// Create the workspace at this project directory instead of the current one
+        #[arg(long, value_name = "PATH")]
+        dir: Option<std::path::PathBuf>,
+    },
     /// Show the current configuration and where it lives
     Config,
     /// Manage the API keys stored in the OS keychain (list, add, switch, remove)
@@ -249,7 +256,7 @@ mod tests {
                 .unwrap()
                 .command
                 .unwrap(),
-            Command::Init
+            Command::Init { .. }
         ));
         assert!(matches!(
             Cli::try_parse_from(["aarg", "config"])

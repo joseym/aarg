@@ -11,7 +11,6 @@ use crate::agent::{AgentContext, ModelTier};
 use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::ingest::ingest_resume;
-use crate::trace::Tracer;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
     if path
@@ -26,7 +25,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     })?;
 
     let (client, config) = configured_client().await?;
-    let tracer = Tracer::to_default_dir()?;
+    let tracer = super::default_tracer()?;
     let ctx = AgentContext {
         llm: &client,
         model: &config.anthropic,

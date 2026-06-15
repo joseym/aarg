@@ -78,6 +78,16 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
     Ok((AnthropicClient::new(key), config))
 }
 
+/// A tracer pointed at the active workspace's `traces/` directory. Replaces
+/// the core `Tracer::to_default_dir()` at the command layer so traces land
+/// in the workspace (local `.aarg/` or the home data dir) like every other
+/// artifact — the runtime crate stays unaware of workspaces.
+pub(crate) fn default_tracer() -> Result<crate::trace::Tracer, ConfigError> {
+    crate::workspace::traces_dir()
+        .map(crate::trace::Tracer::to_dir)
+        .ok_or(ConfigError::NoHomeDir)
+}
+
 /// Turn the JD argument every JD-consuming command accepts — a
 /// Greenhouse/Lever URL, a `.json` file of already-parsed requirements,
 /// a text file, or `-` for stdin — into `JobRequirements`. Extracted at
@@ -346,6 +356,10 @@ pub enum CliError {
         "run `aarg key list` to see your labels, or `aarg key add {label}` to add it"
     ))]
     NoSuchKey { label: String },
+
+    #[error("could not determine the current directory")]
+    #[diagnostic(help("run from an existing directory, or pass `aarg init --dir <path>`"))]
+    CurrentDir(#[source] std::io::Error),
 }
 
 /// Reject labels that are empty or carry the `:` that separates provider
@@ -370,7 +384,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         SkillsCommand, TraceCommand, VoiceCommand,
     };
     match command {
-        Command::Init => init::run().await?,
+        Command::Init { global, dir } => init::run(global, dir).await?,
         Command::Config => config::run().await?,
         Command::Key {
             command: KeyCommand::List,

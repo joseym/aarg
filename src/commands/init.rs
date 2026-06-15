@@ -1,29 +1,46 @@
-//! `aarg init` — first-run setup: store a provider API key in the OS
-//! keychain and write a config file with defaults.
+//! `aarg init` — set up a workspace and store a provider API key.
+//!
+//! By default aarg works out of a local `.aarg/` workspace in the current
+//! directory (config, dataset, builds, traces, cache). `--global` targets
+//! the per-user home config instead, and `--dir <path>` puts the workspace
+//! at another project directory. Whichever is chosen, the config file is
+//! written there directly — not through the usual discovery, which couldn't
+//! yet see a workspace being created.
 //!
 //! Several keys can coexist, each under a label (e.g. `work`, `personal`);
 //! `init` detects what's already stored and lets you reuse the active key,
 //! switch the active one, add another, or replace one. The secrets live in
-//! the OS keychain (the `secrets` module); config holds only the label
-//! registry and which label is active.
+//! the OS keychain (the `secrets` module) and are shared across workspaces;
+//! config holds only the label registry and which label is active.
+
+use std::path::PathBuf;
 
 use inquire::{Password, PasswordDisplayMode, Select, Text};
 
 use crate::commands::{CliError, validate_key_label};
 use crate::config::{Config, DEFAULT_KEY_LABEL, Provider};
-use crate::secrets;
+use crate::{secrets, workspace};
 
-pub async fn run() -> Result<(), CliError> {
-    let mut config = Config::load()?;
+pub async fn run(global: bool, dir: Option<PathBuf>) -> Result<(), CliError> {
+    // Decide where this workspace's config lives, and whether it's the
+    // shared home config (the only place a pre-labels key migration makes
+    // sense, since that legacy slot is global).
+    let (config_path, is_global) = target_config_path(global, dir)?;
+
+    // Load from the explicit path rather than via discovery: the workspace
+    // may not exist yet, so discovery would find the wrong one (or none).
+    let mut config = Config::load_from(&config_path)?;
     let provider = config.provider;
     println!(
         "Provider: {} (the only provider in this build)",
         provider.name()
     );
 
-    // A key stored before named keys lives in a bare slot; adopt it under
-    // the default label so upgrading users keep their key and gain labels.
-    migrate_legacy_key(&mut config, provider).await?;
+    if is_global {
+        // A key stored before named keys lives in a bare slot; adopt it
+        // under the default label so upgrading users keep their key.
+        migrate_legacy_key(&mut config, provider).await?;
+    }
 
     if config.anthropic.keys.is_empty() {
         // Nothing stored yet: take a single key under the default label.
@@ -33,10 +50,40 @@ pub async fn run() -> Result<(), CliError> {
         existing_key_flow(&mut config, provider).await?;
     }
 
-    config.save()?;
-    println!("Config written to {}.", Config::path()?.display());
+    config.save_to(&config_path)?;
+    announce(&config_path, is_global);
     println!("Try `aarg llm ping` to verify the connection.");
     Ok(())
+}
+
+/// Resolve `config.toml`'s path from the flags, returning whether it's the
+/// shared home config. `--global` wins; `--dir <p>` makes a workspace at
+/// `<p>/.aarg`; otherwise the current directory's `.aarg`.
+fn target_config_path(global: bool, dir: Option<PathBuf>) -> Result<(PathBuf, bool), CliError> {
+    if global {
+        let dir = workspace::global_config_dir()
+            .ok_or(CliError::Config(crate::config::ConfigError::NoHomeDir))?;
+        return Ok((dir.join("config.toml"), true));
+    }
+    let project = match dir {
+        Some(path) => path,
+        None => std::env::current_dir().map_err(CliError::CurrentDir)?,
+    };
+    Ok((workspace::local_root(&project).join("config.toml"), false))
+}
+
+/// Tell the user where the workspace landed and what it means.
+fn announce(config_path: &std::path::Path, is_global: bool) {
+    if is_global {
+        println!("Global config written to {}.", config_path.display());
+        return;
+    }
+    // The `.aarg/` directory is the config file's parent.
+    let root = config_path.parent().unwrap_or(config_path);
+    println!("Local workspace ready at {}.", root.display());
+    println!(
+        "Commands run here (or in any subdirectory) use it; elsewhere aarg falls back to your global setup."
+    );
 }
 
 /// Move a legacy bare-slot key into the labeled scheme (as `default`) when

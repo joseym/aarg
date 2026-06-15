@@ -17,7 +17,6 @@ use crate::review::{AdversarialReviewerAgent, ReviewInput, Severity};
 use crate::style::{self, Spinner};
 use crate::tailor::TailoredResume;
 use crate::terminal::auto_user;
-use crate::trace::Tracer;
 use crate::user::{Answer, Question};
 
 pub async fn run(build: Option<String>) -> Result<(), CliError> {
@@ -42,7 +41,7 @@ pub async fn run(build: Option<String>) -> Result<(), CliError> {
 
     let dataset = store::load()?;
     let (client, config) = configured_client().await?;
-    let tracer = Tracer::to_default_dir()?;
+    let tracer = super::default_tracer()?;
     let ctx = AgentContext {
         llm: &client,
         model: &config.anthropic,

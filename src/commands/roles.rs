@@ -9,7 +9,6 @@ use crate::dataset::store;
 use crate::dataset::types::RoleId;
 use crate::enrich;
 use crate::terminal::auto_user;
-use crate::trace::Tracer;
 
 pub async fn enrich(id: Option<String>) -> Result<(), CliError> {
     let mut dataset = store::load()?;
@@ -31,7 +30,7 @@ pub async fn enrich(id: Option<String>) -> Result<(), CliError> {
     }
 
     let (client, config) = configured_client().await?;
-    let tracer = Tracer::to_default_dir()?;
+    let tracer = super::default_tracer()?;
     let ctx = AgentContext {
         llm: &client,
         model: &config.anthropic,

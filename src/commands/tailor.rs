@@ -36,7 +36,6 @@ use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
 use crate::style::{self, Spinner, StreamReporter};
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::terminal::auto_user;
-use crate::trace::Tracer;
 use crate::user::{Answer, Question};
 use crate::variant::{self, Variant, VariantAdapterAgent, VariantInput};
 use crate::verify::{unbacked_keywords, verify_keywords};
@@ -54,7 +53,7 @@ pub async fn run(
     }
     let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
-    let tracer = Tracer::to_default_dir()?;
+    let tracer = super::default_tracer()?;
     // Live progress + running cost for the long smart-tier calls, so the
     // loop is visibly working and the user can interrupt (FR-3.8). The spine
     // drives it for streamed runs; cheap/interactive calls leave it idle.

@@ -12,7 +12,6 @@ use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::dataset::types::SkillId;
 use crate::terminal::auto_user;
-use crate::trace::Tracer;
 use crate::user::{Answer, Question};
 use crate::verify::{dedup_skills, remove_skills, verify_unbacked};
 
@@ -23,7 +22,7 @@ pub async fn verify() -> Result<(), CliError> {
     // The clarification guide is optional: offered when a provider is
     // configured, but the interview itself is keyless and deterministic.
     let provider = configured_client().await.ok();
-    let tracer = Tracer::to_default_dir().ok();
+    let tracer = super::default_tracer().ok();
     let ctx = match (&provider, &tracer) {
         (Some((client, config)), Some(tracer)) => Some(AgentContext {
             llm: client,
