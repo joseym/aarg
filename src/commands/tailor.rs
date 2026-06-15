@@ -26,6 +26,7 @@ use crate::gap::{GapReport, analyze_gap};
 use crate::jd::JobRequirements;
 use crate::llm::TokenUsage;
 use crate::metric::{self, MetricTarget};
+use crate::readability::{self, ReadabilityReport};
 use crate::render;
 use crate::review::{
     AdversarialReport, AdversarialReviewerAgent, Objection, ObjectionKind, ObjectionTarget,
@@ -553,14 +554,13 @@ pub async fn run(path: PathBuf, variants: Vec<Variant>) -> Result<(), CliError> 
     // differ in presentation but never in claims. `render` writes each
     // variant's payload JSON (ats_payload.json / human_payload.json) too.
     let mut pdfs: Vec<(Variant, PathBuf)> = Vec::new();
+    let mut readability_reports: Vec<(Variant, ReadabilityReport)> = Vec::new();
     if variants.contains(&Variant::Ats) {
         let sp = Spinner::start("rendering the ATS resume");
-        let pdf = render::render(
-            &build.dir,
-            &variant::ats_payload(&best.resume),
-            &render::Template::ats(),
-        )?;
+        let ats = variant::ats_payload(&best.resume);
+        let pdf = render::render(&build.dir, &ats, &render::Template::ats())?;
         sp.finish(style::done("ATS resume rendered"));
+        check_readability(&pdf, &ats, Variant::Ats, &mut readability_reports);
         pdfs.push((Variant::Ats, pdf));
     }
     if variants.contains(&Variant::Human) {
@@ -589,7 +589,16 @@ pub async fn run(path: PathBuf, variants: Vec<Variant>) -> Result<(), CliError> 
         let sp = Spinner::start("rendering the human resume");
         let pdf = render::render(&build.dir, &human, &render::Template::human())?;
         sp.finish(style::done("human resume rendered"));
+        check_readability(&pdf, &human, Variant::Human, &mut readability_reports);
         pdfs.push((Variant::Human, pdf));
+    }
+    if !readability_reports.is_empty() {
+        let by_variant: std::collections::BTreeMap<String, &ReadabilityReport> =
+            readability_reports
+                .iter()
+                .map(|(v, r)| (format!("{v:?}").to_lowercase(), r))
+                .collect();
+        builds::write_json(&build.dir, "readability_report.json", &by_variant)?;
     }
     builds::write_json(
         &build.dir,
@@ -634,6 +643,27 @@ pub async fn run(path: PathBuf, variants: Vec<Variant>) -> Result<(), CliError> 
             style::dim(pdf.display()),
             style::dim(format!("— {}", v.purpose()))
         );
+    }
+    // Readability problems worth the eye, if any. The "pdfium unavailable"
+    // note is an environment limitation, not a resume problem — it stays in
+    // the JSON report but is filtered from the human output.
+    for (v, report) in &readability_reports {
+        let problems: Vec<&str> = report
+            .issues
+            .iter()
+            .filter(|i| !i.contains("pdfium"))
+            .map(String::as_str)
+            .collect();
+        if !problems.is_empty() {
+            eprintln!(
+                "  {} {}",
+                style::yellow(format!(
+                    "readability ({}):",
+                    format!("{v:?}").to_lowercase()
+                )),
+                style::dim(problems.join("; "))
+            );
+        }
     }
     eprintln!("  {score}");
 
@@ -744,6 +774,26 @@ async fn evaluate(
 /// in 0.0..1.0, so the result is too.
 fn combined_score(report: &AdversarialReport, coverage: f32) -> f32 {
     0.6 * report.overall_score + 0.4 * coverage
+}
+
+/// Run the deterministic readability checks on a rendered PDF, non-fatally:
+/// a tooling hiccup reading the PDF must not fail a build that already
+/// rendered and verified its claims. A report is collected; an error is a
+/// dim note and nothing more.
+fn check_readability(
+    pdf: &Path,
+    payload: &variant::VariantPayload,
+    variant: Variant,
+    out: &mut Vec<(Variant, ReadabilityReport)>,
+) {
+    match readability::check(pdf, payload) {
+        Ok(report) => out.push((variant, report)),
+        Err(e) => eprintln!(
+            "{} {}",
+            style::yellow("readability:"),
+            style::dim(format!("skipped for {variant:?} ({e})"))
+        ),
+    }
 }
 
 fn add_usage(total: &mut TokenUsage, other: TokenUsage) {

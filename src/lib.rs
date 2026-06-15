@@ -27,6 +27,7 @@ pub mod keywords;
 pub mod metric;
 pub mod mirror;
 pub mod pricing;
+pub mod readability;
 pub mod render;
 pub mod review;
 pub mod secrets;
