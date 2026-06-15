@@ -14,6 +14,7 @@ pub mod history;
 pub mod ingest;
 pub mod init;
 pub mod jd;
+pub mod key;
 pub mod ping;
 pub mod roles;
 pub mod skills;
@@ -48,11 +49,32 @@ use crate::variant::{ClaimDivergence, VariantError};
 pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), CliError> {
     let config = Config::load()?;
     let provider = config.provider;
-    let key = secrets::load_api_key(provider.name())
-        .await?
-        .ok_or_else(|| LlmError::MissingApiKey {
-            provider: provider.name().to_string(),
-        })?;
+
+    // Which stored key to use: a one-off `AARG_KEY=<label>` env override
+    // wins (handy for scripts and the REPL without editing config), else the
+    // configured active label.
+    let override_label = std::env::var("AARG_KEY").ok();
+    let label = override_label
+        .as_deref()
+        .unwrap_or_else(|| config.anthropic.active_label());
+
+    let key = match secrets::load_api_key(provider.name(), label).await? {
+        Some(key) => key,
+        // No labeled key and none ever registered: a single key may still
+        // live in the pre-labels bare slot. Read it so existing setups keep
+        // working without a re-run of `aarg init`.
+        None if config.anthropic.keys.is_empty() => secrets::load_legacy_key(provider.name())
+            .await?
+            .ok_or_else(|| LlmError::MissingApiKey {
+                provider: provider.name().to_string(),
+            })?,
+        None => {
+            return Err(LlmError::MissingApiKey {
+                provider: provider.name().to_string(),
+            }
+            .into());
+        }
+    };
     Ok((AnthropicClient::new(key), config))
 }
 
@@ -312,6 +334,31 @@ pub enum CliError {
         "drop --variant ats, or use --variant human / --variant both so the human PDF (the one your template renders) is produced"
     ))]
     TemplateWithoutHuman,
+
+    #[error("{label:?} is not a usable key label")]
+    #[diagnostic(help(
+        "labels name a stored key (e.g. work, personal); they can't be empty or contain a colon"
+    ))]
+    InvalidKeyLabel { label: String },
+
+    #[error("no stored key labeled {label:?}")]
+    #[diagnostic(help(
+        "run `aarg key list` to see your labels, or `aarg key add {label}` to add it"
+    ))]
+    NoSuchKey { label: String },
+}
+
+/// Reject labels that are empty or carry the `:` that separates provider
+/// from label in a keychain slot — both would make for ambiguous or
+/// unreachable entries. Shared by `init` and the `key` command.
+pub(crate) fn validate_key_label(label: &str) -> Result<&str, CliError> {
+    let label = label.trim();
+    if label.is_empty() || label.contains(':') {
+        return Err(CliError::InvalidKeyLabel {
+            label: label.to_string(),
+        });
+    }
+    Ok(label)
 }
 
 /// Run one parsed command. Extracted so the binary's `main` and the
@@ -319,12 +366,24 @@ pub enum CliError {
 /// wrapper over this, not a parallel implementation.
 pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
     use crate::cli::{
-        Command, DatasetCommand, HistoryCommand, JdCommand, LlmCommand, RolesCommand,
+        Command, DatasetCommand, HistoryCommand, JdCommand, KeyCommand, LlmCommand, RolesCommand,
         SkillsCommand, TraceCommand, VoiceCommand,
     };
     match command {
         Command::Init => init::run().await?,
         Command::Config => config::run().await?,
+        Command::Key {
+            command: KeyCommand::List,
+        } => key::list().await?,
+        Command::Key {
+            command: KeyCommand::Add { label },
+        } => key::add(label).await?,
+        Command::Key {
+            command: KeyCommand::Use { label },
+        } => key::use_key(label).await?,
+        Command::Key {
+            command: KeyCommand::Remove { label },
+        } => key::remove(label).await?,
         Command::Ingest { path } => ingest::run(path).await?,
         Command::Dataset {
             command: DatasetCommand::Show,

@@ -16,9 +16,22 @@ pub async fn run() -> Result<(), CliError> {
     // Service daemon on a headless Linux box) downgrades to a note here
     // instead of failing the whole command: this command is read-only
     // status, and the rest of the config is still worth showing.
-    let key_status = match secrets::load_api_key(config.provider.name()).await {
-        Ok(Some(_)) => "stored in the OS keychain".to_string(),
-        Ok(None) => "not set (run `aarg init`)".to_string(),
+    let label = config.anthropic.active_label();
+    let key_status = match secrets::load_api_key(config.provider.name(), label).await {
+        Ok(Some(_)) => format!("stored in the OS keychain (label: {label})"),
+        // Nothing under the active label; a legacy bare-slot key may still
+        // be in play for users who haven't re-run init.
+        Ok(None) if config.anthropic.keys.is_empty() => {
+            match secrets::load_legacy_key(config.provider.name()).await {
+                Ok(Some(_)) => {
+                    "stored in the OS keychain (legacy slot; run `aarg init` to label it)"
+                        .to_string()
+                }
+                Ok(None) => "not set (run `aarg init`)".to_string(),
+                Err(error) => format!("unknown ({error})"),
+            }
+        }
+        Ok(None) => format!("not set for label `{label}` (run `aarg key add {label}`)"),
         Err(error) => format!("unknown ({error})"),
     };
 
@@ -37,6 +50,23 @@ pub async fn run() -> Result<(), CliError> {
         config.anthropic.model
     );
     println!("api key:     {key_status}");
+    if !config.anthropic.keys.is_empty() {
+        // List the labels (never the secrets), marking the active one.
+        let active = config.anthropic.active_label();
+        let labels: Vec<String> = config
+            .anthropic
+            .keys
+            .iter()
+            .map(|label| {
+                if label == active {
+                    format!("{label} (active)")
+                } else {
+                    label.clone()
+                }
+            })
+            .collect();
+        println!("keys:        {}", labels.join(", "));
+    }
 
     // Each agent runs on a tier; the tier resolves to a model here. The
     // `agent_id` passed to `resolve` only matters when a per-agent pin

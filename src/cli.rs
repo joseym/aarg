@@ -46,6 +46,11 @@ pub enum Command {
     Init,
     /// Show the current configuration and where it lives
     Config,
+    /// Manage the API keys stored in the OS keychain (list, add, switch, remove)
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
     /// Build your dataset from an existing resume (text or Markdown)
     Ingest {
         /// Path to the resume file (for a PDF, extract its text first)
@@ -131,6 +136,27 @@ pub enum Command {
 pub enum LlmCommand {
     /// Send a tiny request to verify the key, model, and connectivity
     Ping,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum KeyCommand {
+    /// List the stored key labels, marking the active one
+    List,
+    /// Add a key under a label (prompts for the key; omit the label for `default`)
+    Add {
+        /// Label to file the key under (e.g. work, personal)
+        label: Option<String>,
+    },
+    /// Make a stored key the active one for new requests
+    Use {
+        /// Label of the key to activate
+        label: String,
+    },
+    /// Remove a stored key from the keychain and config
+    Remove {
+        /// Label of the key to remove
+        label: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
