@@ -242,7 +242,7 @@ Rules — all of them matter:
 - Reword the summary and the bullet lines to be tighter and more scannable: lead with the action and the outcome, prefer precise concrete verbs over vague ones, cut filler. Aim for one line per bullet.
 - NEVER add or change a fact. No new metric, number, technology, employer, scale, scope, or seniority. You may only restate what a line already says. Strengthen the wording, never the claim. If a line is thin because the work was thin, leave it thin — do not pad it with anything invented.
 - Refer to every bullet by its source_id. Return every role and every bullet you were given; you may rephrase a line, never drop or invent one.
-- skills: you may reorder them by relevance, but only from the list given. Never add a skill that is not already there.
+- skills: this list is keyword-dense for machine scanning, so it carries near-duplicates and verbose phrases that read as keyword-stuffing to a person. Curate it for a HUMAN reader: choose a tight, non-redundant subset (aim for about 8 to 12), keep the single cleanest phrasing where several entries overlap (e.g. one of "Engineering management" / "engineering leadership experience" / "managing senior technical leaders"), and drop vague catch-alls and full-sentence entries. Order what remains by relevance. Pick ONLY from the list given: never add a skill, but it is expected that you drop the redundant ones.
 - Reply with exactly one JSON object and nothing else — no markdown fences, no commentary:
 {"summary": "...", "roles": [{"id": "role-1", "bullets": [{"source_id": "bullet-1", "text": "..."}]}], "skills": ["..."]}"#;
 
@@ -261,7 +261,7 @@ fn build_user_message(draft: &TailoredResume) -> String {
         }
     }
     text.push_str(&format!(
-        "\nSKILLS (reorder only, never add)\n{}\n",
+        "\nSKILLS (curate a tight, non-redundant subset for a human; pick only from these, never add)\n{}\n",
         draft.skills_section.skills.join(", ")
     ));
     text
@@ -669,6 +669,19 @@ mod tests {
             bullet_text(&p, "bullet-1").unwrap(),
             "Led the platform migration"
         );
+    }
+
+    #[tokio::test]
+    async fn the_human_variant_curates_skills_to_a_subset() {
+        // The adapter drops a redundant skill for the human reader, returning
+        // fewer than the canonical set. A subset is legal (omission is not a
+        // new claim), so it survives assembly and passes the lint.
+        let p = run_human(
+            r#"{"summary":"Engineering leader.","roles":[{"id":"role-1","bullets":[{"source_id":"bullet-1","text":"Led the platform migration"}]}],"skills":["Rust"]}"#,
+        )
+        .await;
+        assert_eq!(p.skills_section.skills, vec!["Rust"]);
+        assert!(check_claims(&draft(), &p).is_ok());
     }
 
     #[tokio::test]
