@@ -116,8 +116,17 @@
 
 // EXPERTISE: a "TECHNICAL" subsection holding the skills as a bulleted list.
 #let expertise_section = {
+  let groups = field(data, "skill_groups", default: ())
   let skills = field(data, "skills_section", default: (skills: ())).skills
-  if skills.len() > 0 {
+  if groups.len() > 0 {
+    // Curated, grouped skills (human variant): one sub-label per group.
+    section_head("Expertise")
+    for g in groups {
+      sub_label(g.label)
+      for s in g.skills [ - #s ]
+    }
+  } else if skills.len() > 0 {
+    // Fallback: a flat list under a single "Technical" label.
     section_head("Expertise")
     sub_label("Technical")
     for s in skills [ - #s ]

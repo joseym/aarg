@@ -155,8 +155,22 @@
 // Skills: chip-like inline list separated by accent dots. Rendered in the
 // sidebar when present, otherwise as a normal section.
 #let skills_body = {
+  let groups = field(data, "skill_groups", default: ())
   let skills = field(data, "skills_section", default: (skills: ())).skills
-  skills.map(s => box(inset: (y: 1pt))[#s]).join(text(fill: accent)[ · ])
+  let dotted(items) = items.map(s => box(inset: (y: 1pt))[#s]).join(text(fill: accent)[ · ])
+  if groups.len() > 0 {
+    // Curated, grouped skills (human variant): a bold label per group, then
+    // that group's skills as the accent-dotted list.
+    for g in groups {
+      block(above: 5pt, below: 1pt)[
+        #text(weight: "bold", size: 8.5pt, fill: accent)[#g.label]
+        #linebreak()
+        #dotted(g.skills)
+      ]
+    }
+  } else {
+    dotted(skills)
+  }
 }
 #let has_skills = field(data, "skills_section", default: (skills: ())).skills.len() > 0
 

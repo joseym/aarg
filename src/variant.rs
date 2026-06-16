@@ -99,6 +99,16 @@ pub struct LayoutHints {
     pub max_pages: u8,
 }
 
+/// A named group of skills for the human variant's display (e.g. "Leadership").
+/// The label is presentation only, never a claim; the skills it holds are
+/// always a subset of the canonical skills. The ATS variant leaves this empty
+/// and renders the flat list instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkillGroup {
+    pub label: String,
+    pub skills: Vec<String>,
+}
+
 /// A variant-specific projection of the canonical draft, serialized to JSON
 /// and handed to one Typst template. It carries the canonical's fields (so a
 /// template reads the same names regardless of variant) plus the variant tag,
@@ -114,6 +124,11 @@ pub struct VariantPayload {
     pub roles: Vec<TailoredRole>,
     pub education: Vec<Education>,
     pub skills_section: SkillsSection,
+    /// Human variant only: the curated skills organized into labeled display
+    /// groups. Empty on the ATS variant and on older payloads (serde default),
+    /// where templates fall back to the flat `skills_section`.
+    #[serde(default)]
+    pub skill_groups: Vec<SkillGroup>,
     pub projects: Vec<TailoredProject>,
     pub certifications: Vec<Certification>,
     pub layout_hints: LayoutHints,
@@ -132,6 +147,8 @@ pub fn ats_payload(draft: &TailoredResume) -> VariantPayload {
         roles: draft.roles.clone(),
         education: draft.education.clone(),
         skills_section: draft.skills_section.clone(),
+        // The ATS variant stays a flat keyword-dense list; no grouping.
+        skill_groups: Vec::new(),
         projects: draft.projects.clone(),
         certifications: draft.certifications.clone(),
         layout_hints: LayoutHints {
@@ -182,6 +199,16 @@ pub struct RawVariant {
     summary: Option<String>,
     #[serde(default)]
     roles: Vec<RawVariantRole>,
+    #[serde(default)]
+    skills: Vec<String>,
+    #[serde(default)]
+    skill_groups: Vec<RawSkillGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSkillGroup {
+    #[serde(default)]
+    label: String,
     #[serde(default)]
     skills: Vec<String>,
 }
@@ -242,9 +269,9 @@ Rules — all of them matter:
 - Reword the summary and the bullet lines to be tighter and more scannable: lead with the action and the outcome, prefer precise concrete verbs over vague ones, cut filler. Aim for one line per bullet.
 - NEVER add or change a fact. No new metric, number, technology, employer, scale, scope, or seniority. You may only restate what a line already says. Strengthen the wording, never the claim. If a line is thin because the work was thin, leave it thin — do not pad it with anything invented.
 - Refer to every bullet by its source_id. Return every role and every bullet you were given; you may rephrase a line, never drop or invent one.
-- skills: this list is keyword-dense for machine scanning, so it carries near-duplicates and verbose phrases that read as keyword-stuffing to a person. Curate it for a HUMAN reader: choose a tight, non-redundant subset (aim for about 8 to 12), keep the single cleanest phrasing where several entries overlap (e.g. one of "Engineering management" / "engineering leadership experience" / "managing senior technical leaders"), and drop vague catch-alls and full-sentence entries. Order what remains by relevance. Pick ONLY from the list given: never add a skill, but it is expected that you drop the redundant ones.
+- skills: this list is keyword-dense for machine scanning, so it carries near-duplicates and verbose phrases that read as keyword-stuffing to a person. For the HUMAN reader, CURATE and GROUP it. First choose a tight, non-redundant subset (about 8 to 12 total): keep the single cleanest phrasing where several entries overlap (e.g. one of "Engineering management" / "engineering leadership experience" / "managing senior technical leaders") and drop vague catch-alls and full-sentence entries. Then organize what remains into 2 to 4 short, sensibly-labeled groups (for example "Leadership", "Platform & Architecture", "Delivery & Process"). Use ONLY skills from the list given: never add one, drop the redundant ones, and put each kept skill in exactly one group.
 - Reply with exactly one JSON object and nothing else — no markdown fences, no commentary:
-{"summary": "...", "roles": [{"id": "role-1", "bullets": [{"source_id": "bullet-1", "text": "..."}]}], "skills": ["..."]}"#;
+{"summary": "...", "roles": [{"id": "role-1", "bullets": [{"source_id": "bullet-1", "text": "..."}]}], "skill_groups": [{"label": "Leadership", "skills": ["..."]}]}"#;
 
 /// Render the canonical draft for the adapter to reword, showing bullet
 /// `source_id`s so rewordings can be matched back.
@@ -261,7 +288,7 @@ fn build_user_message(draft: &TailoredResume) -> String {
         }
     }
     text.push_str(&format!(
-        "\nSKILLS (curate a tight, non-redundant subset for a human; pick only from these, never add)\n{}\n",
+        "\nSKILLS (curate a tight subset and GROUP it for a human; pick only from these, never add)\n{}\n",
         draft.skills_section.skills.join(", ")
     ));
     text
@@ -323,20 +350,46 @@ fn project_human(wire: RawVariant, draft: TailoredResume) -> VariantPayload {
         .filter(|s| !s.trim().is_empty() && digit_runs(s).is_subset(&digit_runs(&draft.summary)))
         .unwrap_or_else(|| draft.summary.clone());
 
-    // Skills: the model may reorder, never add. Keep only entries that are in
-    // the canonical set; if that leaves nothing, fall back to the canonical
-    // order.
+    // Skills: the model curates and GROUPS the list for a human reader. Every
+    // grouped skill is validated against the canonical set (never minted),
+    // empty/unlabeled groups are dropped, and each skill lands in just one
+    // group. The flat `skills` list is the flatten of the groups — it is what
+    // the lint checks and what a template without group support renders.
     let canonical_skills: HashSet<&str> = draft
         .skills_section
         .skills
         .iter()
         .map(String::as_str)
         .collect();
-    let mut skills: Vec<String> = wire
-        .skills
-        .into_iter()
-        .filter(|s| canonical_skills.contains(s.as_str()))
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut skill_groups: Vec<SkillGroup> = Vec::new();
+    for group in wire.skill_groups {
+        let label = group.label.trim().to_string();
+        if label.is_empty() {
+            continue;
+        }
+        let skills: Vec<String> = group
+            .skills
+            .into_iter()
+            .filter(|s| canonical_skills.contains(s.as_str()) && seen.insert(s.clone()))
+            .collect();
+        if !skills.is_empty() {
+            skill_groups.push(SkillGroup { label, skills });
+        }
+    }
+    let mut skills: Vec<String> = skill_groups
+        .iter()
+        .flat_map(|g| g.skills.iter().cloned())
         .collect();
+    // No usable groups (the model returned a flat list, or none): fall back to
+    // the curated flat skills, then to the canonical order.
+    if skills.is_empty() {
+        skills = wire
+            .skills
+            .into_iter()
+            .filter(|s| canonical_skills.contains(s.as_str()))
+            .collect();
+    }
     if skills.is_empty() {
         skills = draft.skills_section.skills.clone();
     }
@@ -350,6 +403,7 @@ fn project_human(wire: RawVariant, draft: TailoredResume) -> VariantPayload {
         roles,
         education: draft.education,
         skills_section: SkillsSection { skills },
+        skill_groups,
         projects: draft.projects,
         certifications: draft.certifications,
         layout_hints: LayoutHints {
@@ -403,6 +457,17 @@ pub fn check_claims(
     for skill in &payload.skills_section.skills {
         if !canonical_skills.contains(skill.as_str()) {
             divergences.push(format!("skill not in the canonical draft: {skill:?}"));
+        }
+    }
+    // Grouped skills (human variant) are claims too; every one must be
+    // canonical, even though the flat list above is their flatten.
+    for group in &payload.skill_groups {
+        for skill in &group.skills {
+            if !canonical_skills.contains(skill.as_str()) {
+                divergences.push(format!(
+                    "grouped skill not in the canonical draft: {skill:?}"
+                ));
+            }
         }
     }
 
@@ -681,6 +746,26 @@ mod tests {
         )
         .await;
         assert_eq!(p.skills_section.skills, vec!["Rust"]);
+        assert!(check_claims(&draft(), &p).is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_human_variant_groups_skills_and_drops_minted_ones() {
+        // The model returns labeled groups drawn from the canonical set, with
+        // one minted skill ("Haskell") that must be dropped. The payload
+        // carries the groups, the flat list is their flatten, and the lint
+        // passes.
+        let p = run_human(
+            r#"{"summary":"Engineering leader.","roles":[],"skill_groups":[{"label":"Languages","skills":["Rust","Haskell"]},{"label":"Ops","skills":["Kubernetes"]}]}"#,
+        )
+        .await;
+        assert_eq!(p.skill_groups.len(), 2);
+        assert_eq!(p.skill_groups[0].label, "Languages");
+        // "Haskell" isn't canonical, so it's dropped from the group.
+        assert_eq!(p.skill_groups[0].skills, vec!["Rust"]);
+        assert_eq!(p.skill_groups[1].skills, vec!["Kubernetes"]);
+        // The flat list is the flatten of the groups, and the lint is happy.
+        assert_eq!(p.skills_section.skills, vec!["Rust", "Kubernetes"]);
         assert!(check_claims(&draft(), &p).is_ok());
     }
 

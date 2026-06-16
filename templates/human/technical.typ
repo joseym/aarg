@@ -132,9 +132,22 @@
   mono(text(size: size, fill: accent.darken(18%), s)),
 )
 #let skill_chips(size: 8.5pt) = {
+  let groups = field(data, "skill_groups", default: ())
   let skills = field(data, "skills_section", default: (skills: ())).skills
   set par(leading: 0.9em)
-  box(width: 100%, skills.map(s => skill_chip(s, size)).join(h(3pt)))
+  if groups.len() > 0 {
+    // Curated, grouped skills (human variant): a mono label per group, then
+    // that group's chips.
+    for g in groups {
+      block(above: 6pt, below: 1pt)[
+        #mono(text(size: size - 1pt, fill: accent.darken(18%))[#upper(g.label)])
+        #linebreak()
+        #box(width: 100%, g.skills.map(s => skill_chip(s, size)).join(h(3pt)))
+      ]
+    }
+  } else {
+    box(width: 100%, skills.map(s => skill_chip(s, size)).join(h(3pt)))
+  }
 }
 #let has_skills = field(data, "skills_section", default: (skills: ())).skills.len() > 0
 
