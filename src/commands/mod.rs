@@ -18,6 +18,7 @@ pub mod init;
 pub mod jd;
 pub mod key;
 pub mod ping;
+pub mod render;
 pub mod roles;
 pub mod skills;
 pub mod tailor;
@@ -771,6 +772,11 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             cover,
         } => tailor::run(jd, variant.variants(), template, cover).await?,
         Command::Cover { build } => cover::run(build).await?,
+        Command::Render {
+            build,
+            no_llm,
+            template,
+        } => render::run(build, no_llm, template).await?,
         Command::Attack { build } => attack::run(build).await?,
         Command::History { command: None } => history::list()?,
         Command::History {

@@ -772,14 +772,16 @@ struct Evaluation {
 /// Review, render, and score one draft, writing its artifacts under
 /// `iterations/<iteration>/`.
 /// A resolved template plus the id to stamp into the payload and `meta.json`.
-struct ChosenTemplate {
-    id: String,
-    template: render::Template,
+/// `pub(crate)` so `aarg render` can re-render a saved build with the same
+/// template resolution this command uses.
+pub(crate) struct ChosenTemplate {
+    pub(crate) id: String,
+    pub(crate) template: render::Template,
 }
 
 /// The ATS template to render with: the configured built-in (default
 /// `classic`). ATS is built-in only, so this never reads a user file.
-fn resolve_ats_template(config: &Config) -> Result<ChosenTemplate, CliError> {
+pub(crate) fn resolve_ats_template(config: &Config) -> Result<ChosenTemplate, CliError> {
     let name = config.templates.ats_name();
     Ok(ChosenTemplate {
         id: format!("ats/{name}"),
@@ -790,7 +792,7 @@ fn resolve_ats_template(config: &Config) -> Result<ChosenTemplate, CliError> {
 /// The human template to render with. An explicit `--template` wins — a file
 /// path is used directly, anything else is treated as a template name — else
 /// the configured default (a name, default `modern`).
-fn resolve_human_template(
+pub(crate) fn resolve_human_template(
     arg: &Option<PathBuf>,
     config: &Config,
 ) -> Result<ChosenTemplate, CliError> {

@@ -102,6 +102,17 @@ pub enum Command {
         /// Build id to write a letter for (e.g. 029); omit to pick one interactively
         build: Option<String>,
     },
+    /// Re-render a past build's PDFs from its saved draft (skips the tailor loop)
+    Render {
+        /// Build id to re-render (e.g. 029); omit to pick one interactively
+        build: Option<String>,
+        /// Skip the model: re-render the saved payloads with the current templates (layout only)
+        #[arg(long = "no-llm")]
+        no_llm: bool,
+        /// Render the human variant with this template (a built-in name like `technical`, or a `.typ` path)
+        #[arg(long, value_name = "TEMPLATE")]
+        template: Option<std::path::PathBuf>,
+    },
     /// Maintain the skills in your dataset
     Skills {
         #[command(subcommand)]
@@ -450,6 +461,43 @@ mod tests {
         {
             Command::Cover { build } => assert_eq!(build, None),
             other => panic!("expected cover, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_parses_with_a_build_and_the_no_llm_flag() {
+        match Cli::try_parse_from(["aarg", "render", "029"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Render {
+                build,
+                no_llm,
+                template,
+            } => {
+                assert_eq!(build.as_deref(), Some("029"));
+                assert!(!no_llm);
+                assert_eq!(template, None);
+            }
+            other => panic!("expected render, got {other:?}"),
+        }
+        // Build id optional (pick interactively); --no-llm and --template parse.
+        match Cli::try_parse_from(["aarg", "render", "--no-llm", "--template", "technical"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Render {
+                build,
+                no_llm,
+                template,
+            } => {
+                assert_eq!(build, None);
+                assert!(no_llm);
+                assert_eq!(template, Some(std::path::PathBuf::from("technical")));
+            }
+            other => panic!("expected render, got {other:?}"),
         }
     }
 
