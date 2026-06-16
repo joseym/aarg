@@ -47,6 +47,7 @@ pub async fn run(
     jd: Option<PathBuf>,
     variants: Vec<Variant>,
     human_template: Option<PathBuf>,
+    cover: bool,
 ) -> Result<(), CliError> {
     // A custom template applies to the human variant; reject it up front if
     // that variant won't be rendered, rather than silently ignoring it.
@@ -634,6 +635,29 @@ pub async fn run(
                 .collect();
         builds::write_json(&build.dir, "readability_report.json", &by_variant)?;
     }
+    // Optional cover letter (`--cover`): draft it from the canonical draft
+    // and render it next to the resume. It runs the same never-fabricate
+    // guards the resume does; warnings are surfaced, not fatal, and its
+    // tokens are folded into the build total before meta.json is written.
+    let mut cover_pdf: Option<PathBuf> = None;
+    if cover {
+        let samples: Vec<String> = dataset
+            .voice_samples
+            .iter()
+            .map(|sample| sample.text.clone())
+            .collect();
+        let sp = Spinner::start("drafting a cover letter");
+        let (letter, cover_warnings, cover_usage) =
+            crate::cover::write_cover_letter(&ctx, &best.resume, &requirements, &samples).await?;
+        add_usage(&mut total, cover_usage);
+        let pdf = render::render_cover(&build.dir, &letter, &render::Template::cover())?;
+        sp.finish(style::done("cover letter drafted"));
+        for warning in &cover_warnings {
+            eprintln!("{} {warning}", style::yellow("cover:"));
+        }
+        cover_pdf = Some(pdf);
+    }
+
     builds::write_json(
         &build.dir,
         "meta.json",
@@ -676,6 +700,13 @@ pub async fn run(
             "  {}  {}",
             style::dim(pdf.display()),
             style::dim(format!("— {}", v.purpose()))
+        );
+    }
+    if let Some(pdf) = &cover_pdf {
+        eprintln!(
+            "  {}  {}",
+            style::dim(pdf.display()),
+            style::dim("— cover letter")
         );
     }
     // Readability problems worth the eye, if any. The "pdfium unavailable"

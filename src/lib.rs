@@ -14,6 +14,7 @@ pub mod builds;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod cover;
 pub mod dataset;
 pub mod enrich;
 pub mod evals;

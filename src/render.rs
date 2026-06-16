@@ -21,6 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::cover::CoverLetter;
 use crate::variant::{Variant, VariantPayload};
 
 /// The shipped templates and the shared library, embedded at compile time so
@@ -30,6 +31,7 @@ const ATS_MINIMAL_TEMPLATE: &str = include_str!("../templates/ats/minimal.typ");
 const HUMAN_TEMPLATE: &str = include_str!("../templates/human/modern.typ");
 const HUMAN_TECHNICAL_TEMPLATE: &str = include_str!("../templates/human/technical.typ");
 const HUMAN_EDITORIAL_TEMPLATE: &str = include_str!("../templates/human/editorial.typ");
+const COVER_TEMPLATE: &str = include_str!("../templates/cover/standard.typ");
 const SHARED_LIB: &str = include_str!("../templates/_shared/aarg-template-lib.typ");
 
 /// The shared library's staged filename — templates import it by this name.
@@ -60,6 +62,14 @@ impl Template {
         Template::Builtin {
             filename: "modern.typ",
             source: HUMAN_TEMPLATE,
+        }
+    }
+
+    /// The built-in cover-letter template.
+    pub fn cover() -> Self {
+        Template::Builtin {
+            filename: "cover.typ",
+            source: COVER_TEMPLATE,
         }
     }
 
@@ -193,16 +203,65 @@ fn render_with(
     payload: &VariantPayload,
     template: &Template,
 ) -> Result<PathBuf, RenderError> {
+    stage_and_compile(
+        typst,
+        build_dir,
+        payload.variant.payload_name(),
+        &serde_json::to_vec_pretty(payload)?,
+        payload.variant.pdf_name(),
+        template,
+    )
+}
+
+/// Render a cover letter to `cover_letter.pdf` in the build directory. Same
+/// staging as a resume variant, a different payload and output name — the
+/// `CoverLetter` is the documented JSON the template reads.
+pub fn render_cover(
+    build_dir: &Path,
+    letter: &CoverLetter,
+    template: &Template,
+) -> Result<PathBuf, RenderError> {
+    render_cover_with("typst", build_dir, letter, template)
+}
+
+/// The testable core of [`render_cover`]; the typst program name is a
+/// parameter so tests can point it at a stub.
+fn render_cover_with(
+    typst: &str,
+    build_dir: &Path,
+    letter: &CoverLetter,
+    template: &Template,
+) -> Result<PathBuf, RenderError> {
+    stage_and_compile(
+        typst,
+        build_dir,
+        "cover_payload.json",
+        &serde_json::to_vec_pretty(letter)?,
+        "cover_letter.pdf",
+        template,
+    )
+}
+
+/// Stage a payload, its template, and the shared library into the build
+/// directory, then shell out to typst. Shared by the variant renderer and
+/// the cover-letter renderer — they differ only in the payload JSON and the
+/// output filename, so everything else (the staging, the missing-binary and
+/// stderr paths) lives here once.
+fn stage_and_compile(
+    typst: &str,
+    build_dir: &Path,
+    payload_name: &str,
+    payload: &[u8],
+    out_name: &str,
+    template: &Template,
+) -> Result<PathBuf, RenderError> {
     let write = |name: &str, contents: &[u8]| -> Result<(), RenderError> {
         let path = build_dir.join(name);
         std::fs::write(&path, contents).map_err(|source| RenderError::Write { path, source })
     };
 
-    let payload_name = payload.variant.payload_name();
-    let out_name = payload.variant.pdf_name();
     let (template_file, template_src) = template.resolve()?;
-
-    write(payload_name, &serde_json::to_vec_pretty(payload)?)?;
+    write(payload_name, payload)?;
     write(&template_file, template_src.as_bytes())?;
     // Staged for any template that imports it; harmless for those that don't.
     write(SHARED_LIB_NAME, SHARED_LIB.as_bytes())?;
@@ -330,6 +389,36 @@ mod tests {
         assert_eq!(pdf, dir.path().join("resume.ats.pdf"));
         // The user's template was staged under its own filename.
         assert!(dir.path().join("my-layout.typ").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cover_letter_stages_its_payload_and_renders() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = stub_typst(dir.path(), "exit 0");
+        let letter = CoverLetter {
+            contact: Contact {
+                full_name: "Ada Lovelace".into(),
+                email: "ada@example.com".into(),
+                phone: None,
+                location: None,
+                links: Vec::new(),
+            },
+            company: "Acme".into(),
+            title: "Staff Engineer".into(),
+            greeting: "Dear Acme hiring team,".into(),
+            paragraphs: vec!["I would welcome a conversation.".into()],
+            signoff: "Ada Lovelace".into(),
+        };
+
+        let pdf = render_cover_with(&stub, dir.path(), &letter, &Template::cover()).unwrap();
+
+        assert_eq!(pdf, dir.path().join("cover_letter.pdf"));
+        let payload = std::fs::read_to_string(dir.path().join("cover_payload.json")).unwrap();
+        assert!(payload.contains("Dear Acme hiring team,"));
+        assert!(payload.contains("Ada Lovelace"));
+        // The cover template is staged under its own name.
+        assert!(dir.path().join("cover.typ").exists());
     }
 
     #[cfg(unix)]

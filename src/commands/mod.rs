@@ -9,6 +9,7 @@
 pub mod attack;
 pub mod completions;
 pub mod config;
+pub mod cover;
 pub mod dataset;
 pub mod gap;
 pub mod history;
@@ -406,6 +407,47 @@ pub(crate) fn editor_available() -> bool {
     std::env::var_os("VISUAL").is_some() || std::env::var_os("EDITOR").is_some()
 }
 
+/// Resolve which saved build a command should act on when none was named:
+/// list the builds and let a person pick one. Returns the chosen id, or
+/// `None` when there's nothing to pick (no builds) or no one to ask (a
+/// piped/CI run); in both cases it has printed how to proceed, so the caller
+/// should stop cleanly. `prompt` titles the picker; `example` is the
+/// explicit-form hint shown to a non-interactive run. Shared by `aarg attack`
+/// and `aarg cover` — its second consumer is what pulled it out of `attack`.
+pub(crate) async fn pick_build(prompt: &str, example: &str) -> Result<Option<String>, CliError> {
+    let user = auto_user();
+    let builds = crate::history::list()?;
+    if builds.is_empty() {
+        eprintln!("no builds yet — run `aarg tailor <jd>`");
+        return Ok(None);
+    }
+    // A piped/CI run can't answer a picker; point it at the explicit form.
+    if !user.is_interactive() {
+        eprintln!("specify a build id, e.g. `{example}`");
+        return Ok(None);
+    }
+    // One readable line per build, newest first (the order `list` returns).
+    let options: Vec<String> = builds
+        .iter()
+        .map(|b| {
+            format!(
+                "{}  {:.2}  {}  {} · {} obj",
+                b.id, b.score, b.target, b.created_at, b.objections
+            )
+        })
+        .collect();
+    match user
+        .ask(Question::Select {
+            prompt: prompt.to_string(),
+            options,
+        })
+        .await?
+    {
+        Answer::Choice(i) => Ok(builds.get(i).map(|b| b.id.clone())),
+        _ => Ok(None),
+    }
+}
+
 /// Capture a block of free text from the user: an editor when one is
 /// available (an interactive terminal with `$EDITOR`/`$VISUAL` set),
 /// otherwise stdin — a piped file, or an interactive paste ended with
@@ -546,6 +588,10 @@ pub enum CliError {
         "the model's output didn't parse or selected nothing; re-running usually helps"
     ))]
     Tailor(#[from] TailorError),
+
+    #[error(transparent)]
+    #[diagnostic(help("the model's cover-letter output didn't parse; re-running usually helps"))]
+    Cover(#[from] crate::cover::CoverLetterError),
 
     #[error(transparent)]
     #[diagnostic(help("the reviewer's output didn't parse; re-running usually helps"))]
@@ -722,7 +768,9 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             jd,
             variant,
             template,
-        } => tailor::run(jd, variant.variants(), template).await?,
+            cover,
+        } => tailor::run(jd, variant.variants(), template, cover).await?,
+        Command::Cover { build } => cover::run(build).await?,
         Command::Attack { build } => attack::run(build).await?,
         Command::History { command: None } => history::list()?,
         Command::History {

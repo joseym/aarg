@@ -93,6 +93,14 @@ pub enum Command {
         /// built-in parser-safe one.
         #[arg(long, value_name = "PATH")]
         template: Option<std::path::PathBuf>,
+        /// Also draft a cover letter from the tailored resume
+        #[arg(long)]
+        cover: bool,
+    },
+    /// Draft a cover letter for a past build (reuses its resume and JD)
+    Cover {
+        /// Build id to write a letter for (e.g. 029); omit to pick one interactively
+        build: Option<String>,
     },
     /// Maintain the skills in your dataset
     Skills {
@@ -396,10 +404,12 @@ mod tests {
                 jd,
                 variant,
                 template,
+                cover,
             } => {
                 assert_eq!(jd, Some(std::path::PathBuf::from("jd.txt")));
                 assert_eq!(variant, VariantArg::Both);
                 assert_eq!(template, None);
+                assert!(!cover);
             }
             other => panic!("expected tailor, got {other:?}"),
         }
@@ -411,6 +421,36 @@ mod tests {
                 .unwrap(),
             Command::Tailor { jd: None, .. }
         ));
+    }
+
+    #[test]
+    fn tailor_cover_flag_parses() {
+        let cli = Cli::try_parse_from(["aarg", "tailor", "jd.txt", "--cover"]).unwrap();
+        match cli.command.unwrap() {
+            Command::Tailor { cover, .. } => assert!(cover),
+            other => panic!("expected tailor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cover_parses_with_and_without_a_build_id() {
+        match Cli::try_parse_from(["aarg", "cover", "029"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Cover { build } => assert_eq!(build.as_deref(), Some("029")),
+            other => panic!("expected cover, got {other:?}"),
+        }
+        // The build id is optional — omitting it means "pick interactively".
+        match Cli::try_parse_from(["aarg", "cover"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Cover { build } => assert_eq!(build, None),
+            other => panic!("expected cover, got {other:?}"),
+        }
     }
 
     #[test]
