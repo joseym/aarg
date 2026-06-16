@@ -269,7 +269,7 @@ Rules — all of them matter:
 - Reword the summary and the bullet lines to be tighter and more scannable: lead with the action and the outcome, prefer precise concrete verbs over vague ones, cut filler. Aim for one line per bullet.
 - NEVER add or change a fact. No new metric, number, technology, employer, scale, scope, or seniority. You may only restate what a line already says. Strengthen the wording, never the claim. If a line is thin because the work was thin, leave it thin — do not pad it with anything invented.
 - Refer to every bullet by its source_id. Return every role and every bullet you were given; you may rephrase a line, never drop or invent one.
-- skills: this list is keyword-dense for machine scanning, so it carries near-duplicates and verbose phrases that read as keyword-stuffing to a person. For the HUMAN reader, CURATE and GROUP it. First choose a tight, non-redundant subset (about 8 to 12 total): keep the single cleanest phrasing where several entries overlap (e.g. one of "Engineering management" / "engineering leadership experience" / "managing senior technical leaders") and drop vague catch-alls and full-sentence entries. Then organize what remains into 2 to 4 short, sensibly-labeled groups (for example "Leadership", "Platform & Architecture", "Delivery & Process"). Use ONLY skills from the list given: never add one, drop the redundant ones, and put each kept skill in exactly one group.
+- skills: this list is keyword-dense for machine scanning, so it carries near-duplicates and verbose phrases that read as keyword-stuffing to a person. For the HUMAN reader, CURATE and GROUP it. First choose a tight, non-redundant subset (about 6 to 10 total): keep the single cleanest phrasing where several entries overlap (e.g. one of "Engineering management" / "engineering leadership experience" / "managing senior technical leaders") and drop vague catch-alls and full-sentence entries. Then organize what remains into 3 to 4 short, sensibly-labeled groups, NEVER more than 4 (for example "Leadership", "Platform & Architecture", "Delivery & Process"). Use ONLY skills from the list given: never add one, drop the redundant ones, and put each kept skill in exactly one group.
 - Reply with exactly one JSON object and nothing else — no markdown fences, no commentary:
 {"summary": "...", "roles": [{"id": "role-1", "bullets": [{"source_id": "bullet-1", "text": "..."}]}], "skill_groups": [{"label": "Leadership", "skills": ["..."]}]}"#;
 
@@ -293,6 +293,10 @@ fn build_user_message(draft: &TailoredResume) -> String {
     ));
     text
 }
+
+/// The most skill groups the human variant will show. The prompt asks for 3
+/// to 4; this is the hard ceiling so the section stays tight regardless.
+const MAX_SKILL_GROUPS: usize = 4;
 
 /// Build the human payload from the model's reply and the canonical draft,
 /// holding every claim to the canonical. This is where never-fabricate lives
@@ -377,6 +381,9 @@ fn project_human(wire: RawVariant, draft: TailoredResume) -> VariantPayload {
             skill_groups.push(SkillGroup { label, skills });
         }
     }
+    // Cap the group count so the section stays tight even when the model
+    // proposes more groups than asked.
+    skill_groups.truncate(MAX_SKILL_GROUPS);
     let mut skills: Vec<String> = skill_groups
         .iter()
         .flat_map(|g| g.skills.iter().cloned())
@@ -767,6 +774,45 @@ mod tests {
         // The flat list is the flatten of the groups, and the lint is happy.
         assert_eq!(p.skills_section.skills, vec!["Rust", "Kubernetes"]);
         assert!(check_claims(&draft(), &p).is_ok());
+    }
+
+    #[tokio::test]
+    async fn skill_groups_are_capped() {
+        // Six canonical skills and a reply proposing six one-skill groups:
+        // only the first MAX_SKILL_GROUPS survive, and the flat list is the
+        // flatten of the kept groups.
+        let mut d = draft();
+        d.skills_section.skills = ["Rust", "Go", "Kubernetes", "Docker", "SQL", "AWS"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let mock = MockLlmClient::new();
+        mock.enqueue(
+            r#"{"summary":"x","roles":[],"skill_groups":[{"label":"A","skills":["Rust"]},{"label":"B","skills":["Go"]},{"label":"C","skills":["Kubernetes"]},{"label":"D","skills":["Docker"]},{"label":"E","skills":["SQL"]},{"label":"F","skills":["AWS"]}]}"#,
+        );
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        };
+        let p = VariantAdapterAgent
+            .run(
+                &ctx,
+                VariantInput {
+                    draft: d.clone(),
+                    variant: Variant::Human,
+                },
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(p.skill_groups.len(), 4);
+        assert_eq!(
+            p.skills_section.skills,
+            vec!["Rust", "Go", "Kubernetes", "Docker"]
+        );
+        assert!(check_claims(&d, &p).is_ok());
     }
 
     #[tokio::test]
