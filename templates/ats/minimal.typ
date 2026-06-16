@@ -84,7 +84,7 @@
       // stays single-column top-to-bottom (no grid an ATS might misread).
       #text(weight: "bold")[#role.title]#{
         let company = field(role, "company")
-        if company != none [ — #company]
+        if company != none [, #company]
       }#{
         let loc = field(role, "location")
         if loc != none [, #loc]

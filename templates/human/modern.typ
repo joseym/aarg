@@ -147,7 +147,7 @@
   if data.certifications.len() > 0 {
     heading_rule("Certifications", accent)
     for c in data.certifications [
-      - #text(weight: "medium")[#c.name]#if c.issuer != "" [ #text(fill: muted)[— #c.issuer]]#if c.issued != none [ #text(size: 9pt, fill: muted)[(#fmt(c.issued))]]
+      - #text(weight: "medium")[#c.name]#if c.issuer != "" [ #text(fill: muted)[· #c.issuer]]#if c.issued != none [ #text(size: 9pt, fill: muted)[(#fmt(c.issued))]]
     ]
   }
 }

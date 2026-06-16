@@ -165,7 +165,7 @@
     for c in certs [
       - #text(weight: "medium", fill: ink)[#c.name]#{
           let issuer = field(c, "issuer", default: "")
-          if issuer != "" [ #text(fill: muted)[ — #issuer]]
+          if issuer != "" [ #text(fill: muted)[ · #issuer]]
         }#{
           let issued = field(c, "issued")
           if issued != none [ #text(size: body_size - 0.5pt, fill: muted)[ (#fmt(issued))]]

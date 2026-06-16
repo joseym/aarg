@@ -207,7 +207,7 @@
   if data.certifications.len() > 0 {
     tech_heading("Certifications")
     for c in data.certifications [
-      - #text(weight: "medium")[#c.name]#if ("issuer" in c) and c.issuer != "" [ #text(fill: muted)[— #c.issuer]]#if ("issued" in c) and c.issued != none [ #mono(text(size: 8.5pt, fill: muted)[ (#fmt(c.issued))])]
+      - #text(weight: "medium")[#c.name]#if ("issuer" in c) and c.issuer != "" [ #text(fill: muted)[· #c.issuer]]#if ("issued" in c) and c.issued != none [ #mono(text(size: 8.5pt, fill: muted)[ (#fmt(c.issued))])]
     ]
   }
 }
