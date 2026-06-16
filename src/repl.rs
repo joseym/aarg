@@ -277,8 +277,9 @@ fn dynamic_for(command: &str, positional_index: usize, word: &str) -> Dynamic {
         return Dynamic::None;
     }
     match command {
-        // `attack <build>` and `diff <from> <to>` take build ids.
-        "attack" if positional_index == 0 => Dynamic::BuildIds,
+        // `attack <build>` and `cover <build>` take a build id first; `diff
+        // <from> <to>` takes one in either position.
+        "attack" | "cover" if positional_index == 0 => Dynamic::BuildIds,
         "diff" if positional_index <= 1 => Dynamic::BuildIds,
         // `history rm <ids...>` is variadic — keep offering build ids.
         "rm" => Dynamic::BuildIds,
@@ -398,6 +399,9 @@ mod tests {
         // `attack <build>`: first positional.
         assert_eq!(dynamic("attack "), Dynamic::BuildIds);
         assert_eq!(dynamic("attack 02"), Dynamic::BuildIds);
+        // `cover <build>`: first positional, same as attack.
+        assert_eq!(dynamic("cover "), Dynamic::BuildIds);
+        assert_eq!(dynamic("cover 02"), Dynamic::BuildIds);
         // `diff <from> <to>`: both positionals.
         assert_eq!(dynamic("diff "), Dynamic::BuildIds);
         assert_eq!(dynamic("diff 020 "), Dynamic::BuildIds);
