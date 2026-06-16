@@ -6,7 +6,7 @@ pub mod client;
 pub mod mock;
 pub mod types;
 
-pub use anthropic::AnthropicClient;
+pub use anthropic::{AnthropicClient, Auth};
 pub use client::LlmClient;
 pub use mock::MockLlmClient;
 pub use types::{

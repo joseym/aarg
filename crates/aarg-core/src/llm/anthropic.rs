@@ -20,20 +20,60 @@ use crate::llm::types::{
 /// The API version header the Messages API requires on every request.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// The beta header an OAuth bearer token needs on the Messages API — the
+/// same one Claude Code and the Agent SDK send. Without it, `/v1/messages`
+/// rejects a plan token even though the bearer header is correct.
+const OAUTH_BETA: &str = "oauth-2025-04-20";
+
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+
+/// How the client proves who it is to the Messages API.
+///
+/// An API key authenticates with the `x-api-key` header — the pay-as-you-go
+/// path. An OAuth access token (from `claude setup-token` or a Claude login)
+/// authenticates with a bearer header plus the oauth beta header, drawing on
+/// a Claude Pro/Max plan. The bearer mechanism is exactly what Claude Code
+/// and the Agent SDK use; AARG sends the same headers by hand rather than
+/// adopting their SDK. (Plan-credit eligibility is officially scoped to the
+/// SDK and Claude Code, so the OAuth path is experimental here.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Auth {
+    ApiKey(String),
+    Oauth(String),
+}
+
+/// The auth headers a given credential sends, as `(name, value)` pairs. A
+/// bare function so header selection is unit-testable without an HTTP round
+/// trip (the rest of `post_messages` needs the network).
+fn auth_headers(auth: &Auth) -> Vec<(&'static str, String)> {
+    match auth {
+        Auth::ApiKey(key) => vec![("x-api-key", key.clone())],
+        Auth::Oauth(token) => vec![
+            ("authorization", format!("Bearer {token}")),
+            ("anthropic-beta", OAUTH_BETA.to_string()),
+        ],
+    }
+}
 
 /// An `LlmClient` backed by the Anthropic Messages API.
 pub struct AnthropicClient {
     http: reqwest::Client,
-    api_key: String,
+    auth: Auth,
     base_url: String,
 }
 
 impl AnthropicClient {
+    /// Build a client authenticating with an API key (`x-api-key`).
     pub fn new(api_key: impl Into<String>) -> Self {
+        Self::with_auth(Auth::ApiKey(api_key.into()))
+    }
+
+    /// Build a client with an explicit credential — an API key or a Claude
+    /// plan OAuth token.
+    pub fn with_auth(auth: Auth) -> Self {
         Self {
             http: reqwest::Client::new(),
-            api_key: api_key.into(),
+            auth,
             base_url: DEFAULT_BASE_URL.to_string(),
         }
     }
@@ -49,14 +89,14 @@ impl AnthropicClient {
         request: &CompletionRequest,
         stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
-        let response = self
+        let mut builder = self
             .http
             .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&request_body(request, stream))
-            .send()
-            .await?;
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        for (name, value) in auth_headers(&self.auth) {
+            builder = builder.header(name, value);
+        }
+        let response = builder.json(&request_body(request, stream)).send().await?;
         Ok(response)
     }
 }
@@ -390,6 +430,28 @@ mod tests {
             temperature: None,
             tools: Vec::new(),
         }
+    }
+
+    #[test]
+    fn api_key_auth_sends_the_x_api_key_header() {
+        let headers = auth_headers(&Auth::ApiKey("sk-test".to_string()));
+        assert_eq!(headers, vec![("x-api-key", "sk-test".to_string())]);
+    }
+
+    #[test]
+    fn oauth_auth_sends_a_bearer_token_and_the_oauth_beta_header() {
+        let headers = auth_headers(&Auth::Oauth("oat-test".to_string()));
+        // A Claude-plan token is a bearer credential, not an api key, and
+        // needs the oauth beta header or `/v1/messages` rejects it.
+        assert_eq!(
+            headers,
+            vec![
+                ("authorization", "Bearer oat-test".to_string()),
+                ("anthropic-beta", "oauth-2025-04-20".to_string()),
+            ]
+        );
+        // Never the api-key header on the OAuth path.
+        assert!(!headers.iter().any(|(name, _)| *name == "x-api-key"));
     }
 
     #[test]
