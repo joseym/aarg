@@ -156,17 +156,13 @@ talked around.
 
 **Done and working**: the tailor/review/revise loop, both résumé variants with the
 claim-divergence lint, gap analysis, the skills/roles/metric interviews, voice
-rewriting, history and diff, templates, the REPL, and experimental subscription
-auth. 
+rewriting, cover-letter generation (`aarg cover` or `tailor --cover`), history and
+diff, templates, the REPL, and experimental subscription auth.
 
 **Not there yet**: a fully-local model provider (the client trait and
 per-agent model tiers are already in place for it to slot into), and an
 experimental vision pass that reads the rendered layout the way a recruiter
 skims it.
-
-**Stretch goals**: cover-letter generation that drafts a letter tailored to the
-posting from the same evidence-backed dataset and your voice samples, held to the
-same never-fabricate rule as the resume and rendered alongside the PDFs.
 
 ## License
 
