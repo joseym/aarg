@@ -75,16 +75,16 @@ pub enum Command {
     },
     /// Compare your dataset against a job description's requirements
     Gap {
-        /// JD text file, Greenhouse/Lever URL, `jd parse --json` output, or "-"
-        jd: std::path::PathBuf,
+        /// JD file, Greenhouse/Lever URL, `jd parse --json` output, or "-"; omit to pick a past one
+        jd: Option<std::path::PathBuf>,
         /// Print the report as JSON instead of a summary
         #[arg(long)]
         json: bool,
     },
     /// Tailor your resume to a job description and render the PDF(s)
     Tailor {
-        /// JD text file, Greenhouse/Lever URL, `jd parse --json` output, or "-"
-        jd: std::path::PathBuf,
+        /// JD file, Greenhouse/Lever URL, `jd parse --json` output, or "-"; omit to pick a past one
+        jd: Option<std::path::PathBuf>,
         /// Which PDF(s) to render: ats, human, or both (default)
         #[arg(long, value_enum, default_value_t = VariantArg::Both)]
         variant: VariantArg,
@@ -366,7 +366,7 @@ mod tests {
         let cli = Cli::try_parse_from(["aarg", "gap", "jd.txt"]).unwrap();
         match cli.command.unwrap() {
             Command::Gap { jd, json } => {
-                assert_eq!(jd, std::path::PathBuf::from("jd.txt"));
+                assert_eq!(jd, Some(std::path::PathBuf::from("jd.txt")));
                 assert!(!json);
             }
             other => panic!("expected gap, got {other:?}"),
@@ -378,7 +378,14 @@ mod tests {
                 .unwrap(),
             Command::Gap { json: true, .. }
         ));
-        assert!(Cli::try_parse_from(["aarg", "gap"]).is_err());
+        // The JD is now optional — bare `gap` means "pick one interactively".
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "gap"])
+                .unwrap()
+                .command
+                .unwrap(),
+            Command::Gap { jd: None, .. }
+        ));
     }
 
     #[test]
@@ -390,13 +397,20 @@ mod tests {
                 variant,
                 template,
             } => {
-                assert_eq!(jd, std::path::PathBuf::from("jd.txt"));
+                assert_eq!(jd, Some(std::path::PathBuf::from("jd.txt")));
                 assert_eq!(variant, VariantArg::Both);
                 assert_eq!(template, None);
             }
             other => panic!("expected tailor, got {other:?}"),
         }
-        assert!(Cli::try_parse_from(["aarg", "tailor"]).is_err());
+        // The JD is now optional — bare `tailor` means "pick one interactively".
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "tailor"])
+                .unwrap()
+                .command
+                .unwrap(),
+            Command::Tailor { jd: None, .. }
+        ));
     }
 
     #[test]

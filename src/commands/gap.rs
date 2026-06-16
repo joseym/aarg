@@ -14,7 +14,7 @@ use crate::dataset::store;
 use crate::gap::{GapReport, Weakness, analyze_gap};
 use crate::jd::{Importance, JobRequirements};
 
-pub async fn run(path: PathBuf, json: bool) -> Result<(), CliError> {
+pub async fn run(jd: Option<PathBuf>, json: bool) -> Result<(), CliError> {
     let dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
@@ -25,7 +25,16 @@ pub async fn run(path: PathBuf, json: bool) -> Result<(), CliError> {
         sink: None,
     };
 
-    let requirements = load_requirements(&path, &ctx).await?;
+    // A JD argument is parsed (file/URL/stdin); with none, offer the JDs from
+    // past builds to reuse, loaded off disk. A picker that returns nothing (no
+    // past builds, or a piped/CI run) has already said how to proceed.
+    let requirements = match &jd {
+        Some(path) => load_requirements(path, &ctx).await?,
+        None => match super::pick_jd().await? {
+            Some(requirements) => requirements,
+            None => return Ok(()),
+        },
+    };
 
     eprintln!(
         "comparing against {} recorded skills...",

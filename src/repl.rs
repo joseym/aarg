@@ -327,8 +327,10 @@ mod tests {
     #[test]
     fn an_unknown_or_incomplete_command_is_an_error_not_a_panic() {
         assert!(matches!(interpret("bogus-command"), Line::Error(_)));
-        // `tailor` without its required JD is a clap error, surfaced, not fatal.
-        assert!(matches!(interpret("tailor"), Line::Error(_)));
+        // A command still missing a required arg (`ingest <path>`) is a clap
+        // error, surfaced, not fatal. (`tailor`/`gap` no longer qualify — a
+        // bare invocation now drops into the JD picker.)
+        assert!(matches!(interpret("ingest"), Line::Error(_)));
         // An unbalanced quote is reported, not a crash.
         assert!(matches!(interpret(r#"ingest "oops"#), Line::Error(_)));
     }

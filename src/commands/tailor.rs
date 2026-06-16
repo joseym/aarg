@@ -44,7 +44,7 @@ use crate::verify::{unbacked_keywords, verify_keywords};
 use crate::voice;
 
 pub async fn run(
-    path: PathBuf,
+    jd: Option<PathBuf>,
     variants: Vec<Variant>,
     human_template: Option<PathBuf>,
 ) -> Result<(), CliError> {
@@ -78,7 +78,17 @@ pub async fn run(
         revises: config.limits.strengthen_revises,
     };
 
-    let requirements = load_requirements(&path, &ctx).await?;
+    // A JD argument is parsed (file/URL/stdin); with none, offer the JDs from
+    // past builds to reuse — loaded off disk, so no model call. A picker that
+    // returns nothing (no past builds, or a piped/CI run) has already said how
+    // to proceed, so there's nothing left to tailor.
+    let requirements = match &jd {
+        Some(path) => load_requirements(path, &ctx).await?,
+        None => match super::pick_jd().await? {
+            Some(requirements) => requirements,
+            None => return Ok(()),
+        },
+    };
 
     eprintln!(
         "\n{}",

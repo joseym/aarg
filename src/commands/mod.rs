@@ -40,8 +40,9 @@ use crate::render::RenderError;
 use crate::review::ReviewError;
 use crate::secrets::{self, SecretsError};
 use crate::tailor::TailorError;
+use crate::terminal::auto_user;
 use crate::trace::TraceError;
-use crate::user::AskError;
+use crate::user::{Answer, AskError, Question};
 use crate::variant::{ClaimDivergence, VariantError};
 
 /// Load the config, fetch the stored API key, and build the provider
@@ -183,6 +184,101 @@ pub(crate) async fn load_requirements(
         );
         Ok(crate::jd::parse_jd(ctx, &text).await?)
     }
+}
+
+/// A job description from a past build, ready to reuse: the parsed
+/// requirements plus a one-line label for the picker.
+struct RecentJd {
+    label: String,
+    requirements: JobRequirements,
+}
+
+/// When a JD-consuming command runs with no JD argument, offer the JDs from
+/// past builds and return the chosen one — loaded straight off disk, so
+/// reusing a JD costs no model call (the build already parsed it). Returns
+/// `None` when there's nothing to pick (no prior builds) or no one to ask
+/// (a piped/CI run); in both cases it has printed how to proceed, so the
+/// caller should stop cleanly. Mirrors `attack`'s build picker, and keeps
+/// scriptability intact: an agent always passes the JD explicitly.
+pub(crate) async fn pick_jd() -> Result<Option<JobRequirements>, CliError> {
+    let recent = recent_jds()?;
+    if recent.is_empty() {
+        eprintln!(
+            "no past job descriptions to choose from — pass one, e.g. `aarg tailor jd.txt` (a URL or `-` for stdin also work)"
+        );
+        return Ok(None);
+    }
+    let user = auto_user();
+    // A piped/CI run can't answer a picker; point it at the explicit form
+    // rather than hanging on an `ask` or guessing which JD it meant.
+    if !user.is_interactive() {
+        eprintln!(
+            "pass a job description, e.g. `aarg tailor jd.txt` (a URL or `-` for stdin also work)"
+        );
+        return Ok(None);
+    }
+
+    let options: Vec<String> = recent.iter().map(|jd| jd.label.clone()).collect();
+    match user
+        .ask(Question::Select {
+            prompt: "pick a job description from a past build".into(),
+            options,
+        })
+        .await?
+    {
+        // Map the chosen index back to its requirements.
+        Answer::Choice(i) => Ok(recent.into_iter().nth(i).map(|jd| jd.requirements)),
+        _ => Ok(None),
+    }
+}
+
+/// The distinct JDs across the build history, newest build first. Each
+/// build stores the `jd.json` it was tailored for; this reads them back and
+/// dedups by identity, so a JD tailored five times shows once.
+fn recent_jds() -> Result<Vec<RecentJd>, CliError> {
+    // `history::list` is newest-first; pair each build with its stored JD,
+    // skipping builds whose `jd.json` is gone or unreadable (older or
+    // hand-edited) — they simply don't contribute a JD to pick from.
+    let items = crate::history::list()?.into_iter().filter_map(|build| {
+        crate::history::read_artifact::<JobRequirements>(&build.id, "jd.json")
+            .ok()
+            .map(|jd| (build.created_at, build.id, jd))
+    });
+    Ok(dedup_jds(items))
+}
+
+/// Dedup a newest-first stream of `(created_at, build_id, requirements)`
+/// into the distinct JDs to offer, keeping the newest build's copy of each.
+/// Pure, so the dedup is unit-testable without touching the builds
+/// directory (the I/O lives in `recent_jds`).
+fn dedup_jds(items: impl IntoIterator<Item = (String, String, JobRequirements)>) -> Vec<RecentJd> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (created_at, build_id, jd) in items {
+        // Identity is the role itself plus where it came from: the same
+        // posting re-tailored is one entry, two postings that happen to
+        // share a title are two.
+        let key = (jd.company.clone(), jd.title.clone(), jd.source_url.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        let title = if jd.title.is_empty() {
+            "untitled role"
+        } else {
+            jd.title.as_str()
+        };
+        let company = if jd.company.is_empty() {
+            "unnamed company"
+        } else {
+            jd.company.as_str()
+        };
+        let label = format!("{title} @ {company}  ·  {created_at} (build {build_id})");
+        out.push(RecentJd {
+            label,
+            requirements: jd,
+        });
+    }
+    out
 }
 
 /// Read a text argument that is either a file path or `-` for stdin.
@@ -534,4 +630,82 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         } => templates::use_template(name).await?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::jd::{RemotePolicy, Seniority};
+
+    /// A minimal JD; only the fields the picker keys and labels on matter.
+    fn req(company: &str, title: &str, source: Option<&str>) -> JobRequirements {
+        JobRequirements {
+            company: company.to_string(),
+            title: title.to_string(),
+            seniority: Seniority::Unspecified,
+            location: None,
+            remote: RemotePolicy::Unspecified,
+            domain_keywords: Vec::new(),
+            required_skills: Vec::new(),
+            preferred_skills: Vec::new(),
+            responsibilities: Vec::new(),
+            ats_phrases: Vec::new(),
+            raw_text: String::new(),
+            source_url: source.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn dedup_keeps_the_newest_copy_of_each_distinct_jd() {
+        // Newest-first, as `history::list` returns. The older Acme build is
+        // the same JD as the newest, so it's dropped.
+        let items = vec![
+            (
+                "2026-06-16 10:00".to_string(),
+                "003".to_string(),
+                req("Acme", "Staff Engineer", None),
+            ),
+            (
+                "2026-06-15 09:00".to_string(),
+                "002".to_string(),
+                req("Globex", "Eng Manager", None),
+            ),
+            (
+                "2026-06-14 08:00".to_string(),
+                "001".to_string(),
+                req("Acme", "Staff Engineer", None),
+            ),
+        ];
+        let out = dedup_jds(items);
+        assert_eq!(out.len(), 2);
+        // The newest Acme build (003) is the copy kept, in newest-first order.
+        assert!(out[0].label.contains("Staff Engineer @ Acme"));
+        assert!(out[0].label.contains("build 003"));
+        assert!(out[1].label.contains("Globex"));
+    }
+
+    #[test]
+    fn same_role_from_different_postings_stays_distinct() {
+        // Same company and title, but two different source URLs: two real
+        // postings, so both are offered.
+        let items = vec![
+            (
+                "t1".to_string(),
+                "002".to_string(),
+                req("Acme", "Engineer", Some("https://acme/2")),
+            ),
+            (
+                "t2".to_string(),
+                "001".to_string(),
+                req("Acme", "Engineer", Some("https://acme/1")),
+            ),
+        ];
+        assert_eq!(dedup_jds(items).len(), 2);
+    }
+
+    #[test]
+    fn an_empty_history_yields_no_jds() {
+        assert!(dedup_jds(Vec::new()).is_empty());
+    }
 }
