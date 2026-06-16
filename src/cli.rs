@@ -174,6 +174,9 @@ pub enum KeyCommand {
     Add {
         /// Label to file the key under (e.g. work, personal)
         label: Option<String>,
+        /// Store a Claude-plan OAuth token (from `claude setup-token`) instead of an API key (experimental)
+        #[arg(long)]
+        oauth: bool,
     },
     /// Make a stored key the active one for new requests
     Use {

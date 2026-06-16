@@ -81,6 +81,18 @@ pub struct ModelTiers {
     pub smart: Option<String>,
 }
 
+/// How a stored credential authenticates: a pay-as-you-go API key
+/// (`x-api-key`) or a Claude-plan OAuth token (bearer + the oauth beta
+/// header). `ApiKey` is the default so a config written before OAuth — where
+/// every key is implicitly an API key — keeps working unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthKind {
+    #[default]
+    ApiKey,
+    Oauth,
+}
+
 /// Settings specific to the Anthropic provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -104,6 +116,11 @@ pub struct AnthropicConfig {
     /// resolves to the sole key when there is exactly one, otherwise to the
     /// conventional `DEFAULT_KEY_LABEL`. See `active_label`.
     pub active_key: Option<String>,
+    /// The auth kind of each label that isn't a plain API key. A label
+    /// absent here is an `ApiKey` (the default and the only kind older
+    /// configs knew), so old `config.toml`s keep working; OAuth keys record
+    /// their kind so the client sends bearer + the oauth beta header.
+    pub key_kinds: std::collections::BTreeMap<String, AuthKind>,
 }
 
 impl Default for AnthropicConfig {
@@ -114,6 +131,7 @@ impl Default for AnthropicConfig {
             agents: std::collections::BTreeMap::new(),
             keys: Vec::new(),
             active_key: None,
+            key_kinds: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -133,18 +151,35 @@ impl AnthropicConfig {
         }
     }
 
-    /// Record that a key labeled `label` now exists (idempotent). The secret
-    /// is stored separately, in the keychain.
-    pub fn register_key(&mut self, label: &str) {
+    /// The auth kind of a stored label — `ApiKey` unless recorded otherwise,
+    /// so unknown and legacy labels behave like the API keys they are.
+    pub fn kind_for(&self, label: &str) -> AuthKind {
+        self.key_kinds.get(label).copied().unwrap_or_default()
+    }
+
+    /// Record that a key labeled `label` of `kind` now exists (idempotent).
+    /// The secret is stored separately, in the keychain. `ApiKey` is the
+    /// implicit default, so it is never written to the map (re-registering an
+    /// existing label as `ApiKey` clears any prior OAuth tag).
+    pub fn register_key(&mut self, label: &str, kind: AuthKind) {
         if !self.keys.iter().any(|existing| existing == label) {
             self.keys.push(label.to_string());
         }
+        match kind {
+            AuthKind::ApiKey => {
+                self.key_kinds.remove(label);
+            }
+            AuthKind::Oauth => {
+                self.key_kinds.insert(label.to_string(), kind);
+            }
+        }
     }
 
-    /// Forget a key label, clearing `active_key` if it pointed at it. The
-    /// caller is responsible for deleting the secret from the keychain.
+    /// Forget a key label and its kind, clearing `active_key` if it pointed
+    /// at it. The caller deletes the secret from the keychain.
     pub fn forget_key(&mut self, label: &str) {
         self.keys.retain(|existing| existing != label);
+        self.key_kinds.remove(label);
         if self.active_key.as_deref() == Some(label) {
             self.active_key = None;
         }
@@ -436,9 +471,9 @@ mod tests {
     #[test]
     fn register_key_is_idempotent_and_forget_clears_active() {
         let mut config = AnthropicConfig::default();
-        config.register_key("work");
-        config.register_key("work"); // no duplicate
-        config.register_key("personal");
+        config.register_key("work", AuthKind::ApiKey);
+        config.register_key("work", AuthKind::ApiKey); // no duplicate
+        config.register_key("personal", AuthKind::ApiKey);
         assert_eq!(
             config.keys,
             vec!["work".to_string(), "personal".to_string()]
@@ -449,6 +484,43 @@ mod tests {
         assert_eq!(config.keys, vec!["personal".to_string()]);
         // Forgetting the active key clears the pointer so it can't dangle.
         assert_eq!(config.active_key, None);
+    }
+
+    #[test]
+    fn key_kinds_default_to_api_key_and_round_trip() {
+        let mut config = AnthropicConfig::default();
+        // An unregistered label is an API key (the legacy default).
+        assert_eq!(config.kind_for("anything"), AuthKind::ApiKey);
+
+        config.register_key("personal", AuthKind::ApiKey);
+        config.register_key("plan", AuthKind::Oauth);
+        // API-key labels stay implicit (out of the map); only OAuth is tagged.
+        assert_eq!(config.kind_for("personal"), AuthKind::ApiKey);
+        assert_eq!(config.kind_for("plan"), AuthKind::Oauth);
+        assert!(!config.key_kinds.contains_key("personal"));
+
+        // Re-registering an OAuth label as an API key clears the tag.
+        config.register_key("plan", AuthKind::ApiKey);
+        assert_eq!(config.kind_for("plan"), AuthKind::ApiKey);
+
+        // The kind survives a TOML round trip.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let full = Config {
+            anthropic: AnthropicConfig {
+                keys: vec!["plan".to_string()],
+                key_kinds: std::collections::BTreeMap::from([(
+                    "plan".to_string(),
+                    AuthKind::Oauth,
+                )]),
+                ..AnthropicConfig::default()
+            },
+            ..Config::default()
+        };
+        full.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded, full);
+        assert_eq!(loaded.anthropic.kind_for("plan"), AuthKind::Oauth);
     }
 
     #[test]

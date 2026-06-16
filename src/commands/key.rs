@@ -10,7 +10,7 @@
 use inquire::{Password, PasswordDisplayMode};
 
 use crate::commands::{CliError, validate_key_label};
-use crate::config::{Config, DEFAULT_KEY_LABEL};
+use crate::config::{AuthKind, Config, DEFAULT_KEY_LABEL};
 use crate::secrets;
 
 /// `aarg key list` — show the stored labels, marking the active one. Never
@@ -48,7 +48,7 @@ pub async fn list() -> Result<(), CliError> {
 /// (or `default` when omitted). The key is read masked, never echoed, and
 /// goes straight to the keychain. Adding the first key makes it active;
 /// adding a further one leaves the active key alone.
-pub async fn add(label: Option<String>) -> Result<(), CliError> {
+pub async fn add(label: Option<String>, oauth: bool) -> Result<(), CliError> {
     let mut config = Config::load()?;
     let provider = config.provider;
     let label = match &label {
@@ -56,13 +56,30 @@ pub async fn add(label: Option<String>) -> Result<(), CliError> {
         None => DEFAULT_KEY_LABEL.to_string(),
     };
     let replacing = config.anthropic.keys.iter().any(|stored| stored == &label);
+    // `--oauth` stores a Claude-plan token (bearer auth); the default is a
+    // pay-as-you-go API key.
+    let kind = if oauth {
+        AuthKind::Oauth
+    } else {
+        AuthKind::ApiKey
+    };
 
-    let key = Password::new(&format!("API key for `{label}`:"))
+    let prompt = match kind {
+        AuthKind::ApiKey => format!("API key for `{label}`:"),
+        AuthKind::Oauth => {
+            println!(
+                "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+            );
+            println!("Generate a token with `claude setup-token`, then paste it below.");
+            format!("OAuth token for `{label}`:")
+        }
+    };
+    let secret = Password::new(&prompt)
         .with_display_mode(PasswordDisplayMode::Masked)
         .without_confirmation()
         .prompt()?;
-    secrets::store_api_key(provider.name(), &label, &key).await?;
-    config.anthropic.register_key(&label);
+    secrets::store_api_key(provider.name(), &label, &secret).await?;
+    config.anthropic.register_key(&label, kind);
 
     // Make it active only when there's no clear active key yet (first key in,
     // or none chosen) — adding a second key shouldn't silently switch.
@@ -73,7 +90,11 @@ pub async fn add(label: Option<String>) -> Result<(), CliError> {
     config.save()?;
 
     let verb = if replacing { "replaced" } else { "stored" };
-    println!("Key `{label}` {verb} in the OS keychain.");
+    let noun = match kind {
+        AuthKind::ApiKey => "Key",
+        AuthKind::Oauth => "Subscription token",
+    };
+    println!("{noun} `{label}` {verb} in the OS keychain.");
     if became_active {
         println!("It is now the active key.");
     } else {

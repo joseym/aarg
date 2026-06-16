@@ -17,8 +17,12 @@ pub async fn run() -> Result<(), CliError> {
     // instead of failing the whole command: this command is read-only
     // status, and the rest of the config is still worth showing.
     let label = config.anthropic.active_label();
+    let kind_str = match config.anthropic.kind_for(label) {
+        crate::config::AuthKind::ApiKey => "API key",
+        crate::config::AuthKind::Oauth => "OAuth / subscription",
+    };
     let key_status = match secrets::load_api_key(config.provider.name(), label).await {
-        Ok(Some(_)) => format!("stored in the OS keychain (label: {label})"),
+        Ok(Some(_)) => format!("stored in the OS keychain (label: {label}, {kind_str})"),
         // Nothing under the active label; a legacy bare-slot key may still
         // be in play for users who haven't re-run init.
         Ok(None) if config.anthropic.keys.is_empty() => {
@@ -52,21 +56,34 @@ pub async fn run() -> Result<(), CliError> {
     );
     println!("api key:     {key_status}");
     if !config.anthropic.keys.is_empty() {
-        // List the labels (never the secrets), marking the active one.
+        // List the labels (never the secrets), marking the active one and
+        // tagging OAuth (subscription) keys.
         let active = config.anthropic.active_label();
         let labels: Vec<String> = config
             .anthropic
             .keys
             .iter()
             .map(|label| {
-                if label == active {
-                    format!("{label} (active)")
+                let oauth = if config.anthropic.kind_for(label) == crate::config::AuthKind::Oauth {
+                    " (oauth)"
                 } else {
-                    label.clone()
-                }
+                    ""
+                };
+                let active_marker = if label == active { " (active)" } else { "" };
+                format!("{label}{oauth}{active_marker}")
             })
             .collect();
         println!("keys:        {}", labels.join(", "));
+    }
+    // The headless path overrides everything above; say so if it's in effect.
+    if std::env::var_os("ANTHROPIC_AUTH_TOKEN").is_some() {
+        println!(
+            "note:        ANTHROPIC_AUTH_TOKEN is set — requests use that OAuth token, not the keychain."
+        );
+    } else if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
+        println!(
+            "note:        ANTHROPIC_API_KEY is set — requests use that key, not the keychain."
+        );
     }
 
     // Each agent runs on a tier; the tier resolves to a model here. The

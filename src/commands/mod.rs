@@ -35,7 +35,7 @@ use crate::fetch::FetchError;
 use crate::gap::GapError;
 use crate::ingest::IngestError;
 use crate::jd::{JdError, JobRequirements};
-use crate::llm::{AnthropicClient, LlmError};
+use crate::llm::{AnthropicClient, Auth, LlmError};
 use crate::render::RenderError;
 use crate::review::ReviewError;
 use crate::secrets::{self, SecretsError};
@@ -52,16 +52,28 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
     let config = Config::load()?;
     let provider = config.provider;
 
-    // Which stored key to use: a one-off `AARG_KEY=<label>` env override
-    // wins (handy for scripts and the REPL without editing config), else the
-    // configured active label.
+    // Headless path: a credential in the environment wins over the keychain,
+    // so CI and containers (no keychain daemon, no interactive setup) just set
+    // a var. OAuth takes precedence over an API key when both are present —
+    // the same resolution the Anthropic SDK/CLI use. A `claude setup-token`
+    // token goes in `ANTHROPIC_AUTH_TOKEN`.
+    if let Some(token) = env_credential("ANTHROPIC_AUTH_TOKEN") {
+        return Ok((AnthropicClient::with_auth(Auth::Oauth(token)), config));
+    }
+    if let Some(key) = env_credential("ANTHROPIC_API_KEY") {
+        return Ok((AnthropicClient::with_auth(Auth::ApiKey(key)), config));
+    }
+
+    // Desktop path: which stored key to use — a one-off `AARG_KEY=<label>`
+    // override wins (handy for scripts and the REPL without editing config),
+    // else the configured active label.
     let override_label = std::env::var("AARG_KEY").ok();
     let label = override_label
         .as_deref()
         .unwrap_or_else(|| config.anthropic.active_label());
 
-    let key = match secrets::load_api_key(provider.name(), label).await? {
-        Some(key) => key,
+    let secret = match secrets::load_api_key(provider.name(), label).await? {
+        Some(secret) => secret,
         // No labeled key and none ever registered: a single key may still
         // live in the pre-labels bare slot. Read it so existing setups keep
         // working without a re-run of `aarg init`.
@@ -77,7 +89,19 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
             .into());
         }
     };
-    Ok((AnthropicClient::new(key), config))
+    // Send the secret the way its recorded kind expects (bearer for an OAuth
+    // plan token, x-api-key otherwise). Legacy/untagged labels are API keys.
+    let auth = match config.anthropic.kind_for(label) {
+        crate::config::AuthKind::Oauth => Auth::Oauth(secret),
+        crate::config::AuthKind::ApiKey => Auth::ApiKey(secret),
+    };
+    Ok((AnthropicClient::with_auth(auth), config))
+}
+
+/// A credential read from the environment, treating an empty value as absent
+/// (an exported-but-empty var shouldn't authenticate with a blank secret).
+fn env_credential(var: &str) -> Option<String> {
+    std::env::var(var).ok().filter(|value| !value.is_empty())
 }
 
 /// A tracer pointed at the active workspace's `traces/` directory. Replaces
@@ -399,8 +423,8 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             command: KeyCommand::List,
         } => key::list().await?,
         Command::Key {
-            command: KeyCommand::Add { label },
-        } => key::add(label).await?,
+            command: KeyCommand::Add { label, oauth },
+        } => key::add(label, oauth).await?,
         Command::Key {
             command: KeyCommand::Use { label },
         } => key::use_key(label).await?,
