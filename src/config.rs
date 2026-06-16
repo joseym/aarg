@@ -81,16 +81,23 @@ pub struct ModelTiers {
     pub smart: Option<String>,
 }
 
-/// How a stored credential authenticates: a pay-as-you-go API key
-/// (`x-api-key`) or a Claude-plan OAuth token (bearer + the oauth beta
-/// header). `ApiKey` is the default so a config written before OAuth — where
-/// every key is implicitly an API key — keeps working unchanged.
+/// How a stored credential authenticates:
+/// - `ApiKey` — a pay-as-you-go key sent as `x-api-key`.
+/// - `Oauth` — a Claude-plan token (from `claude setup-token`) sent as a
+///   bearer token; the secret lives in the keychain.
+/// - `Cli` — a Claude plan delegated to the official Anthropic CLI: no
+///   secret is stored, and a fresh bearer token is fetched per run via
+///   `ant auth print-credentials` (the official client owns refresh).
+///
+/// `ApiKey` is the default so a config written before OAuth — where every
+/// key is implicitly an API key — keeps working unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthKind {
     #[default]
     ApiKey,
     Oauth,
+    Cli,
 }
 
 /// Settings specific to the Anthropic provider.
@@ -166,10 +173,12 @@ impl AnthropicConfig {
             self.keys.push(label.to_string());
         }
         match kind {
+            // The implicit default: kept out of the map so legacy/untagged
+            // labels and API keys read back identically.
             AuthKind::ApiKey => {
                 self.key_kinds.remove(label);
             }
-            AuthKind::Oauth => {
+            AuthKind::Oauth | AuthKind::Cli => {
                 self.key_kinds.insert(label.to_string(), kind);
             }
         }
@@ -494,9 +503,11 @@ mod tests {
 
         config.register_key("personal", AuthKind::ApiKey);
         config.register_key("plan", AuthKind::Oauth);
-        // API-key labels stay implicit (out of the map); only OAuth is tagged.
+        config.register_key("delegated", AuthKind::Cli);
+        // API-key labels stay implicit (out of the map); OAuth and CLI are tagged.
         assert_eq!(config.kind_for("personal"), AuthKind::ApiKey);
         assert_eq!(config.kind_for("plan"), AuthKind::Oauth);
+        assert_eq!(config.kind_for("delegated"), AuthKind::Cli);
         assert!(!config.key_kinds.contains_key("personal"));
 
         // Re-registering an OAuth label as an API key clears the tag.

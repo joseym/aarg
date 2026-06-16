@@ -17,26 +17,34 @@ pub async fn run() -> Result<(), CliError> {
     // instead of failing the whole command: this command is read-only
     // status, and the rest of the config is still worth showing.
     let label = config.anthropic.active_label();
-    let kind_str = match config.anthropic.kind_for(label) {
+    let kind = config.anthropic.kind_for(label);
+    let kind_str = match kind {
         crate::config::AuthKind::ApiKey => "API key",
         crate::config::AuthKind::Oauth => "OAuth / subscription",
+        crate::config::AuthKind::Cli => "CLI-delegated",
     };
-    let key_status = match secrets::load_api_key(config.provider.name(), label).await {
-        Ok(Some(_)) => format!("stored in the OS keychain (label: {label}, {kind_str})"),
-        // Nothing under the active label; a legacy bare-slot key may still
-        // be in play for users who haven't re-run init.
-        Ok(None) if config.anthropic.keys.is_empty() => {
-            match secrets::load_legacy_key(config.provider.name()).await {
-                Ok(Some(_)) => {
-                    "stored in the OS keychain (legacy slot; run `aarg init` to label it)"
-                        .to_string()
+    // A CLI-delegated credential has no stored secret — its token is fetched
+    // from `ant` at request time, so don't probe the keychain for it.
+    let key_status = if kind == crate::config::AuthKind::Cli {
+        format!("delegated to `ant auth print-credentials` (label: {label}, {kind_str})")
+    } else {
+        match secrets::load_api_key(config.provider.name(), label).await {
+            Ok(Some(_)) => format!("stored in the OS keychain (label: {label}, {kind_str})"),
+            // Nothing under the active label; a legacy bare-slot key may still
+            // be in play for users who haven't re-run init.
+            Ok(None) if config.anthropic.keys.is_empty() => {
+                match secrets::load_legacy_key(config.provider.name()).await {
+                    Ok(Some(_)) => {
+                        "stored in the OS keychain (legacy slot; run `aarg init` to label it)"
+                            .to_string()
+                    }
+                    Ok(None) => "not set (run `aarg init`)".to_string(),
+                    Err(error) => format!("unknown ({error})"),
                 }
-                Ok(None) => "not set (run `aarg init`)".to_string(),
-                Err(error) => format!("unknown ({error})"),
             }
+            Ok(None) => format!("not set for label `{label}` (run `aarg key add {label}`)"),
+            Err(error) => format!("unknown ({error})"),
         }
-        Ok(None) => format!("not set for label `{label}` (run `aarg key add {label}`)"),
-        Err(error) => format!("unknown ({error})"),
     };
 
     println!("workspace:   {}", crate::workspace::locate().describe());
@@ -57,20 +65,20 @@ pub async fn run() -> Result<(), CliError> {
     println!("api key:     {key_status}");
     if !config.anthropic.keys.is_empty() {
         // List the labels (never the secrets), marking the active one and
-        // tagging OAuth (subscription) keys.
+        // tagging non-API-key kinds.
         let active = config.anthropic.active_label();
         let labels: Vec<String> = config
             .anthropic
             .keys
             .iter()
             .map(|label| {
-                let oauth = if config.anthropic.kind_for(label) == crate::config::AuthKind::Oauth {
-                    " (oauth)"
-                } else {
-                    ""
+                let kind_tag = match config.anthropic.kind_for(label) {
+                    crate::config::AuthKind::ApiKey => "",
+                    crate::config::AuthKind::Oauth => " (oauth)",
+                    crate::config::AuthKind::Cli => " (cli)",
                 };
                 let active_marker = if label == active { " (active)" } else { "" };
-                format!("{label}{oauth}{active_marker}")
+                format!("{label}{kind_tag}{active_marker}")
             })
             .collect();
         println!("keys:        {}", labels.join(", "));

@@ -44,11 +44,12 @@ pub async fn list() -> Result<(), CliError> {
     Ok(())
 }
 
-/// `aarg key add [label]` — prompt for a key and store it under `label`
-/// (or `default` when omitted). The key is read masked, never echoed, and
-/// goes straight to the keychain. Adding the first key makes it active;
-/// adding a further one leaves the active key alone.
-pub async fn add(label: Option<String>, oauth: bool) -> Result<(), CliError> {
+/// `aarg key add [label]` — add a credential under `label` (or `default`).
+/// An API key (default) or `--oauth` token is read masked and stored in the
+/// keychain; `--cli` records a delegation that stores no secret and fetches
+/// a token from `ant` each run. Adding the first key makes it active; adding
+/// a further one leaves the active key alone.
+pub async fn add(label: Option<String>, oauth: bool, cli: bool) -> Result<(), CliError> {
     let mut config = Config::load()?;
     let provider = config.provider;
     let label = match &label {
@@ -56,29 +57,39 @@ pub async fn add(label: Option<String>, oauth: bool) -> Result<(), CliError> {
         None => DEFAULT_KEY_LABEL.to_string(),
     };
     let replacing = config.anthropic.keys.iter().any(|stored| stored == &label);
-    // `--oauth` stores a Claude-plan token (bearer auth); the default is a
-    // pay-as-you-go API key.
-    let kind = if oauth {
+    // `--cli` delegates to the official CLI (no stored secret); `--oauth`
+    // stores a pasted plan token (bearer auth); the default is an API key.
+    let kind = if cli {
+        AuthKind::Cli
+    } else if oauth {
         AuthKind::Oauth
     } else {
         AuthKind::ApiKey
     };
 
-    let prompt = match kind {
-        AuthKind::ApiKey => format!("API key for `{label}`:"),
-        AuthKind::Oauth => {
+    if kind == AuthKind::Cli {
+        println!(
+            "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+        );
+        println!(
+            "AARG will fetch a token via `ant auth print-credentials` each run — make sure `ant auth login` is done. Nothing is stored in the keychain."
+        );
+    } else {
+        let prompt = if oauth {
             println!(
                 "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
             );
             println!("Generate a token with `claude setup-token`, then paste it below.");
             format!("OAuth token for `{label}`:")
-        }
-    };
-    let secret = Password::new(&prompt)
-        .with_display_mode(PasswordDisplayMode::Masked)
-        .without_confirmation()
-        .prompt()?;
-    secrets::store_api_key(provider.name(), &label, &secret).await?;
+        } else {
+            format!("API key for `{label}`:")
+        };
+        let secret = Password::new(&prompt)
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .prompt()?;
+        secrets::store_api_key(provider.name(), &label, &secret).await?;
+    }
     config.anthropic.register_key(&label, kind);
 
     // Make it active only when there's no clear active key yet (first key in,
@@ -89,17 +100,22 @@ pub async fn add(label: Option<String>, oauth: bool) -> Result<(), CliError> {
     }
     config.save()?;
 
-    let verb = if replacing { "replaced" } else { "stored" };
-    let noun = match kind {
-        AuthKind::ApiKey => "Key",
-        AuthKind::Oauth => "Subscription token",
+    let verb = if replacing { "replaced" } else { "added" };
+    let what = match kind {
+        AuthKind::ApiKey => format!("Key `{label}` {verb} in the OS keychain"),
+        AuthKind::Oauth => format!("Subscription token `{label}` {verb} in the OS keychain"),
+        AuthKind::Cli => {
+            format!(
+                "CLI-delegated credential `{label}` {verb} (token fetched via `ant` each run; nothing stored)"
+            )
+        }
     };
-    println!("{noun} `{label}` {verb} in the OS keychain.");
+    println!("{what}.");
     if became_active {
-        println!("It is now the active key.");
+        println!("It is now the active credential.");
     } else {
         println!(
-            "Active key unchanged ({}). Switch with `aarg key use {label}`.",
+            "Active credential unchanged ({}). Switch with `aarg key use {label}`.",
             config.anthropic.active_label()
         );
     }

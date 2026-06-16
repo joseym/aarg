@@ -72,6 +72,13 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
         .as_deref()
         .unwrap_or_else(|| config.anthropic.active_label());
 
+    // A CLI-delegated credential has no stored secret: fetch a fresh bearer
+    // token from the official Anthropic CLI, which owns the OAuth refresh.
+    if config.anthropic.kind_for(label) == crate::config::AuthKind::Cli {
+        let token = fetch_cli_token()?;
+        return Ok((AnthropicClient::with_auth(Auth::Oauth(token)), config));
+    }
+
     let secret = match secrets::load_api_key(provider.name(), label).await? {
         Some(secret) => secret,
         // No labeled key and none ever registered: a single key may still
@@ -90,12 +97,37 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
         }
     };
     // Send the secret the way its recorded kind expects (bearer for an OAuth
-    // plan token, x-api-key otherwise). Legacy/untagged labels are API keys.
+    // plan token, x-api-key otherwise). Legacy/untagged labels are API keys;
+    // the `Cli` kind was handled above and never reaches here.
     let auth = match config.anthropic.kind_for(label) {
         crate::config::AuthKind::Oauth => Auth::Oauth(secret),
-        crate::config::AuthKind::ApiKey => Auth::ApiKey(secret),
+        crate::config::AuthKind::ApiKey | crate::config::AuthKind::Cli => Auth::ApiKey(secret),
     };
     Ok((AnthropicClient::with_auth(auth), config))
+}
+
+/// Fetch a fresh OAuth access token from the official Anthropic CLI for a
+/// CLI-delegated credential. `ant auth print-credentials --access-token`
+/// prints just the token and refreshes it if needed, so the official client
+/// owns the OAuth + refresh — AARG only invokes it (no impersonation, no
+/// stored secret). A missing `ant` or a logged-out profile is a clear,
+/// actionable error rather than a failed request.
+fn fetch_cli_token() -> Result<String, CliError> {
+    let output = std::process::Command::new("ant")
+        .args(["auth", "print-credentials", "--access-token"])
+        .output()
+        .map_err(CliError::CliTokenUnavailable)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(CliError::CliTokenFailed { stderr });
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        return Err(CliError::CliTokenFailed {
+            stderr: "the CLI returned no token".to_string(),
+        });
+    }
+    Ok(token)
 }
 
 /// A credential read from the environment, treating an empty value as absent
@@ -393,6 +425,16 @@ pub enum CliError {
     #[error("no template named {name:?}")]
     #[diagnostic(help("run `aarg templates list` to see the available templates"))]
     UnknownTemplate { name: String },
+
+    #[error("could not run the Anthropic CLI (`ant`) to fetch a token")]
+    #[diagnostic(help(
+        "this credential is delegated to the official CLI: install it (https://github.com/anthropics/anthropic-cli) and run `ant auth login`"
+    ))]
+    CliTokenUnavailable(#[source] std::io::Error),
+
+    #[error("the Anthropic CLI could not provide a token:\n{stderr}")]
+    #[diagnostic(help("run `ant auth login` to sign in, then try again"))]
+    CliTokenFailed { stderr: String },
 }
 
 /// Reject labels that are empty or carry the `:` that separates provider
@@ -423,8 +465,8 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             command: KeyCommand::List,
         } => key::list().await?,
         Command::Key {
-            command: KeyCommand::Add { label, oauth },
-        } => key::add(label, oauth).await?,
+            command: KeyCommand::Add { label, oauth, cli },
+        } => key::add(label, oauth, cli).await?,
         Command::Key {
             command: KeyCommand::Use { label },
         } => key::use_key(label).await?,

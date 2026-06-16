@@ -177,6 +177,9 @@ pub enum KeyCommand {
         /// Store a Claude-plan OAuth token (from `claude setup-token`) instead of an API key (experimental)
         #[arg(long)]
         oauth: bool,
+        /// Delegate to the Anthropic CLI: fetch a fresh plan token via `ant` each run, store nothing (experimental)
+        #[arg(long, conflicts_with = "oauth")]
+        cli: bool,
     },
     /// Make a stored key the active one for new requests
     Use {
