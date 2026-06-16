@@ -100,7 +100,9 @@
 
 // One experience entry: bold role + accent company, mono right-aligned dates,
 // optional location, then accent-marked bullets. The grid keeps dates aligned.
-#let role_entry(role) = block(above: block_gap, below: 3pt, breakable: false)[
+// Breakable so a long role flows across a page break instead of bumping the
+// whole Experience section to the next page.
+#let role_entry(role) = block(above: block_gap, below: 3pt, breakable: true)[
   #grid(
     columns: (1fr, auto),
     column-gutter: 10pt,

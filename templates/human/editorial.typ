@@ -174,8 +174,11 @@
 }
 
 // One experience entry: title (bold, uppercased), a "Company  |  dates" line,
-// then the role's bullets as a dotted list.
-#let role_entry(role) = block(above: block_gap, below: 3pt, breakable: false)[
+// then the role's bullets as a dotted list. Breakable on purpose: a long role
+// (the recent one can carry six bullets) flows across a page break rather than
+// jumping wholesale to the next page, which would strand the "EXPERIENCE"
+// heading at the foot of page one and start the roles on page two.
+#let role_entry(role) = block(above: block_gap, below: 3pt, breakable: true)[
   #text(font: sans_face, size: 11pt, weight: "bold", fill: ink, tracking: 0.04em)[#upper(role.title)]
   #linebreak()
   #{
