@@ -119,9 +119,12 @@
   let groups = field(data, "skill_groups", default: ())
   let skills = field(data, "skills_section", default: (skills: ())).skills
   if groups.len() > 0 {
-    // Curated, grouped skills (human variant): one sub-label per group.
+    // Curated, grouped skills (human variant): one sub-label per group, with a
+    // gap before each group after the first so they read as distinct clusters
+    // rather than one dense list.
     section_head("Expertise")
-    for g in groups {
+    for (i, g) in groups.enumerate() {
+      if i > 0 { v(block_gap) }
       sub_label(g.label)
       for s in g.skills [ - #s ]
     }
