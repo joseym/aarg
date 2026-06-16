@@ -7,7 +7,7 @@
 //! cleanly, and an interactive paste-then-Ctrl-D works too); `list` shows
 //! what's captured. Both are thin glue over the dataset store.
 
-use std::io::{IsTerminal, Read};
+use std::io::IsTerminal;
 
 use chrono::Utc;
 use inquire::Confirm;
@@ -44,18 +44,18 @@ pub async fn add(context: Option<String>) -> Result<(), CliError> {
 /// stdin) and append it to `dataset`, returning the new sample's id.
 /// `Ok(None)` means nothing was provided — the caller decides whether a
 /// blank sample is an error (`add`) or simply nothing to do (onboarding).
-/// Shared by `aarg voice add` and the onboarding offer below.
+/// Shared by `aarg voice add` and the onboarding offer below; the
+/// editor-or-stdin capture itself lives in `commands::capture_free_text`
+/// (also used by the JD paste flow).
 fn capture_into(
     dataset: &mut ResumeDataset,
     context: Option<String>,
 ) -> Result<Option<SampleId>, CliError> {
-    let interactive = std::io::stdin().is_terminal();
-    let text = if interactive && crate::commands::editor_available() {
-        read_via_editor()?
-    } else {
-        read_via_stdin(interactive)?
-    };
-    let text = text.trim().to_string();
+    let text = crate::commands::capture_free_text(
+        "voice.add.txt",
+        EDITOR_TEMPLATE,
+        "Type or paste your sample, then press Ctrl-D on a blank line to finish:",
+    )?;
     if text.is_empty() {
         return Ok(None);
     }
@@ -112,51 +112,6 @@ const EDITOR_TEMPLATE: &str = "\
 # Lines in this leading block (starting with #) are ignored.
 
 ";
-
-/// Open a scratch file in the user's editor, then read back the sample.
-fn read_via_editor() -> Result<String, CliError> {
-    let path = store::dir()?.join("voice.add.txt");
-    std::fs::write(&path, EDITOR_TEMPLATE).map_err(|source| CliError::ReadInput {
-        path: path.clone(),
-        source,
-    })?;
-    crate::commands::launch_editor(&path)?;
-    let raw = std::fs::read_to_string(&path).map_err(|source| CliError::ReadInput {
-        path: path.clone(),
-        source,
-    })?;
-    let _ = std::fs::remove_file(&path);
-    Ok(strip_header(&raw))
-}
-
-/// Read a sample from stdin (a piped file, or an interactive paste ended
-/// with Ctrl-D). The hint is the fix for the original "I pasted and
-/// nothing happened" — stdin returns on EOF, not Enter.
-fn read_via_stdin(interactive: bool) -> Result<String, CliError> {
-    if interactive {
-        eprintln!("Type or paste your sample, then press Ctrl-D on a blank line to finish:");
-    }
-    let mut text = String::new();
-    std::io::stdin()
-        .read_to_string(&mut text)
-        .map_err(|source| CliError::ReadInput {
-            path: "<stdin>".into(),
-            source,
-        })?;
-    Ok(text)
-}
-
-/// Drop the leading comment header (the template), keeping the body
-/// verbatim — including any `#` lines the *sample itself* contains.
-fn strip_header(text: &str) -> String {
-    match text
-        .lines()
-        .position(|line| !line.trim_start().starts_with('#') && !line.trim().is_empty())
-    {
-        Some(start) => text.lines().skip(start).collect::<Vec<_>>().join("\n"),
-        None => String::new(), // nothing but the header / blanks
-    }
-}
 
 /// Print every captured sample: id, source label, and a one-line preview.
 pub async fn list() -> Result<(), CliError> {
@@ -274,17 +229,6 @@ mod tests {
         // A miss changes nothing and reports false.
         assert!(!remove_sample(&mut dataset, "sample-9"));
         assert_eq!(dataset.voice_samples.len(), 1);
-    }
-
-    #[test]
-    fn strip_header_drops_the_template_but_keeps_body_hashes() {
-        let raw = "# instructions\n# more\n\nMy real sample.\n# a heading I wrote\nmore text";
-        assert_eq!(
-            strip_header(raw),
-            "My real sample.\n# a heading I wrote\nmore text"
-        );
-        // A file that is only the header yields nothing.
-        assert_eq!(strip_header("# only\n# comments\n\n"), "");
     }
 
     #[test]

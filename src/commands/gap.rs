@@ -30,7 +30,7 @@ pub async fn run(jd: Option<PathBuf>, json: bool) -> Result<(), CliError> {
     // past builds, or a piped/CI run) has already said how to proceed.
     let requirements = match &jd {
         Some(path) => load_requirements(path, &ctx).await?,
-        None => match super::pick_jd().await? {
+        None => match super::prompt_for_jd(&ctx).await? {
             Some(requirements) => requirements,
             None => return Ok(()),
         },

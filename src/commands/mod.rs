@@ -156,7 +156,7 @@ pub(crate) async fn load_requirements(
     ctx: &AgentContext<'_>,
 ) -> Result<JobRequirements, CliError> {
     let arg_str = arg.to_string_lossy();
-    if arg_str.starts_with("https://") || arg_str.starts_with("http://") {
+    let requirements = if arg_str.starts_with("https://") || arg_str.starts_with("http://") {
         eprintln!("fetching {arg_str}...");
         let text = crate::fetch::fetch_jd(&arg_str).await?;
         eprintln!(
@@ -165,7 +165,7 @@ pub(crate) async fn load_requirements(
         );
         let mut requirements = crate::jd::parse_jd(ctx, &text).await?;
         requirements.source_url = Some(arg_str.into_owned());
-        Ok(requirements)
+        requirements
     } else if arg
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
@@ -174,7 +174,7 @@ pub(crate) async fn load_requirements(
         serde_json::from_str(&text).map_err(|source| CliError::BadRequirementsJson {
             path: arg.to_path_buf(),
             source,
-        })
+        })?
     } else {
         let text = read_text_input(arg)?;
         eprintln!(
@@ -182,8 +182,13 @@ pub(crate) async fn load_requirements(
             arg.display(),
             ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
         );
-        Ok(crate::jd::parse_jd(ctx, &text).await?)
-    }
+        crate::jd::parse_jd(ctx, &text).await?
+    };
+    // Remember every JD we resolve so the reuse picker can offer it later,
+    // from any command — not just the ones that produced a build. Best-effort:
+    // a cache write failure must not fail the command that's using the JD.
+    let _ = crate::jdstore::remember(&requirements);
+    Ok(requirements)
 }
 
 /// A job description from a past build, ready to reuse: the parsed
@@ -193,92 +198,159 @@ struct RecentJd {
     requirements: JobRequirements,
 }
 
-/// When a JD-consuming command runs with no JD argument, offer the JDs from
-/// past builds and return the chosen one — loaded straight off disk, so
-/// reusing a JD costs no model call (the build already parsed it). Returns
-/// `None` when there's nothing to pick (no prior builds) or no one to ask
-/// (a piped/CI run); in both cases it has printed how to proceed, so the
-/// caller should stop cleanly. Mirrors `attack`'s build picker, and keeps
+/// Resolve a job description interactively when a command was given none:
+/// paste a new one as plain text, or reuse a JD from a past build (loaded
+/// straight off disk — no model call). Returns `None` when there's no one to
+/// ask (a piped/CI run) or the user backs out; in those cases it has printed
+/// how to proceed, so the caller stops cleanly. The paste path parses the
+/// text with the same cheap-tier call the file/URL paths use, which is why
+/// this takes the agent context. Mirrors `attack`'s build picker, and keeps
 /// scriptability intact: an agent always passes the JD explicitly.
-pub(crate) async fn pick_jd() -> Result<Option<JobRequirements>, CliError> {
-    let recent = recent_jds()?;
-    if recent.is_empty() {
-        eprintln!(
-            "no past job descriptions to choose from — pass one, e.g. `aarg tailor jd.txt` (a URL or `-` for stdin also work)"
-        );
-        return Ok(None);
-    }
+pub(crate) async fn prompt_for_jd(
+    ctx: &AgentContext<'_>,
+) -> Result<Option<JobRequirements>, CliError> {
     let user = auto_user();
-    // A piped/CI run can't answer a picker; point it at the explicit form
-    // rather than hanging on an `ask` or guessing which JD it meant.
+    // A piped/CI run can neither paste nor pick — point it at the explicit
+    // forms rather than hanging on a prompt.
     if !user.is_interactive() {
         eprintln!(
-            "pass a job description, e.g. `aarg tailor jd.txt` (a URL or `-` for stdin also work)"
+            "pass a job description, e.g. `aarg tailor jd.txt` (a URL, `-` for stdin, or pasting one in a terminal all work)"
         );
         return Ok(None);
     }
 
-    let options: Vec<String> = recent.iter().map(|jd| jd.label.clone()).collect();
-    match user
+    // "Paste" is always the first option, so a fresh workspace with no builds
+    // is still useful; the JDs of past builds follow, newest first.
+    const PASTE: &str = "Paste a job description as plain text";
+    let recent = recent_jds()?;
+    let mut options = vec![PASTE.to_string()];
+    options.extend(recent.iter().map(|jd| jd.label.clone()));
+
+    let choice = match user
         .ask(Question::Select {
-            prompt: "pick a job description from a past build".into(),
+            prompt: "provide a job description".into(),
             options,
         })
         .await?
     {
-        // Map the chosen index back to its requirements.
-        Answer::Choice(i) => Ok(recent.into_iter().nth(i).map(|jd| jd.requirements)),
-        _ => Ok(None),
+        Answer::Choice(index) => index,
+        _ => return Ok(None),
+    };
+
+    // Index 0 is the paste option; the rest map onto `recent`, shifted by one.
+    let requirements = if choice == 0 {
+        match paste_jd(ctx).await? {
+            Some(requirements) => requirements,
+            None => return Ok(None),
+        }
+    } else {
+        match recent.into_iter().nth(choice - 1) {
+            Some(jd) => jd.requirements,
+            None => return Ok(None),
+        }
+    };
+    // Remember the chosen JD: a fresh paste so it's offered next time, a
+    // reused one to bump it back to the top (the store dedups, so this is
+    // idempotent). Best-effort — a cache miss must not fail the command.
+    let _ = crate::jdstore::remember(&requirements);
+    Ok(Some(requirements))
+}
+
+/// The editor template a JD paste opens with; the comment block is stripped.
+const JD_PASTE_TEMPLATE: &str = "\
+# Paste the job description below, then save and quit.
+# Lines in this leading block (starting with #) are ignored.
+
+";
+
+/// Capture a job description pasted as plain text (via an editor or stdin,
+/// see `capture_free_text`) and parse it into requirements. An empty paste
+/// is "never mind" (`None`), not an error.
+async fn paste_jd(ctx: &AgentContext<'_>) -> Result<Option<JobRequirements>, CliError> {
+    let text = capture_free_text(
+        "jd.paste.txt",
+        JD_PASTE_TEMPLATE,
+        "Paste the job description, then press Ctrl-D on a blank line to finish:",
+    )?;
+    if text.is_empty() {
+        eprintln!("nothing pasted — run the command again to try once more.");
+        return Ok(None);
     }
+    eprintln!(
+        "parsing the pasted job description with {}...",
+        ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+    );
+    Ok(Some(crate::jd::parse_jd(ctx, &text).await?))
 }
 
-/// The distinct JDs across the build history, newest build first. Each
-/// build stores the `jd.json` it was tailored for; this reads them back and
-/// dedups by identity, so a JD tailored five times shows once.
+/// The distinct JDs to offer for reuse, newest first. Two sources, in order:
+/// the JD store (everything entered in any command since it existed), then
+/// any older builds' `jd.json` from before the store — so existing builds
+/// stay pickable. Deduped by identity, so a JD entered and then tailored
+/// shows once.
 fn recent_jds() -> Result<Vec<RecentJd>, CliError> {
-    // `history::list` is newest-first; pair each build with its stored JD,
-    // skipping builds whose `jd.json` is gone or unreadable (older or
-    // hand-edited) — they simply don't contribute a JD to pick from.
-    let items = crate::history::list()?.into_iter().filter_map(|build| {
-        crate::history::read_artifact::<JobRequirements>(&build.id, "jd.json")
-            .ok()
-            .map(|jd| (build.created_at, build.id, jd))
+    // Source 1: the JD store. An unreadable store just contributes nothing —
+    // it's a convenience cache, never a reason to fail the picker.
+    let stored = crate::jdstore::recent()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| RecentJd {
+            label: format!(
+                "{}  ·  {} (entered)",
+                jd_role_label(&entry.requirements),
+                entry.saved_at.format("%Y-%m-%d %H:%M")
+            ),
+            requirements: entry.requirements,
+        });
+
+    // Source 2: builds made before the store existed. `history::list` is
+    // newest-first; skip builds whose `jd.json` is gone or unreadable.
+    let from_builds = crate::history::list()?.into_iter().filter_map(|build| {
+        let jd = crate::history::read_artifact::<JobRequirements>(&build.id, "jd.json").ok()?;
+        Some(RecentJd {
+            label: format!(
+                "{}  ·  {} (build {})",
+                jd_role_label(&jd),
+                build.created_at,
+                build.id
+            ),
+            requirements: jd,
+        })
     });
-    Ok(dedup_jds(items))
+
+    Ok(dedup_jds(stored.chain(from_builds)))
 }
 
-/// Dedup a newest-first stream of `(created_at, build_id, requirements)`
-/// into the distinct JDs to offer, keeping the newest build's copy of each.
-/// Pure, so the dedup is unit-testable without touching the builds
-/// directory (the I/O lives in `recent_jds`).
-fn dedup_jds(items: impl IntoIterator<Item = (String, String, JobRequirements)>) -> Vec<RecentJd> {
+/// Collapse a newest-first stream of candidate JDs to the distinct ones,
+/// keeping the first (newest) occurrence of each identity. Pure, so the
+/// dedup is unit-testable without touching the store or the builds dir.
+fn dedup_jds(items: impl IntoIterator<Item = RecentJd>) -> Vec<RecentJd> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for (created_at, build_id, jd) in items {
-        // Identity is the role itself plus where it came from: the same
-        // posting re-tailored is one entry, two postings that happen to
-        // share a title are two.
-        let key = (jd.company.clone(), jd.title.clone(), jd.source_url.clone());
-        if !seen.insert(key) {
-            continue;
+    for item in items {
+        // The same posting re-entered or re-tailored is one entry; two
+        // postings that merely share a title are two.
+        if seen.insert(item.requirements.identity_key()) {
+            out.push(item);
         }
-        let title = if jd.title.is_empty() {
-            "untitled role"
-        } else {
-            jd.title.as_str()
-        };
-        let company = if jd.company.is_empty() {
-            "unnamed company"
-        } else {
-            jd.company.as_str()
-        };
-        let label = format!("{title} @ {company}  ·  {created_at} (build {build_id})");
-        out.push(RecentJd {
-            label,
-            requirements: jd,
-        });
     }
     out
+}
+
+/// A JD's "Title @ Company" label, with gentle fallbacks for a posting whose
+/// title or company didn't parse.
+fn jd_role_label(jd: &JobRequirements) -> String {
+    let title = if jd.title.is_empty() {
+        "untitled role"
+    } else {
+        jd.title.as_str()
+    };
+    let company = if jd.company.is_empty() {
+        "unnamed company"
+    } else {
+        jd.company.as_str()
+    };
+    format!("{title} @ {company}")
 }
 
 /// Read a text argument that is either a file path or `-` for stdin.
@@ -332,6 +404,69 @@ pub(crate) fn launch_editor(path: &Path) -> Result<(), CliError> {
 /// the editor flow only when it would actually work.
 pub(crate) fn editor_available() -> bool {
     std::env::var_os("VISUAL").is_some() || std::env::var_os("EDITOR").is_some()
+}
+
+/// Capture a block of free text from the user: an editor when one is
+/// available (an interactive terminal with `$EDITOR`/`$VISUAL` set),
+/// otherwise stdin — a piped file, or an interactive paste ended with
+/// Ctrl-D. `scratch_name` is the throwaway file opened in the editor (under
+/// the dataset dir), `editor_header` the instructional comment block it
+/// opens with (stripped from the result), and `stdin_hint` the line shown
+/// before an interactive stdin read. Returns the trimmed text. Extracted at
+/// its second consumer: `voice add` and the JD paste flow both take a blob
+/// of the user's own prose this way. The editor is preferred when present
+/// because it handles a multi-line paste cleanly and, inside the REPL,
+/// avoids reading the shared stdin out from under reedline.
+pub(crate) fn capture_free_text(
+    scratch_name: &str,
+    editor_header: &str,
+    stdin_hint: &str,
+) -> Result<String, CliError> {
+    use std::io::{IsTerminal, Read};
+
+    let interactive = std::io::stdin().is_terminal();
+    let raw = if interactive && editor_available() {
+        let path = crate::dataset::store::dir()?.join(scratch_name);
+        std::fs::write(&path, editor_header).map_err(|source| CliError::ReadInput {
+            path: path.clone(),
+            source,
+        })?;
+        launch_editor(&path)?;
+        let raw = std::fs::read_to_string(&path).map_err(|source| CliError::ReadInput {
+            path: path.clone(),
+            source,
+        })?;
+        let _ = std::fs::remove_file(&path);
+        strip_comment_header(&raw)
+    } else {
+        // The hint is the fix for "I pasted and nothing happened" — stdin
+        // returns on EOF (Ctrl-D), not Enter.
+        if interactive {
+            eprintln!("{stdin_hint}");
+        }
+        let mut text = String::new();
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .map_err(|source| CliError::ReadInput {
+                path: "<stdin>".into(),
+                source,
+            })?;
+        text
+    };
+    Ok(raw.trim().to_string())
+}
+
+/// Drop a leading block of `#` comment lines (an editor template) plus the
+/// blank lines before the body, keeping the rest verbatim — including any
+/// `#` lines inside the body itself. Pure, so it's unit-tested directly.
+fn strip_comment_header(text: &str) -> String {
+    match text
+        .lines()
+        .position(|line| !line.trim_start().starts_with('#') && !line.trim().is_empty())
+    {
+        Some(start) => text.lines().skip(start).collect::<Vec<_>>().join("\n"),
+        None => String::new(), // nothing but the header / blanks
+    }
 }
 
 /// Everything a command can fail with, unified for the CLI boundary.
@@ -656,33 +791,29 @@ mod tests {
         }
     }
 
+    /// A candidate as it reaches `dedup_jds`: the label is opaque to dedup
+    /// (identity is keyed off the requirements), so the test labels are just
+    /// markers to assert which copy survived.
+    fn candidate(label: &str, company: &str, title: &str, source: Option<&str>) -> RecentJd {
+        RecentJd {
+            label: label.to_string(),
+            requirements: req(company, title, source),
+        }
+    }
+
     #[test]
     fn dedup_keeps_the_newest_copy_of_each_distinct_jd() {
-        // Newest-first, as `history::list` returns. The older Acme build is
-        // the same JD as the newest, so it's dropped.
+        // Newest-first. The older Acme entry is the same JD as the newest, so
+        // it's dropped and the newest copy's label survives.
         let items = vec![
-            (
-                "2026-06-16 10:00".to_string(),
-                "003".to_string(),
-                req("Acme", "Staff Engineer", None),
-            ),
-            (
-                "2026-06-15 09:00".to_string(),
-                "002".to_string(),
-                req("Globex", "Eng Manager", None),
-            ),
-            (
-                "2026-06-14 08:00".to_string(),
-                "001".to_string(),
-                req("Acme", "Staff Engineer", None),
-            ),
+            candidate("acme-newest", "Acme", "Staff Engineer", None),
+            candidate("globex", "Globex", "Eng Manager", None),
+            candidate("acme-older", "Acme", "Staff Engineer", None),
         ];
         let out = dedup_jds(items);
         assert_eq!(out.len(), 2);
-        // The newest Acme build (003) is the copy kept, in newest-first order.
-        assert!(out[0].label.contains("Staff Engineer @ Acme"));
-        assert!(out[0].label.contains("build 003"));
-        assert!(out[1].label.contains("Globex"));
+        assert_eq!(out[0].label, "acme-newest");
+        assert_eq!(out[1].label, "globex");
     }
 
     #[test]
@@ -690,16 +821,8 @@ mod tests {
         // Same company and title, but two different source URLs: two real
         // postings, so both are offered.
         let items = vec![
-            (
-                "t1".to_string(),
-                "002".to_string(),
-                req("Acme", "Engineer", Some("https://acme/2")),
-            ),
-            (
-                "t2".to_string(),
-                "001".to_string(),
-                req("Acme", "Engineer", Some("https://acme/1")),
-            ),
+            candidate("a2", "Acme", "Engineer", Some("https://acme/2")),
+            candidate("a1", "Acme", "Engineer", Some("https://acme/1")),
         ];
         assert_eq!(dedup_jds(items).len(), 2);
     }
@@ -707,5 +830,16 @@ mod tests {
     #[test]
     fn an_empty_history_yields_no_jds() {
         assert!(dedup_jds(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn strip_comment_header_drops_the_template_but_keeps_body_hashes() {
+        let raw = "# instructions\n# more\n\nThe real text.\n# a heading I wrote\nmore text";
+        assert_eq!(
+            strip_comment_header(raw),
+            "The real text.\n# a heading I wrote\nmore text"
+        );
+        // A buffer that is only the header (or blanks) yields nothing.
+        assert_eq!(strip_comment_header("# only\n# comments\n\n"), "");
     }
 }

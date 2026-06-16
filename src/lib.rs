@@ -23,6 +23,7 @@ pub mod guide;
 pub mod history;
 pub mod ingest;
 pub mod jd;
+pub mod jdstore;
 pub mod keywords;
 pub mod metric;
 pub mod mirror;

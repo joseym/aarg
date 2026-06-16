@@ -62,6 +62,19 @@ pub struct JobRequirements {
     pub source_url: Option<String>,
 }
 
+impl JobRequirements {
+    /// The fields that make two JDs "the same posting" — used to dedup the
+    /// reuse picker and the JD store. The same role re-tailored collapses to
+    /// one entry; two distinct postings (different source) stay separate.
+    pub fn identity_key(&self) -> (String, String, Option<String>) {
+        (
+            self.company.clone(),
+            self.title.clone(),
+            self.source_url.clone(),
+        )
+    }
+}
+
 /// One skill the JD asks for, with where and how hard it asks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JdSkill {
