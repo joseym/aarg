@@ -35,6 +35,7 @@ use crate::review::{
 };
 use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
 use crate::style::{self, Spinner, StreamReporter};
+use crate::summary;
 use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
 use crate::templates;
 use crate::terminal::auto_user;
@@ -164,7 +165,7 @@ pub async fn run(
             let wants = user
                 .confirm(
                     &format!(
-                        "{} role(s) are thin on detail ({}) — flesh them out with a few questions?",
+                        "{} role(s) are thin on detail ({}). Flesh them out with a few questions?",
                         thin.len(),
                         names.join(", ")
                     ),
@@ -253,7 +254,7 @@ pub async fn run(
             let wants = user
                 .confirm(
                     &format!(
-                        "the reviewer flagged {} bullet(s) that would land harder with a real number — answer a few quick questions?",
+                        "the reviewer flagged {} bullet(s) that would land harder with a real number. Answer a few quick questions?",
                         metric_targets.len()
                     ),
                     true,
@@ -328,7 +329,7 @@ pub async fn run(
             let wants = user
                 .confirm(
                     &format!(
-                        "the reviewer flagged {} bullet(s) as weakly worded — restate them in your own words?",
+                        "the reviewer flagged {} bullet(s) as weakly worded. Restate them in your own words?",
                         strengthen_targets.len()
                     ),
                     true,
@@ -383,64 +384,147 @@ pub async fn run(
         }
     }
 
-    // Objection dismissal: a remaining objection the user judges
-    // intentional ("this 2013 line stays one sentence") can be accepted, so
-    // it's neither auto-revised this run nor flagged on future ones —
-    // remembered like a declined skill and filtered at evaluate time. The
-    // score is untouched: accepting a weakness stops the churn, it doesn't
-    // pretend it's gone. Interactive only; a piped/CI run skips it.
+    // Triage the remaining objections one at a time: refine the wording
+    // (routing eligible bullet objections through the strengthen suggestion
+    // flow), accept one as intentional ("this 2013 line stays one sentence" —
+    // remembered like a declined skill and filtered at evaluate time, score
+    // untouched), or leave it for the revision loop. Interactive only; a
+    // piped/CI run skips it.
     if !best.report.objections.is_empty() {
         let user = auto_user();
         if user.is_interactive() {
             let wants = user
                 .confirm(
                     &format!(
-                        "accept any of the {} remaining objection(s) as intentional, so they stop being flagged?",
+                        "review the {} remaining objection(s)? (refine, accept, or leave each)",
                         best.report.objections.len()
                     ),
-                    false,
+                    true,
                 )
                 .await
                 .unwrap_or(false);
             if wants {
-                let options: Vec<String> = best
-                    .report
-                    .objections
-                    .iter()
-                    .map(format_objection)
-                    .collect();
-                if let Answer::Choices(picks) = user
-                    .ask(Question::MultiSelect {
-                        prompt: "select objections to accept (they won't be raised again)".into(),
-                        options,
-                    })
-                    .await?
-                {
-                    let mut added = 0;
-                    for pick in &picks {
-                        if let Some(objection) = best.report.objections.get(*pick) {
+                let mut accepted = 0;
+                let mut refined = 0;
+                // Clone the list: refining mutates the dataset (not the report),
+                // and the report is rebuilt by the re-tailor at the end.
+                for objection in best.report.objections.clone() {
+                    eprintln!("{}", objection_card(&objection));
+                    let mut options = Vec::new();
+                    if refine_eligible(&objection) {
+                        options.push("Refine it".to_string());
+                    }
+                    options.push("Accept as intentional".to_string());
+                    options.push("Leave it".to_string());
+
+                    let choice = match user
+                        .ask(Question::Select {
+                            prompt: "what would you like to do?".into(),
+                            options: options.clone(),
+                        })
+                        .await?
+                    {
+                        Answer::Choice(i) => options.get(i).map(String::as_str),
+                        _ => Some("Leave it"),
+                    };
+
+                    match choice {
+                        // A bullet refines through the strengthen flow; the
+                        // summary through its own grounded-suggestion flow.
+                        // Both write to the dataset and count toward `refined`,
+                        // so the re-tailor below picks up the change.
+                        Some("Refine it") => {
+                            let changed = match &objection.target {
+                                ObjectionTarget::Bullet(id) => {
+                                    strengthen::strengthen_bullets(
+                                        &mut dataset,
+                                        &[StrengthenTarget {
+                                            bullet_id: id.clone(),
+                                            kind: objection.kind,
+                                            concern: objection.message.clone(),
+                                        }],
+                                        user.as_ref(),
+                                        &ctx,
+                                        interview_limits,
+                                    )
+                                    .await?
+                                }
+                                ObjectionTarget::Summary => usize::from(
+                                    summary::refine_summary(
+                                        &mut dataset,
+                                        &objection.message,
+                                        user.as_ref(),
+                                        &ctx,
+                                        interview_limits.revises,
+                                    )
+                                    .await?,
+                                ),
+                                // refine_eligible guarantees Bullet|Summary.
+                                _ => 0,
+                            };
+                            if changed > 0 {
+                                dataset.metadata.updated_at = Utc::now();
+                                store::save(&dataset)?;
+                                refined += changed;
+                            }
+                        }
+                        Some("Accept as intentional") => {
                             let dismissal = objection.dismissal();
                             if !dataset.metadata.dismissed_objections.contains(&dismissal) {
                                 dataset.metadata.dismissed_objections.push(dismissal);
-                                added += 1;
+                                accepted += 1;
                             }
                         }
+                        _ => {} // Leave it (or an unexpected answer): nothing
                     }
-                    if added > 0 {
-                        dataset.metadata.updated_at = Utc::now();
-                        store::save(&dataset)?;
-                        // Drop them from this run's draft too, so the
-                        // revision loop below doesn't act on them.
-                        best.report
-                            .objections
-                            .retain(|o| !o.is_dismissed(&dataset.metadata.dismissed_objections));
-                        eprintln!(
-                            "{}",
-                            style::done(format!(
-                                "accepted {added} objection(s); they won't be flagged again"
-                            ))
-                        );
-                    }
+                }
+
+                if accepted > 0 {
+                    dataset.metadata.updated_at = Utc::now();
+                    store::save(&dataset)?;
+                    // Drop the accepted ones from this run's draft too, so the
+                    // revision loop below doesn't act on them.
+                    best.report
+                        .objections
+                        .retain(|o| !o.is_dismissed(&dataset.metadata.dismissed_objections));
+                    eprintln!(
+                        "{}",
+                        style::done(format!(
+                            "accepted {accepted} objection(s); they won't be flagged again"
+                        ))
+                    );
+                }
+
+                // A refine changed the history, so re-tailor and re-review once
+                // (as the strengthen step does) before the revision loop runs.
+                if refined > 0 {
+                    eprintln!(
+                        "{}",
+                        style::dim(format!("refined {refined} bullet(s); re-tailoring"))
+                    );
+                    let retailored = tailor_resume(
+                        &ctx,
+                        build.id.clone(),
+                        jd_id.clone(),
+                        &requirements,
+                        &dataset,
+                        &gap,
+                        None,
+                    )
+                    .await?;
+                    add_usage(&mut total, retailored.usage);
+                    best = evaluate(
+                        &ctx,
+                        &build.dir,
+                        0,
+                        retailored.resume,
+                        &requirements,
+                        &dataset,
+                        &gap,
+                    )
+                    .await?;
+                    add_usage(&mut total, best.review_usage);
+                    eprintln!("{}", iteration_line("iteration 0 (refined)", &best));
                 }
             }
         }
@@ -601,6 +685,8 @@ pub async fn run(
                 VariantInput {
                     draft: best.resume.clone(),
                     variant: Variant::Human,
+                    // A user-confirmed summary stays verbatim in the human PDF too.
+                    summary_locked: dataset.summary_confirmed,
                 },
             )
             .await?;
@@ -673,23 +759,24 @@ pub async fn run(
     // landed. On stderr like the rest of the human output.
     if !best.report.persona_notes.is_empty() {
         eprintln!(
-            "\n{}",
-            style::bold(format!(
-                "reviewer verdict ({:.2})",
-                best.report.overall_score
-            ))
+            "\n{}  {}",
+            style::bold("reviewer verdict"),
+            style::grade(
+                best.report.overall_score,
+                format!("{:.2}", best.report.overall_score)
+            )
         );
         eprintln!("  {}", best.report.persona_notes);
     }
     print_coverage(&best.ats_report);
 
     let score = if best.score > starting_score {
-        style::cyan(format!(
-            "score {:.2} (up from {starting_score:.2})",
-            best.score
-        ))
+        style::grade(
+            best.score,
+            format!("score {:.2} (up from {starting_score:.2})", best.score),
+        )
     } else {
-        style::cyan(format!("score {:.2}", best.score))
+        style::grade(best.score, format!("score {:.2}", best.score))
     };
     eprintln!(
         "\n{}",
@@ -699,14 +786,14 @@ pub async fn run(
         eprintln!(
             "  {}  {}",
             style::dim(pdf.display()),
-            style::dim(format!("— {}", v.purpose()))
+            style::dim(format!("· {}", v.purpose()))
         );
     }
     if let Some(pdf) = &cover_pdf {
         eprintln!(
             "  {}  {}",
             style::dim(pdf.display()),
-            style::dim("— cover letter")
+            style::dim("· cover letter")
         );
     }
     // Readability problems worth the eye, if any. The "pdfium unavailable"
@@ -916,12 +1003,12 @@ fn add_usage(total: &mut TokenUsage, other: TokenUsage) {
     total.output_tokens += other.output_tokens;
 }
 
-/// A one-line iteration summary: the label, the score in cyan, and the
-/// objection count and coverage as dim context.
+/// A one-line iteration summary: the label, the score color-graded by quality,
+/// and the objection count and coverage as dim context.
 fn iteration_line(label: &str, eval: &Evaluation) -> String {
     format!(
         "{label}  {}  {}",
-        style::cyan(format!("score {:.2}", eval.score)),
+        style::grade(eval.score, format!("score {:.2}", eval.score)),
         style::dim(format!(
             "{} objection(s), {:.0}% coverage",
             eval.report.objections.len(),
@@ -932,23 +1019,69 @@ fn iteration_line(label: &str, eval: &Evaluation) -> String {
 
 /// One objection as a single revision-prompt line. Shared with `attack`.
 pub(crate) fn format_objection(objection: &Objection) -> String {
-    let target = match &objection.target {
-        ObjectionTarget::Bullet(id) => id.0.clone(),
-        ObjectionTarget::Summary => "summary".to_string(),
-        ObjectionTarget::SkillsSection => "skills".to_string(),
-        ObjectionTarget::Layout => "layout".to_string(),
-        ObjectionTarget::Overall => "overall".to_string(),
-    };
     let mut line = format!(
-        "{target} ({}, {}): {}",
+        "{} ({}, {}): {}",
+        target_label(&objection.target),
         kind_str(objection.kind),
         severity_str(objection.severity),
         objection.message
     );
     if let Some(suggestion) = &objection.suggestion {
-        line.push_str(&format!(" — try: {suggestion}"));
+        line.push_str(&format!(" · try: {suggestion}"));
     }
     line
+}
+
+/// The short label for an objection's target ("bullet-3", "summary", ...).
+fn target_label(target: &ObjectionTarget) -> String {
+    match target {
+        ObjectionTarget::Bullet(id) => id.0.clone(),
+        ObjectionTarget::Summary => "summary".to_string(),
+        ObjectionTarget::SkillsSection => "skills".to_string(),
+        ObjectionTarget::Layout => "layout".to_string(),
+        ObjectionTarget::Overall => "overall".to_string(),
+    }
+}
+
+/// Color an objection's severity so urgency reads at a glance: a blocking flaw
+/// red, a major one yellow, a minor one dim. The word is always shown, so the
+/// cue survives `NO_COLOR`.
+fn severity_color(severity: Severity, text: impl std::fmt::Display) -> String {
+    match severity {
+        Severity::Blocking => style::red(text),
+        Severity::Major => style::yellow(text),
+        Severity::Minor => style::dim(text),
+    }
+}
+
+/// A readable card for one objection in the triage: the target in bold, the
+/// kind and severity-colored severity beside it, the reviewer's message below,
+/// and its suggestion (when present) as a dim `try:` line. The multi-line card
+/// replaces the dense one-line `format_objection` on the review screen.
+fn objection_card(objection: &Objection) -> String {
+    let mut card = format!(
+        "\n{}  {} {} {}",
+        style::bold(target_label(&objection.target)),
+        kind_str(objection.kind),
+        style::dim("·"),
+        severity_color(objection.severity, severity_str(objection.severity)),
+    );
+    card.push_str(&format!("\n  {}", objection.message));
+    if let Some(suggestion) = &objection.suggestion {
+        card.push_str(&format!("\n  {}", style::dim(format!("try: {suggestion}"))));
+    }
+    card
+}
+
+/// Whether an objection can be refined through a grounded-suggestion flow: it
+/// must target a specific bullet or the summary (the free-prose fields with a
+/// refine path) and be a wording kind the copilot handles (not layout, not a
+/// missing metric, not a catch-all). Skills and "overall" have no refine path.
+fn refine_eligible(objection: &Objection) -> bool {
+    matches!(
+        objection.target,
+        ObjectionTarget::Bullet(_) | ObjectionTarget::Summary
+    ) && strengthen::is_strengthenable(objection.kind)
 }
 
 fn kind_str(kind: ObjectionKind) -> &'static str {
@@ -1019,7 +1152,7 @@ fn print_coverage(report: &AtsReport) {
                     "    {} {}",
                     miss.phrase,
                     style::dim(format!(
-                        "({}) — recorded as {:?}, didn't reach the page",
+                        "({}) · recorded as {:?}, didn't reach the page",
                         kind_label(miss.kind),
                         dataset_skill
                     ))
@@ -1092,8 +1225,90 @@ mod tests {
         };
         assert_eq!(
             format_objection(&objection),
-            "bullet-3 (vague verb, major): \"Helped\" hides what you did — try: lead with the action"
+            "bullet-3 (vague verb, major): \"Helped\" hides what you did · try: lead with the action"
         );
+    }
+
+    fn objection(
+        target: ObjectionTarget,
+        kind: ObjectionKind,
+        severity: Severity,
+        suggestion: Option<&str>,
+    ) -> Objection {
+        Objection {
+            target,
+            severity,
+            kind,
+            scope: ObjectionScope::Canonical,
+            message: "the reviewer's note".into(),
+            suggestion: suggestion.map(String::from),
+        }
+    }
+
+    #[test]
+    fn an_objection_card_shows_target_kind_severity_message_and_suggestion() {
+        let card = objection_card(&objection(
+            ObjectionTarget::Bullet(BulletId("bullet-3".into())),
+            ObjectionKind::VagueVerb,
+            Severity::Major,
+            Some("lead with the action"),
+        ));
+        // Color is suppressed off a TTY, so the words stand alone.
+        assert!(card.contains("bullet-3"));
+        assert!(card.contains("vague verb"));
+        assert!(card.contains("major"));
+        assert!(card.contains("the reviewer's note"));
+        assert!(card.contains("try: lead with the action"));
+    }
+
+    #[test]
+    fn an_objection_card_omits_the_try_line_without_a_suggestion() {
+        let card = objection_card(&objection(
+            ObjectionTarget::Summary,
+            ObjectionKind::GenericPhrasing,
+            Severity::Minor,
+            None,
+        ));
+        assert!(card.contains("summary"));
+        assert!(!card.contains("try:"));
+    }
+
+    #[test]
+    fn refine_is_eligible_for_strengthenable_bullets_and_the_summary() {
+        // A wording objection on a specific bullet: eligible (bullet flow).
+        assert!(refine_eligible(&objection(
+            ObjectionTarget::Bullet(BulletId("b1".into())),
+            ObjectionKind::VagueVerb,
+            Severity::Major,
+            None,
+        )));
+        // The summary is also free prose with a refine path: eligible.
+        assert!(refine_eligible(&objection(
+            ObjectionTarget::Summary,
+            ObjectionKind::GenericPhrasing,
+            Severity::Minor,
+            None,
+        )));
+        // A bullet, but not a wording kind the copilot handles.
+        assert!(!refine_eligible(&objection(
+            ObjectionTarget::Bullet(BulletId("b2".into())),
+            ObjectionKind::NoMetric,
+            Severity::Major,
+            None,
+        )));
+        // Targets with no free-prose refine path: skills and "overall".
+        assert!(!refine_eligible(&objection(
+            ObjectionTarget::SkillsSection,
+            ObjectionKind::GenericPhrasing,
+            Severity::Minor,
+            None,
+        )));
+        assert!(!refine_eligible(&objection(
+            ObjectionTarget::Overall,
+            ObjectionKind::VagueVerb,
+            Severity::Minor,
+            None,
+        )));
     }
 
     #[test]

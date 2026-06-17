@@ -45,7 +45,7 @@ pub async fn run(
         },
     };
     let build_dir = builds::builds_root()?.join(&build);
-    eprintln!("\n{}", style::bold(format!("re-rendering build {build}")));
+    eprintln!("{}", style::section(format!("re-rendering build {build}")));
 
     if no_llm {
         // Model-free path: re-render the saved payloads with the current
@@ -65,7 +65,7 @@ pub async fn run(
         report(&ats_pdf, &human_pdf);
         eprintln!(
             "  {}",
-            style::dim(
+            style::info(
                 "layout only; re-curated and grouped skills need a model re-render (drop --no-llm)"
             )
         );
@@ -105,6 +105,8 @@ pub async fn run(
             VariantInput {
                 draft: canonical.clone(),
                 variant: Variant::Human,
+                // Keep a user-confirmed summary verbatim on re-render too.
+                summary_locked: dataset.summary_confirmed,
             },
         )
         .await?;
@@ -134,12 +136,12 @@ fn report(ats_pdf: &Path, human_pdf: &Path) {
     eprintln!(
         "  {}  {}",
         style::dim(ats_pdf.display()),
-        style::dim(format!("— {}", Variant::Ats.purpose()))
+        style::dim(format!("- {}", Variant::Ats.purpose()))
     );
     eprintln!(
         "  {}  {}",
         style::dim(human_pdf.display()),
-        style::dim(format!("— {}", Variant::Human.purpose()))
+        style::dim(format!("- {}", Variant::Human.purpose()))
     );
 }
 

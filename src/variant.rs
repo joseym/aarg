@@ -167,6 +167,10 @@ pub fn ats_payload(draft: &TailoredResume) -> VariantPayload {
 pub struct VariantInput {
     pub draft: TailoredResume,
     pub variant: Variant,
+    /// When the canonical summary is user-confirmed, the adapter keeps it
+    /// verbatim instead of rewording it — the user's own words stay theirs in
+    /// the human ("share this") PDF too.
+    pub summary_locked: bool,
 }
 
 /// The human-variant adapter: the model reshapes presentation, the guards in
@@ -259,7 +263,7 @@ impl Agent for VariantAdapterAgent {
         wire: RawVariant,
         input: VariantInput,
     ) -> Result<VariantPayload, VariantError> {
-        Ok(project_human(wire, input.draft))
+        Ok(project_human(wire, input.draft, input.summary_locked))
     }
 }
 
@@ -301,7 +305,7 @@ const MAX_SKILL_GROUPS: usize = 4;
 /// Build the human payload from the model's reply and the canonical draft,
 /// holding every claim to the canonical. This is where never-fabricate lives
 /// for the variant layer.
-fn project_human(wire: RawVariant, draft: TailoredResume) -> VariantPayload {
+fn project_human(wire: RawVariant, draft: TailoredResume, summary_locked: bool) -> VariantPayload {
     // Index the model's rewordings: role id -> (source_id -> new text).
     let mut rewrites: HashMap<String, HashMap<String, String>> = HashMap::new();
     for role in wire.roles {
@@ -347,12 +351,18 @@ fn project_human(wire: RawVariant, draft: TailoredResume) -> VariantPayload {
         })
         .collect();
 
-    // Summary: a reworded summary is accepted only if it adds no number the
-    // canonical summary doesn't state.
-    let summary = wire
-        .summary
-        .filter(|s| !s.trim().is_empty() && digit_runs(s).is_subset(&digit_runs(&draft.summary)))
-        .unwrap_or_else(|| draft.summary.clone());
+    // Summary: when the user confirmed it, keep it verbatim (their own words
+    // stay theirs here too). Otherwise a reworded summary is accepted only if it
+    // adds no number the canonical summary doesn't state.
+    let summary = if summary_locked {
+        draft.summary.clone()
+    } else {
+        wire.summary
+            .filter(|s| {
+                !s.trim().is_empty() && digit_runs(s).is_subset(&digit_runs(&draft.summary))
+            })
+            .unwrap_or_else(|| draft.summary.clone())
+    };
 
     // Skills: the model curates and GROUPS the list for a human reader. Every
     // grouped skill is validated against the canonical set (never minted),
@@ -687,6 +697,7 @@ mod tests {
                 VariantInput {
                     draft: draft(),
                     variant: Variant::Human,
+                    summary_locked: false,
                 },
             )
             .await
@@ -802,6 +813,7 @@ mod tests {
                 VariantInput {
                     draft: d.clone(),
                     variant: Variant::Human,
+                    summary_locked: false,
                 },
             )
             .await
@@ -961,5 +973,24 @@ mod tests {
             bullet_text(&vetted, "bullet-1").unwrap(),
             "Drove the platform migration"
         );
+    }
+
+    fn reworded_summary() -> RawVariant {
+        RawVariant {
+            summary: Some("A reworded, snappier summary.".into()),
+            roles: Vec::new(),
+            skills: Vec::new(),
+            skill_groups: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_locked_summary_is_kept_verbatim_not_reworded() {
+        // Locked: the user's confirmed summary wins; the model's reword is ignored.
+        let locked = project_human(reworded_summary(), draft(), true);
+        assert_eq!(locked.summary, "Engineering leader.");
+        // Unlocked control: a clean reword (adds no number) is taken as before.
+        let unlocked = project_human(reworded_summary(), draft(), false);
+        assert_eq!(unlocked.summary, "A reworded, snappier summary.");
     }
 }
