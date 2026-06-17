@@ -11,6 +11,7 @@ use crate::agent::{AgentContext, ModelTier};
 use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::ingest::ingest_resume;
+use crate::style;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
     if path
@@ -33,10 +34,13 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         sink: None,
     };
 
-    println!(
-        "ingesting {} with {}...",
-        path.display(),
-        ctx.model.resolve("ingest_resume_v1", ModelTier::Cheap)
+    eprintln!(
+        "{}",
+        style::info(format!(
+            "ingesting {} with {}",
+            path.display(),
+            ctx.model.resolve("ingest_resume_v1", ModelTier::Cheap)
+        ))
     );
     let mut outcome = ingest_resume(&ctx, &text).await?;
     outcome.dataset.metadata.source_files = vec![path.display().to_string()];
@@ -46,19 +50,32 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     store::save(&outcome.dataset)?;
 
     let d = &outcome.dataset;
-    println!(
-        "extracted {} roles, {} education entries, {} skills, {} projects",
-        d.roles.len(),
-        d.education.len(),
-        d.skills.skills.len(),
-        d.projects.len()
+    eprintln!("{}", style::section("Extracted"));
+    eprintln!("  {}", style::bullet(format!("{} roles", d.roles.len())));
+    eprintln!(
+        "  {}",
+        style::bullet(format!("{} education entries", d.education.len()))
+    );
+    eprintln!(
+        "  {}",
+        style::bullet(format!("{} skills", d.skills.skills.len()))
+    );
+    eprintln!(
+        "  {}",
+        style::bullet(format!("{} projects", d.projects.len()))
     );
     for warning in &outcome.warnings {
-        println!("warning: {warning}");
+        eprintln!("{}", style::warn(warning));
     }
-    println!("saved to {}", dataset_path.display());
+    eprintln!(
+        "{}",
+        style::success(format!("saved to {}", dataset_path.display()))
+    );
     if replacing {
-        println!("(the previous dataset was backed up to dataset.json.bak)");
+        eprintln!(
+            "{}",
+            style::info("the previous dataset was backed up to dataset.json.bak")
+        );
     }
 
     // Onboarding: offer to capture a writing sample now so voice rewrites
