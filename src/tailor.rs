@@ -620,11 +620,18 @@ fn assemble(
         }
     }
 
-    let summary = match raw.summary {
-        Some(s) if !s.trim().is_empty() => s,
-        _ => {
-            warnings.push("the model wrote no summary; using the dataset's own summary".into());
-            dataset.summary.clone().unwrap_or_default()
+    let summary = if dataset.summary_confirmed && dataset.summary.is_some() {
+        // The user confirmed this summary as their own words (via the objection
+        // triage's summary refine); use it verbatim instead of the model's
+        // regenerated one, so a refined summary is durable across builds.
+        dataset.summary.clone().unwrap_or_default()
+    } else {
+        match raw.summary {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => {
+                warnings.push("the model wrote no summary; using the dataset's own summary".into());
+                dataset.summary.clone().unwrap_or_default()
+            }
         }
     };
 
@@ -793,6 +800,16 @@ pub(crate) fn digit_runs(text: &str) -> HashSet<String> {
         .filter(|run| !run.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Whether `candidate` introduces no number absent from the `allowed` evidence
+/// texts. The deterministically-checkable half of never-fabricate: a rewrite or
+/// a suggestion may rephrase the user's recorded facts, never mint a new figure
+/// (a percentage, a team size, a multiple). Shared by the bullet-strengthen
+/// guard, the summary-refine guard, and anywhere else recorded text is reworded.
+pub(crate) fn within_evidence(candidate: &str, allowed: &[&str]) -> bool {
+    let permitted: HashSet<String> = allowed.iter().flat_map(|text| digit_runs(text)).collect();
+    digit_runs(candidate).is_subset(&permitted)
 }
 
 #[cfg(test)]
@@ -1595,5 +1612,41 @@ mod tests {
             "got: {:?}",
             outcome.warnings
         );
+    }
+
+    const VALID_REPLY: &str = r#"{"summary": "A model-generated summary.",
+        "roles": [{"id": "role-1", "bullets": [
+          {"source_id": "bullet-1", "text": "Led a team of 12 engineers across 3 squads"}
+        ]}],
+        "skills": ["Rust"], "projects": []}"#;
+
+    #[tokio::test]
+    async fn a_confirmed_summary_is_used_verbatim_over_the_models() {
+        let mut dataset = sample_dataset();
+        dataset.summary = Some("My own confirmed summary.".into());
+        dataset.summary_confirmed = true;
+
+        let mock = MockLlmClient::default();
+        mock.enqueue(VALID_REPLY);
+        let outcome = tailor_resume(
+            &test_ctx(&mock),
+            BuildId("001".into()),
+            JdId("amplo-senior-engineering-manager".into()),
+            &sample_jd(),
+            &dataset,
+            &sample_gap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.resume.summary, "My own confirmed summary.");
+    }
+
+    #[tokio::test]
+    async fn the_model_summary_is_used_when_not_confirmed() {
+        // sample_dataset() has no confirmed summary, so the model's wins.
+        let outcome = run_tailor(VALID_REPLY).await.unwrap();
+        assert_eq!(outcome.resume.summary, "A model-generated summary.");
     }
 }

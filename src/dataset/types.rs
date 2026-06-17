@@ -113,6 +113,12 @@ pub struct ResumeDataset {
     pub schema_version: u32,
     pub contact: Contact,
     pub summary: Option<String>,
+    /// Whether the user has confirmed `summary` as their own words (via the
+    /// objection triage's summary refine). When true, tailoring and the human
+    /// variant use it verbatim instead of regenerating or rewording it.
+    /// `#[serde(default)]` so datasets written before this field load as false.
+    #[serde(default)]
+    pub summary_confirmed: bool,
     pub roles: Vec<Role>,
     pub education: Vec<Education>,
     pub skills: SkillGraph,
@@ -136,6 +142,7 @@ impl ResumeDataset {
             schema_version: SCHEMA_VERSION,
             contact,
             summary: None,
+            summary_confirmed: false,
             roles: Vec::new(),
             education: Vec::new(),
             skills: SkillGraph::default(),
