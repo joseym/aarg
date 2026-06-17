@@ -173,3 +173,13 @@ pub enum LlmError {
     #[error("the mock client has no queued response left")]
     MockExhausted,
 }
+
+impl LlmError {
+    /// Whether this is an HTTP 429 rate-limit response. The remedy (wait, or
+    /// switch credentials) differs from a key or model problem, so the CLI
+    /// boundary gives a rate limit its own diagnostic rather than the generic
+    /// "check your key" help.
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, LlmError::Api { status: 429, .. })
+    }
+}

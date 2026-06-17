@@ -525,7 +525,13 @@ pub enum CliError {
 
     #[error(transparent)]
     #[diagnostic(help("check the stored key and model with `aarg config`"))]
-    Llm(#[from] LlmError),
+    Llm(LlmError),
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "you're rate-limited, not misconfigured: wait a bit and retry, or switch to another credential with `aarg key use <label>` (a pay-as-you-go API key has separate capacity from a subscription)"
+    ))]
+    RateLimited(LlmError),
 
     #[error("could not read your answer")]
     #[diagnostic(help(
@@ -715,6 +721,20 @@ pub enum CliError {
     CliTokenFailed { stderr: String },
 }
 
+/// Route a transport error to the right diagnostic: an HTTP 429 is a rate
+/// limit (wait, or switch credentials), everything else is the generic LLM
+/// path (check the key/model). Hand-written instead of `#[from]` so the
+/// boundary can branch on the kind, while `?` on an `LlmError` still works.
+impl From<LlmError> for CliError {
+    fn from(error: LlmError) -> Self {
+        if error.is_rate_limited() {
+            CliError::RateLimited(error)
+        } else {
+            CliError::Llm(error)
+        }
+    }
+}
+
 /// Reject labels that are empty or carry the `:` that separates provider
 /// from label in a keychain slot — both would make for ambiguous or
 /// unreachable entries. Shared by `init` and the `key` command.
@@ -895,5 +915,24 @@ mod tests {
         );
         // A buffer that is only the header (or blanks) yields nothing.
         assert_eq!(strip_comment_header("# only\n# comments\n\n"), "");
+    }
+
+    #[test]
+    fn a_rate_limit_routes_to_its_own_diagnostic() {
+        let limited: CliError = LlmError::Api {
+            status: 429,
+            kind: "rate_limit_error".into(),
+            message: "slow down".into(),
+        }
+        .into();
+        assert!(matches!(limited, CliError::RateLimited(_)));
+        // Anything else stays on the generic key/model path.
+        let other: CliError = LlmError::Api {
+            status: 401,
+            kind: "authentication_error".into(),
+            message: "bad key".into(),
+        }
+        .into();
+        assert!(matches!(other, CliError::Llm(_)));
     }
 }
