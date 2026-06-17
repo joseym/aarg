@@ -7,6 +7,7 @@
 //! everywhere below, errors stay module-specific.
 
 pub mod attack;
+pub mod chat;
 pub mod completions;
 pub mod config;
 pub mod cover;
@@ -806,6 +807,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         Command::Jd {
             command: JdCommand::Parse { path, json },
         } => jd::parse(path, json).await?,
+        Command::Chat { path } => chat::run(path).await?,
         Command::Gap { jd, json } => gap::run(jd, json).await?,
         Command::Tailor {
             jd,

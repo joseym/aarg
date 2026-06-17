@@ -73,6 +73,11 @@ pub enum Command {
         #[command(subcommand)]
         command: JdCommand,
     },
+    /// Ask questions about a posting and how your background fits it
+    Chat {
+        /// JD text file, posting URL, or "-" for stdin; omit to pick a recent one
+        path: Option<std::path::PathBuf>,
+    },
     /// Compare your dataset against a job description's requirements
     Gap {
         /// JD file, Greenhouse/Lever URL, `jd parse --json` output, or "-"; omit to pick a past one
