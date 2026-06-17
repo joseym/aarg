@@ -36,6 +36,7 @@ pub mod review;
 pub mod secrets;
 pub mod strengthen;
 pub mod style;
+pub mod summary;
 pub mod tailor;
 pub mod templates;
 pub mod terminal;
