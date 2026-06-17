@@ -8,6 +8,7 @@ use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::dataset::types::RoleId;
 use crate::enrich;
+use crate::style;
 use crate::terminal::auto_user;
 
 pub async fn enrich(id: Option<String>) -> Result<(), CliError> {
@@ -25,7 +26,10 @@ pub async fn enrich(id: Option<String>) -> Result<(), CliError> {
         None => enrich::thin_roles(&dataset),
     };
     if targets.is_empty() {
-        println!("no thin roles to enrich — every role already has some detail");
+        eprintln!(
+            "{}",
+            style::info("no thin roles to enrich · every role already has some detail")
+        );
         return Ok(());
     }
 
@@ -45,15 +49,17 @@ pub async fn enrich(id: Option<String>) -> Result<(), CliError> {
         dataset.metadata.updated_at = chrono::Utc::now();
         store::save(&dataset)?;
     }
-    println!(
-        "added {} bullet(s) across {} role(s){}",
-        outcome.bullets_added,
-        outcome.roles_touched,
-        if outcome.changed() {
-            " · dataset saved (previous version backed up)"
-        } else {
-            " · dataset unchanged"
-        }
+    let tail = if outcome.changed() {
+        style::dim("· dataset saved (previous version backed up)")
+    } else {
+        style::dim("· dataset unchanged")
+    };
+    eprintln!(
+        "{}",
+        style::success(format!(
+            "added {} bullet(s) across {} role(s) {tail}",
+            outcome.bullets_added, outcome.roles_touched
+        ))
     );
     Ok(())
 }

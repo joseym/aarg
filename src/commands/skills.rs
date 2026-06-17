@@ -11,6 +11,7 @@ use crate::agent::AgentContext;
 use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::dataset::types::SkillId;
+use crate::style;
 use crate::terminal::auto_user;
 use crate::user::{Answer, Question};
 use crate::verify::{dedup_skills, remove_skills, verify_unbacked};
@@ -39,17 +40,17 @@ pub async fn verify() -> Result<(), CliError> {
         dataset.metadata.updated_at = chrono::Utc::now();
         store::save(&dataset)?;
     }
-    println!(
-        "verified {} · removed {} · skipped {} · bullets added {}{}",
-        outcome.verified,
-        outcome.removed,
-        outcome.skipped,
-        outcome.bullets_added,
-        if outcome.changed() {
-            " · dataset saved (previous version backed up)"
-        } else {
-            " · dataset unchanged"
-        }
+    let tail = if outcome.changed() {
+        style::dim("· dataset saved (previous version backed up)")
+    } else {
+        style::dim("· dataset unchanged")
+    };
+    eprintln!(
+        "{}",
+        style::success(format!(
+            "verified {} · removed {} · skipped {} · bullets added {} {tail}",
+            outcome.verified, outcome.removed, outcome.skipped, outcome.bullets_added,
+        ))
     );
     Ok(())
 }
@@ -65,8 +66,18 @@ pub async fn dedup() -> Result<(), CliError> {
     let mut dataset = store::load()?;
 
     let pruned = dedup_skills(&mut dataset);
-    for p in &pruned {
-        println!("removed {:?} — covered by {:?}", p.removed, p.kept);
+    if !pruned.is_empty() {
+        eprintln!("{}", style::section(format!("Pruned ({})", pruned.len())));
+        for p in &pruned {
+            eprintln!(
+                "  {}",
+                style::bullet(format!(
+                    "removed {:?} {}",
+                    p.removed,
+                    style::dim(format!("· covered by {:?}", p.kept))
+                ))
+            );
+        }
     }
 
     // Manual pass: the synonym clusters (e.g. "operational excellence" vs
@@ -103,9 +114,18 @@ pub async fn dedup() -> Result<(), CliError> {
     if total > 0 {
         dataset.metadata.updated_at = chrono::Utc::now();
         store::save(&dataset)?;
-        println!("removed {total} skill(s) · dataset saved (previous version backed up)");
+        eprintln!(
+            "{}",
+            style::success(format!(
+                "removed {total} skill(s) {}",
+                style::dim("· dataset saved (previous version backed up)")
+            ))
+        );
     } else {
-        println!("no redundant skills found · dataset unchanged");
+        eprintln!(
+            "{}",
+            style::info("no redundant skills found · dataset unchanged")
+        );
     }
     Ok(())
 }

@@ -5,6 +5,7 @@ use crate::agent::{ModelResolver, ModelTier};
 use crate::commands::CliError;
 use crate::config::Config;
 use crate::secrets;
+use crate::style;
 
 pub async fn run() -> Result<(), CliError> {
     let path = Config::path()?;
@@ -26,43 +27,75 @@ pub async fn run() -> Result<(), CliError> {
     // A CLI-delegated credential has no stored secret — its token is fetched
     // from `ant` at request time, so don't probe the keychain for it.
     let key_status = if kind == crate::config::AuthKind::Cli {
-        format!("delegated to `ant auth print-credentials` (label: {label}, {kind_str})")
+        style::success(format!(
+            "delegated to `ant auth print-credentials` {}",
+            style::dim(format!("(label: {label}, {kind_str})"))
+        ))
     } else {
         match secrets::load_api_key(config.provider.name(), label).await {
-            Ok(Some(_)) => format!("stored in the OS keychain (label: {label}, {kind_str})"),
+            Ok(Some(_)) => style::success(format!(
+                "stored in the OS keychain {}",
+                style::dim(format!("(label: {label}, {kind_str})"))
+            )),
             // Nothing under the active label; a legacy bare-slot key may still
             // be in play for users who haven't re-run init.
             Ok(None) if config.anthropic.keys.is_empty() => {
                 match secrets::load_legacy_key(config.provider.name()).await {
-                    Ok(Some(_)) => {
-                        "stored in the OS keychain (legacy slot; run `aarg init` to label it)"
-                            .to_string()
-                    }
-                    Ok(None) => "not set (run `aarg init`)".to_string(),
-                    Err(error) => format!("unknown ({error})"),
+                    Ok(Some(_)) => style::warn(
+                        "stored in the OS keychain (legacy slot; run `aarg init` to label it)",
+                    ),
+                    Ok(None) => style::suggest("not set · run `aarg init`"),
+                    Err(error) => style::warn(format!("unknown ({error})")),
                 }
             }
-            Ok(None) => format!("not set for label `{label}` (run `aarg key add {label}`)"),
-            Err(error) => format!("unknown ({error})"),
+            Ok(None) => style::suggest(format!(
+                "not set for label `{label}` · run `aarg key add {label}`"
+            )),
+            Err(error) => style::warn(format!("unknown ({error})")),
         }
     };
 
-    println!("workspace:   {}", crate::workspace::locate().describe());
-    println!(
-        "config file: {}{}",
-        path.display(),
-        if file_exists {
-            ""
-        } else {
-            " (not created yet; showing defaults)"
-        }
+    // Human status report on stderr (the stream the color helpers detect on);
+    // this is a read-only display command with no machine mode.
+    eprintln!("{}", style::section("Workspace"));
+    // Width fits the longest label in this block ("config file") so the two
+    // value columns line up.
+    eprintln!(
+        "{}",
+        style::kv("workspace", crate::workspace::locate().describe(), 12)
     );
-    println!("provider:    {}", config.provider.name());
-    println!(
-        "model:       {} (fallback for unpinned tiers)",
-        config.anthropic.model
+    eprintln!(
+        "{}",
+        style::kv(
+            "config file",
+            format!(
+                "{}{}",
+                path.display(),
+                if file_exists {
+                    String::new()
+                } else {
+                    style::dim(" (not created yet; showing defaults)")
+                }
+            ),
+            12
+        )
     );
-    println!("api key:     {key_status}");
+
+    eprintln!("{}", style::section("Provider"));
+    eprintln!("{}", style::kv("provider", config.provider.name(), 9));
+    eprintln!(
+        "{}",
+        style::kv(
+            "model",
+            format!(
+                "{} {}",
+                config.anthropic.model,
+                style::dim("(fallback for unpinned tiers)")
+            ),
+            9
+        )
+    );
+    eprintln!("{}", style::kv("api key", key_status, 9));
     if !config.anthropic.keys.is_empty() {
         // List the labels (never the secrets), marking the active one and
         // tagging non-API-key kinds.
@@ -81,16 +114,20 @@ pub async fn run() -> Result<(), CliError> {
                 format!("{label}{kind_tag}{active_marker}")
             })
             .collect();
-        println!("keys:        {}", labels.join(", "));
+        eprintln!("{}", style::kv("keys", labels.join(", "), 9));
     }
     // The headless path overrides everything above; say so if it's in effect.
     if std::env::var_os("ANTHROPIC_AUTH_TOKEN").is_some() {
-        println!(
-            "note:        ANTHROPIC_AUTH_TOKEN is set — requests use that OAuth token, not the keychain."
+        eprintln!(
+            "{}",
+            style::info(
+                "ANTHROPIC_AUTH_TOKEN is set · requests use that OAuth token, not the keychain."
+            )
         );
     } else if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
-        println!(
-            "note:        ANTHROPIC_API_KEY is set — requests use that key, not the keychain."
+        eprintln!(
+            "{}",
+            style::info("ANTHROPIC_API_KEY is set · requests use that key, not the keychain.")
         );
     }
 
@@ -98,38 +135,79 @@ pub async fn run() -> Result<(), CliError> {
     // `agent_id` passed to `resolve` only matters when a per-agent pin
     // exists, so a representative id per tier is enough to show the model.
     let anthropic = &config.anthropic;
-    println!("tiers:");
-    println!(
-        "  cheap (parse/match):   {}",
-        anthropic.resolve("jd_parser_v1", ModelTier::Cheap)
+    eprintln!("{}", style::section("Model tiers"));
+    eprintln!(
+        "{}",
+        style::kv(
+            "cheap",
+            format!(
+                "{} {}",
+                anthropic.resolve("jd_parser_v1", ModelTier::Cheap),
+                style::dim("(parse/match)")
+            ),
+            7
+        )
     );
-    println!(
-        "  mid   (interview):     {}",
-        anthropic.resolve("metric_interview_v1", ModelTier::Mid)
+    eprintln!(
+        "{}",
+        style::kv(
+            "mid",
+            format!(
+                "{} {}",
+                anthropic.resolve("metric_interview_v1", ModelTier::Mid),
+                style::dim("(interview)")
+            ),
+            7
+        )
     );
-    println!(
-        "  smart (tailor/review): {}",
-        anthropic.resolve("tailoring_v1", ModelTier::Smart)
+    eprintln!(
+        "{}",
+        style::kv(
+            "smart",
+            format!(
+                "{} {}",
+                anthropic.resolve("tailoring_v1", ModelTier::Smart),
+                style::dim("(tailor/review)")
+            ),
+            7
+        )
     );
     if !anthropic.agents.is_empty() {
-        println!("per-agent overrides:");
+        eprintln!("{}", style::section("Per-agent overrides"));
         for (agent_id, model) in &anthropic.agents {
-            println!("  {agent_id}: {model}");
+            eprintln!("  {}", style::bullet(format!("{agent_id}: {model}")));
         }
     }
 
     let limits = &config.limits;
-    println!("limits:");
-    println!("  revisions:            {}", limits.revisions);
-    println!("  acceptable score:     {:.2}", limits.acceptable_score);
-    println!("  strengthen questions: {}", limits.strengthen_questions);
-    println!("  strengthen revises:   {}", limits.strengthen_revises);
-    println!(
-        "  budget:               {}",
-        match limits.budget_usd {
-            Some(b) => format!("${b:.2} per build"),
-            None => "none".to_string(),
-        }
+    eprintln!("{}", style::section("Limits"));
+    eprintln!("{}", style::kv("revisions", limits.revisions, 21));
+    eprintln!(
+        "{}",
+        style::kv(
+            "acceptable score",
+            format!("{:.2}", limits.acceptable_score),
+            21
+        )
+    );
+    eprintln!(
+        "{}",
+        style::kv("strengthen questions", limits.strengthen_questions, 21)
+    );
+    eprintln!(
+        "{}",
+        style::kv("strengthen revises", limits.strengthen_revises, 21)
+    );
+    eprintln!(
+        "{}",
+        style::kv(
+            "budget",
+            match limits.budget_usd {
+                Some(b) => format!("${b:.2} per build"),
+                None => "none".to_string(),
+            },
+            21
+        )
     );
     Ok(())
 }

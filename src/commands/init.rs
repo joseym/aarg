@@ -19,7 +19,7 @@ use inquire::{Password, PasswordDisplayMode, Select, Text};
 
 use crate::commands::{CliError, validate_key_label};
 use crate::config::{AuthKind, Config, DEFAULT_KEY_LABEL, Provider};
-use crate::{secrets, workspace};
+use crate::{secrets, style, workspace};
 
 pub async fn run(global: bool, dir: Option<PathBuf>) -> Result<(), CliError> {
     // Decide where this workspace's config lives, and whether it's the
@@ -31,9 +31,12 @@ pub async fn run(global: bool, dir: Option<PathBuf>) -> Result<(), CliError> {
     // may not exist yet, so discovery would find the wrong one (or none).
     let mut config = Config::load_from(&config_path)?;
     let provider = config.provider;
-    println!(
-        "Provider: {} (the only provider in this build)",
-        provider.name()
+    eprintln!(
+        "{}",
+        style::info(format!(
+            "Provider: {} (the only provider in this build)",
+            provider.name()
+        ))
     );
 
     if is_global {
@@ -53,7 +56,10 @@ pub async fn run(global: bool, dir: Option<PathBuf>) -> Result<(), CliError> {
 
     config.save_to(&config_path)?;
     announce(&config_path, is_global);
-    println!("Try `aarg llm ping` to verify the connection.");
+    eprintln!(
+        "{}",
+        style::suggest("next: run `aarg llm ping` to verify the connection")
+    );
     Ok(())
 }
 
@@ -76,14 +82,26 @@ fn target_config_path(global: bool, dir: Option<PathBuf>) -> Result<(PathBuf, bo
 /// Tell the user where the workspace landed and what it means.
 fn announce(config_path: &std::path::Path, is_global: bool) {
     if is_global {
-        println!("Global config written to {}.", config_path.display());
+        eprintln!(
+            "{}",
+            style::success(format!(
+                "global config written to {}",
+                config_path.display()
+            ))
+        );
         return;
     }
     // The `.aarg/` directory is the config file's parent.
     let root = config_path.parent().unwrap_or(config_path);
-    println!("Local workspace ready at {}.", root.display());
-    println!(
-        "Commands run here (or in any subdirectory) use it; elsewhere aarg falls back to your global setup."
+    eprintln!(
+        "{}",
+        style::success(format!("local workspace ready at {}", root.display()))
+    );
+    eprintln!(
+        "{}",
+        style::info(
+            "commands run here (or in any subdirectory) use it; elsewhere aarg falls back to your global setup"
+        )
     );
 }
 
@@ -101,7 +119,12 @@ async fn migrate_legacy_key(config: &mut Config, provider: Provider) -> Result<(
             .anthropic
             .register_key(DEFAULT_KEY_LABEL, AuthKind::ApiKey);
         config.anthropic.active_key = Some(DEFAULT_KEY_LABEL.to_string());
-        println!("Adopted your existing key under the label `{DEFAULT_KEY_LABEL}`.");
+        eprintln!(
+            "{}",
+            style::success(format!(
+                "adopted your existing key under the label `{DEFAULT_KEY_LABEL}`"
+            ))
+        );
     }
     Ok(())
 }
@@ -109,9 +132,12 @@ async fn migrate_legacy_key(config: &mut Config, provider: Provider) -> Result<(
 /// Keys already exist: present the choices and act on the chosen one.
 async fn existing_key_flow(config: &mut Config, provider: Provider) -> Result<(), CliError> {
     let active = config.anthropic.active_label().to_string();
-    println!(
-        "Existing keys: {} (active: {active})",
-        config.anthropic.keys.join(", ")
+    eprintln!(
+        "{}",
+        style::info(format!(
+            "existing keys: {} (active: {active})",
+            config.anthropic.keys.join(", ")
+        ))
     );
 
     // Static option strings; matched below. `_` covers "reuse" and any
@@ -131,7 +157,7 @@ async fn existing_key_flow(config: &mut Config, provider: Provider) -> Result<()
     match Select::new("What would you like to do?", actions).prompt()? {
         SWITCH => {
             let label = Select::new("Use which key?", config.anthropic.keys.clone()).prompt()?;
-            println!("Active key is now `{label}`.");
+            eprintln!("{}", style::success(format!("active key is now `{label}`")));
             config.anthropic.active_key = Some(label);
         }
         ADD => {
@@ -146,7 +172,7 @@ async fn existing_key_flow(config: &mut Config, provider: Provider) -> Result<()
             let kind = prompt_auth_kind()?;
             add_key(config, provider, &label, kind).await?;
         }
-        _ => println!("Keeping `{active}`."),
+        _ => eprintln!("{}", style::info(format!("keeping `{active}`"))),
     }
     Ok(())
 }
@@ -179,20 +205,32 @@ async fn add_key(
     kind: AuthKind,
 ) -> Result<(), CliError> {
     if kind == AuthKind::Cli {
-        println!(
-            "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+        eprintln!(
+            "{}",
+            style::warn(
+                "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+            )
         );
-        println!(
-            "AARG will fetch a token via `ant auth print-credentials` each run — make sure `ant auth login` is done. Nothing is stored in the keychain."
+        eprintln!(
+            "{}",
+            style::info(
+                "AARG will fetch a token via `ant auth print-credentials` each run · make sure `ant auth login` is done. Nothing is stored in the keychain."
+            )
         );
     } else {
         let prompt = if kind == AuthKind::Oauth {
             // A plan token is generated by Claude Code, not pasted from the
             // console; point the user at the command and flag the caveat.
-            println!(
-                "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+            eprintln!(
+                "{}",
+                style::warn(
+                    "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+                )
             );
-            println!("Generate a token with `claude setup-token`, then paste it below.");
+            eprintln!(
+                "{}",
+                style::info("Generate a token with `claude setup-token`, then paste it below.")
+            );
             format!("OAuth token for `{label}`:")
         } else {
             format!("API key for `{label}`:")
@@ -206,12 +244,23 @@ async fn add_key(
     config.anthropic.register_key(label, kind);
     config.anthropic.active_key = Some(label.to_string());
     match kind {
-        AuthKind::ApiKey => println!("Key `{label}` stored in the OS keychain and set active."),
-        AuthKind::Oauth => {
-            println!("Subscription token `{label}` stored in the OS keychain and set active.")
-        }
-        AuthKind::Cli => println!(
-            "CLI-delegated credential `{label}` set active (token fetched via `ant` each run)."
+        AuthKind::ApiKey => eprintln!(
+            "{}",
+            style::success(format!(
+                "key `{label}` stored in the OS keychain and set active"
+            ))
+        ),
+        AuthKind::Oauth => eprintln!(
+            "{}",
+            style::success(format!(
+                "subscription token `{label}` stored in the OS keychain and set active"
+            ))
+        ),
+        AuthKind::Cli => eprintln!(
+            "{}",
+            style::success(format!(
+                "CLI-delegated credential `{label}` set active (token fetched via `ant` each run)"
+            ))
         ),
     }
     Ok(())

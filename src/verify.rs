@@ -183,7 +183,7 @@ async fn clarify(
         }
         Err(_) => {
             user.notify(&format!(
-                "Ask anything about \"{name}\" — what it means, or describe what you did and I'll help you decide honestly."
+                "Ask anything about \"{name}\": what it means, or describe what you did and I'll help you decide honestly."
             ));
         }
     }
@@ -213,7 +213,7 @@ async fn clarify(
         {
             Ok(run) => run.output,
             Err(_) => {
-                user.notify("(couldn't reach the guide right now — answer as best you can)");
+                user.notify("(couldn't reach the guide right now; answer as best you can)");
                 break;
             }
         };
@@ -387,7 +387,7 @@ pub async fn verify_unbacked(
         return Ok(outcome);
     }
     if dataset.roles.is_empty() {
-        user.notify("the dataset has no roles to attach evidence to — ingest a resume first");
+        user.notify("the dataset has no roles to attach evidence to; ingest a resume first");
         return Ok(outcome);
     }
 
@@ -553,7 +553,7 @@ pub async fn verify_keywords(
         return Ok(outcome);
     }
     if dataset.roles.is_empty() {
-        user.notify("the dataset has no roles to attach evidence to — ingest a resume first");
+        user.notify("the dataset has no roles to attach evidence to; ingest a resume first");
         return Ok(outcome);
     }
 
@@ -691,7 +691,7 @@ async fn clarify_unchecked(
             .iter()
             .map(|&i| candidates[i].name.clone())
             .collect();
-        options.push("Done — set the rest aside".to_string());
+        options.push("Done · set the rest aside".to_string());
         let pick = match user
             .ask(Question::Select {
                 prompt: "Which one?".to_string(),
@@ -736,7 +736,7 @@ fn role_options(dataset: &ResumeDataset) -> Vec<String> {
     dataset
         .roles
         .iter()
-        .map(|role| format!("{} — {}", role.title, role.company))
+        .map(|role| format!("{} · {}", role.title, role.company))
         .collect()
 }
 

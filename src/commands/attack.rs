@@ -71,8 +71,8 @@ pub async fn run(build: Option<String>) -> Result<(), CliError> {
 
     if !report.persona_notes.is_empty() {
         eprintln!(
-            "\n{}",
-            style::bold(format!("reviewer verdict ({:.2})", report.overall_score))
+            "{}",
+            style::section(format!("reviewer verdict ({:.2})", report.overall_score))
         );
         eprintln!("  {}", report.persona_notes);
     }
@@ -83,20 +83,20 @@ pub async fn run(build: Option<String>) -> Result<(), CliError> {
     );
 
     if visible.objections.is_empty() {
-        eprintln!("  {}", style::green("no open objections"));
+        eprintln!("  {}", style::success("no open objections"));
     } else {
         eprintln!(
-            "\n{}",
-            style::bold(format!("{} objection(s)", visible.objections.len()))
+            "{}",
+            style::section(format!("{} objection(s)", visible.objections.len()))
         );
         for objection in &visible.objections {
             let line = format_objection(objection);
-            // Blocking/major stand out; minors are dimmed.
+            // Blocking/major stand out as warnings; minors are quiet bullets.
             match objection.severity {
                 Severity::Blocking | Severity::Major => {
-                    eprintln!("  {} {line}", style::yellow("•"))
+                    eprintln!("  {}", style::warn(line))
                 }
-                Severity::Minor => eprintln!("  {}", style::dim(format!("· {line}"))),
+                Severity::Minor => eprintln!("  {}", style::bullet(line)),
             }
         }
     }

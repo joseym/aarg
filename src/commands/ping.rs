@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use crate::commands::{CliError, configured_client};
 use crate::llm::{CompletionRequest, LlmClient, Message};
+use crate::style;
 
 pub async fn run() -> Result<(), CliError> {
     let (client, config) = configured_client().await?;
@@ -22,12 +23,29 @@ pub async fn run() -> Result<(), CliError> {
     let response = client.complete(request).await?;
     let elapsed = started.elapsed();
 
-    println!("model:    {}", response.model);
-    println!("reply:    {}", response.text.trim());
-    println!("latency:  {} ms", elapsed.as_millis());
-    println!(
-        "tokens:   {} in, {} out",
-        response.usage.input_tokens, response.usage.output_tokens
+    // Human status block on stderr (the stream the color helpers detect on);
+    // ping has no machine mode, so nothing goes to stdout.
+    eprintln!("{}", style::success("pong"));
+    eprintln!("{}", style::kv("model", response.model, 8));
+    eprintln!("{}", style::kv("reply", response.text.trim(), 8));
+    eprintln!(
+        "{}",
+        style::kv(
+            "latency",
+            style::dim(format!("{} ms", elapsed.as_millis())),
+            8
+        )
+    );
+    eprintln!(
+        "{}",
+        style::kv(
+            "tokens",
+            style::dim(format!(
+                "{} in, {} out",
+                response.usage.input_tokens, response.usage.output_tokens
+            )),
+            8
+        )
     );
     Ok(())
 }

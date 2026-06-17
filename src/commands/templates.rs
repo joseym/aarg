@@ -9,6 +9,7 @@
 
 use crate::commands::CliError;
 use crate::config::Config;
+use crate::style;
 use crate::templates::{self, Listed};
 use crate::variant::Variant;
 
@@ -18,14 +19,26 @@ pub async fn list() -> Result<(), CliError> {
     let config = Config::load()?;
     let available = templates::available();
 
-    println!("ATS templates (uploaded to applicant trackers — built-in only):");
+    eprintln!(
+        "{}",
+        style::section("ATS templates (uploaded to applicant trackers - built-in only)")
+    );
     print_group(&available, Variant::Ats, config.templates.ats_name());
-    println!("Human templates (shared with people — built-in or your own):");
+    eprintln!(
+        "{}",
+        style::section("Human templates (shared with people - built-in or your own)")
+    );
     print_group(&available, Variant::Human, config.templates.human_name());
 
-    println!();
-    println!("set a default with `aarg templates use <name>`.");
-    println!("custom human templates live at <workspace>/templates/human/<name>.typ.");
+    eprintln!();
+    eprintln!(
+        "{}",
+        style::suggest("set a default with `aarg templates use <name>`.")
+    );
+    eprintln!(
+        "{}",
+        style::dim("custom human templates live at <workspace>/templates/human/<name>.typ.")
+    );
     Ok(())
 }
 
@@ -33,12 +46,19 @@ pub async fn list() -> Result<(), CliError> {
 fn print_group(available: &[Listed], variant: Variant, active: &str) {
     for template in available.iter().filter(|t| t.variant == variant) {
         let active_marker = if template.name == active {
-            " (active)"
+            style::green(" (active)")
         } else {
-            ""
+            String::new()
         };
-        let custom_marker = if template.builtin { "" } else { " [custom]" };
-        println!("  {}{custom_marker}{active_marker}", template.name);
+        let custom_marker = if template.builtin {
+            String::new()
+        } else {
+            style::dim(" [custom]")
+        };
+        eprintln!(
+            "{}",
+            style::bullet(format!("{}{custom_marker}{active_marker}", template.name))
+        );
     }
 }
 
@@ -60,6 +80,9 @@ pub async fn use_template(name: String) -> Result<(), CliError> {
         Variant::Ats => "ATS",
         Variant::Human => "Human",
     };
-    println!("{label} template is now `{name}`.");
+    eprintln!(
+        "{}",
+        style::success(format!("{label} template is now `{name}`."))
+    );
     Ok(())
 }

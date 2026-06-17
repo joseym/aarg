@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext};
 use crate::dataset::types::{BulletId, Metric, ResumeDataset};
 use crate::llm::LlmError;
+use crate::style;
 use crate::user::{Answer, AskError, Question, UserHandle};
 
 /// A leading question is one sentence.
@@ -146,14 +147,20 @@ pub async fn capture_metrics(
             .await
         {
             Ok(run) => run.output,
-            Err(_) => "What's the most concrete number behind this — scale, percentage, \
-                       time saved, or count? (blank to skip)"
+            Err(_) => "What's the most concrete number behind this? Scale, percentage, \
+                       time saved, or count (blank to skip)."
                 .to_string(),
         };
 
-        // Anchor the user: which role, then the exact line — no guessing
-        // which of several jobs this bullet belongs to.
-        user.notify(&format!("\n— {role_label} —\n  \"{text}\""));
+        // Anchor the user: which role, then the exact line, so there's no
+        // guessing which of several jobs this bullet belongs to. Same shape as
+        // the strengthen interview: a bold role header over the quoted line.
+        user.notify(&format!(
+            "\n{}\n  {} {}",
+            style::bold(&role_label),
+            style::bold("current:"),
+            style::dim(format!("\"{text}\"")),
+        ));
         let answer = match user.ask(Question::Text { prompt: question }).await? {
             Answer::Text(t) if !t.trim().is_empty() => t.trim().to_string(),
             _ => continue, // blank = skip this bullet

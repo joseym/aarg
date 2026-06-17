@@ -88,7 +88,10 @@ impl UserHandle for InteractiveUser {
     }
 
     fn notify(&self, message: &str) {
-        println!("{message}");
+        // stderr, like every other human-facing line: it keeps the anchor on
+        // the same stream as inquire's prompts (which also use stderr), and
+        // it's the stream the `style` color helpers detect a terminal on.
+        eprintln!("{message}");
     }
 
     fn is_interactive(&self) -> bool {

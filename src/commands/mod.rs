@@ -41,6 +41,7 @@ use crate::llm::{AnthropicClient, Auth, LlmError};
 use crate::render::RenderError;
 use crate::review::ReviewError;
 use crate::secrets::{self, SecretsError};
+use crate::style;
 use crate::tailor::TailorError;
 use crate::terminal::auto_user;
 use crate::trace::TraceError;
@@ -159,11 +160,14 @@ pub(crate) async fn load_requirements(
 ) -> Result<JobRequirements, CliError> {
     let arg_str = arg.to_string_lossy();
     let requirements = if arg_str.starts_with("https://") || arg_str.starts_with("http://") {
-        eprintln!("fetching {arg_str}...");
+        eprintln!("{}", style::dim(format!("fetching {arg_str}")));
         let text = crate::fetch::fetch_jd(&arg_str).await?;
         eprintln!(
-            "parsing the posting with {}...",
-            ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+            "{}",
+            style::dim(format!(
+                "parsing the posting with {}",
+                ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+            ))
         );
         let mut requirements = crate::jd::parse_jd(ctx, &text).await?;
         requirements.source_url = Some(arg_str.into_owned());
@@ -180,9 +184,12 @@ pub(crate) async fn load_requirements(
     } else {
         let text = read_text_input(arg)?;
         eprintln!(
-            "parsing {} with {}...",
-            arg.display(),
-            ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+            "{}",
+            style::dim(format!(
+                "parsing {} with {}",
+                arg.display(),
+                ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+            ))
         );
         crate::jd::parse_jd(ctx, &text).await?
     };
@@ -216,7 +223,10 @@ pub(crate) async fn prompt_for_jd(
     // forms rather than hanging on a prompt.
     if !user.is_interactive() {
         eprintln!(
-            "pass a job description, e.g. `aarg tailor jd.txt` (a URL, `-` for stdin, or pasting one in a terminal all work)"
+            "{}",
+            style::suggest(
+                "pass a job description, e.g. `aarg tailor jd.txt` (a URL, `-` for stdin, or pasting one in a terminal all work)"
+            )
         );
         return Ok(None);
     }
@@ -275,12 +285,18 @@ async fn paste_jd(ctx: &AgentContext<'_>) -> Result<Option<JobRequirements>, Cli
         "Paste the job description, then press Ctrl-D on a blank line to finish:",
     )?;
     if text.is_empty() {
-        eprintln!("nothing pasted — run the command again to try once more.");
+        eprintln!(
+            "{}",
+            style::warn("nothing pasted · run the command again to try once more")
+        );
         return Ok(None);
     }
     eprintln!(
-        "parsing the pasted job description with {}...",
-        ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+        "{}",
+        style::dim(format!(
+            "parsing the pasted job description with {}",
+            ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
+        ))
     );
     Ok(Some(crate::jd::parse_jd(ctx, &text).await?))
 }
@@ -419,12 +435,18 @@ pub(crate) async fn pick_build(prompt: &str, example: &str) -> Result<Option<Str
     let user = auto_user();
     let builds = crate::history::list()?;
     if builds.is_empty() {
-        eprintln!("no builds yet — run `aarg tailor <jd>`");
+        eprintln!(
+            "{}",
+            style::suggest("no builds yet · run `aarg tailor <jd>`")
+        );
         return Ok(None);
     }
     // A piped/CI run can't answer a picker; point it at the explicit form.
     if !user.is_interactive() {
-        eprintln!("specify a build id, e.g. `{example}`");
+        eprintln!(
+            "{}",
+            style::suggest(format!("specify a build id, e.g. `{example}`"))
+        );
         return Ok(None);
     }
     // One readable line per build, newest first (the order `list` returns).
@@ -485,7 +507,7 @@ pub(crate) fn capture_free_text(
         // The hint is the fix for "I pasted and nothing happened" — stdin
         // returns on EOF (Ctrl-D), not Enter.
         if interactive {
-            eprintln!("{stdin_hint}");
+            eprintln!("{}", style::info(stdin_hint));
         }
         let mut text = String::new();
         std::io::stdin()

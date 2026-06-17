@@ -39,7 +39,7 @@ pub enum DatasetError {
 
     #[error(
         "this dataset uses schema version {found}, but this aarg only \
-         understands up to {supported} — upgrade aarg to read it"
+         understands up to {supported}; upgrade aarg to read it"
     )]
     SchemaTooNew { found: u32, supported: u32 },
 

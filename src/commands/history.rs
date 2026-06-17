@@ -7,7 +7,7 @@
 
 use crate::commands::CliError;
 use crate::config::Config;
-use crate::history::{self, BuildDiff};
+use crate::history::{self, BuildDiff, BuildSummary};
 use crate::llm::TokenUsage;
 use crate::pricing;
 use crate::style;
@@ -18,14 +18,19 @@ use crate::user::{Answer, Question};
 pub fn list() -> Result<(), CliError> {
     let builds = history::list()?;
     if builds.is_empty() {
-        eprintln!("no builds yet — run `aarg tailor <jd>`");
+        eprintln!(
+            "{}",
+            style::suggest("no builds yet - run `aarg tailor <jd>`")
+        );
         return Ok(());
     }
     // Prices come from config (built-in family defaults otherwise).
     let prices = Config::load()?.prices;
     let mut total = 0.0;
 
-    eprintln!("{}", style::bold(format!("{} build(s)", builds.len())));
+    let width = style::term_width();
+
+    eprintln!("{}", style::section(format!("{} build(s)", builds.len())));
     for b in &builds {
         let usage = TokenUsage {
             input_tokens: b.tokens_in,
@@ -35,18 +40,44 @@ pub fn list() -> Result<(), CliError> {
         if let Some(c) = cost {
             total += c;
         }
-        let cost_cell = cost.map_or_else(|| "    —".to_string(), |c| format!("~${c:.2}"));
-        eprintln!(
-            "  {}  {}  {}  {}  {}",
-            style::bold(format!("{:>3}", b.id)),
-            style::cyan(format!("{:.2}", b.score)),
-            style::dim(format!("{cost_cell:>7}")),
-            b.target,
-            style::dim(format!("{} · {} obj", b.created_at, b.objections))
-        );
+        let cost_cell = cost.map_or_else(|| "    -".to_string(), |c| format!("~${c:.2}"));
+        for line in build_row(b, &cost_cell, width) {
+            eprintln!("{line}");
+        }
     }
     eprintln!("{}", style::dim(format!("total ~${total:.2}")));
     Ok(())
+}
+
+/// Lay out one build's row. Returns the line(s) to print: a single line when
+/// it fits `width`, or a folded two-line form (metadata, then the full title
+/// indented beneath) when it wouldn't — so a long title never wraps mid-word
+/// into the columns beside it. Pure, so the width decision and the score
+/// banding are unit-testable without a real terminal.
+fn build_row(b: &BuildSummary, cost_cell: &str, width: usize) -> Vec<String> {
+    let id = style::bold(format!("{:>3}", b.id));
+    let score = score_cell(b.score);
+    let cost = style::dim(format!("{cost_cell:>7}"));
+
+    let trailer = style::dim(format!("{} · {} obj", b.created_at, b.objections));
+    let one_line = format!("  {id}  {score}  {cost}  {}  {trailer}", b.target);
+    if style::display_width(&one_line) <= width {
+        return vec![one_line];
+    }
+    // Folded: objections + date (both fixed-width) on the first line, the
+    // full title on its own indented line below.
+    let meta = style::dim(format!("· {:>2} obj  {}", b.objections, b.created_at));
+    vec![
+        format!("  {id}  {score}  {cost}  {meta}"),
+        format!("      {}", b.target),
+    ]
+}
+
+/// Color a score by quality so the column reads at a glance. Delegates to the
+/// shared `style::grade` banding (green/yellow/red), which `diff` and the
+/// tailor loop share — the figure is always shown, color only grades it.
+fn score_cell(score: f32) -> String {
+    style::grade(score, format!("{score:.2}"))
 }
 
 /// `aarg diff <a> <b>` — what changed from build `a` to build `b`.
@@ -62,7 +93,7 @@ fn print_diff(d: &BuildDiff) {
     eprintln!(
         "  score       {:.2} → {}  {}",
         d.score_from,
-        style::cyan(format!("{:.2}", d.score_to)),
+        style::grade(d.score_to, format!("{:.2}", d.score_to)),
         delta(d.score_to - d.score_from)
     );
     eprintln!(
@@ -161,7 +192,10 @@ pub async fn remove(ids: Vec<String>) -> Result<(), CliError> {
             return Ok(());
         }
         if !user.is_interactive() {
-            eprintln!("specify build ids to remove, e.g. `aarg history rm 019 020`");
+            eprintln!(
+                "{}",
+                style::suggest("specify build ids to remove, e.g. `aarg history rm 019 020`")
+            );
             return Ok(());
         }
         let options: Vec<String> = builds
@@ -187,21 +221,23 @@ pub async fn remove(ids: Vec<String>) -> Result<(), CliError> {
     };
 
     if ids.is_empty() {
-        eprintln!("nothing selected — nothing deleted");
+        eprintln!("{}", style::dim("nothing selected - nothing deleted"));
         return Ok(());
     }
 
     eprintln!(
-        "{} {}",
-        style::yellow("about to permanently delete build(s):"),
-        ids.join(", ")
+        "{}",
+        style::warn(format!(
+            "about to permanently delete build(s): {}",
+            ids.join(", ")
+        ))
     );
     let confirmed = user
         .confirm("delete them and all their artifacts?", false)
         .await
         .unwrap_or(false);
     if !confirmed {
-        eprintln!("cancelled — nothing deleted");
+        eprintln!("{}", style::dim("cancelled - nothing deleted"));
         return Ok(());
     }
 
@@ -213,11 +249,66 @@ pub async fn remove(ids: Vec<String>) -> Result<(), CliError> {
                 eprintln!("{}", style::done(format!("removed build {id}")));
             }
             Err(history::HistoryError::NotFound { .. }) => {
-                eprintln!("{}", style::yellow(format!("no build {id} — skipped")));
+                eprintln!("{}", style::warn(format!("no build {id} - skipped")));
             }
             Err(other) => return Err(other.into()),
         }
     }
     eprintln!("{}", style::dim(format!("removed {removed} build(s)")));
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn sample(target: &str, score: f32) -> BuildSummary {
+        BuildSummary {
+            id: "029".into(),
+            created_at: "2026-06-16 17:19".into(),
+            target: target.into(),
+            model: "claude-sonnet-4-6".into(),
+            score,
+            review_score: score,
+            coverage: 0.9,
+            objections: 11,
+            tokens_in: 1000,
+            tokens_out: 2000,
+        }
+    }
+
+    #[test]
+    fn a_row_that_fits_stays_on_one_line() {
+        let b = sample("VP Engineering @ Mainstay", 0.81);
+        let rows = build_row(&b, "~$1.55", usize::MAX);
+        assert_eq!(rows.len(), 1);
+        // Title and trailing date both ride the single line.
+        assert!(rows[0].contains("VP Engineering @ Mainstay"));
+        assert!(rows[0].contains("2026-06-16 17:19"));
+    }
+
+    #[test]
+    fn a_row_too_wide_folds_the_title_onto_its_own_line() {
+        let b = sample(
+            "Engineering Director, Business Applications @ Ladders (Client)",
+            0.77,
+        );
+        // A deliberately narrow terminal forces the fold.
+        let rows = build_row(&b, "~$2.42", 30);
+        assert_eq!(rows.len(), 2);
+        // Metadata stays on the first line; the title moves below it intact.
+        assert!(!rows[0].contains("Ladders"));
+        assert!(rows[0].contains("2026-06-16 17:19"));
+        assert!(rows[1].trim_start().starts_with("Engineering Director"));
+    }
+
+    #[test]
+    fn the_score_number_is_always_shown_whatever_the_band() {
+        // Color is suppressed off a TTY, so the banding isn't visible here —
+        // which is exactly the guarantee: the figure must read without it.
+        assert!(score_cell(0.92).contains("0.92")); // green band
+        assert!(score_cell(0.72).contains("0.72")); // yellow band
+        assert!(score_cell(0.41).contains("0.41")); // red band
+    }
 }

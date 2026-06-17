@@ -15,6 +15,7 @@ use inquire::Confirm;
 use crate::commands::CliError;
 use crate::dataset::store;
 use crate::dataset::types::{ResumeDataset, SampleId, VoiceSample};
+use crate::style;
 
 /// Capture a writing sample and append it to the dataset. Interactively
 /// (a terminal with `$EDITOR` set) this opens an editor — write, save,
@@ -32,10 +33,13 @@ pub async fn add(context: Option<String>) -> Result<(), CliError> {
         .last()
         .map(|sample| sample.text.chars().count())
         .unwrap_or(0);
-    println!(
-        "captured {} ({chars} chars) · {} sample(s) total (previous version backed up)",
-        id.0,
-        dataset.voice_samples.len()
+    eprintln!(
+        "{}",
+        style::success(format!(
+            "captured {} ({chars} chars) · {} sample(s) total (previous version backed up)",
+            id.0,
+            dataset.voice_samples.len()
+        ))
     );
     Ok(())
 }
@@ -86,20 +90,29 @@ pub(crate) fn offer_onboarding_sample(dataset: &mut ResumeDataset) -> Result<boo
         .with_default(true)
         .prompt()?;
     if !proceed {
-        println!("skipped — add one anytime with `aarg voice add`.");
+        eprintln!(
+            "{}",
+            style::info("skipped · add one anytime with `aarg voice add`")
+        );
         return Ok(false);
     }
     match capture_into(dataset, Some("onboarding".to_string()))? {
         Some(id) => {
-            println!(
-                "captured {} · {} sample(s) total.",
-                id.0,
-                dataset.voice_samples.len()
+            eprintln!(
+                "{}",
+                style::success(format!(
+                    "captured {} · {} sample(s) total",
+                    id.0,
+                    dataset.voice_samples.len()
+                ))
             );
             Ok(true)
         }
         None => {
-            println!("nothing captured — add one anytime with `aarg voice add`.");
+            eprintln!(
+                "{}",
+                style::info("nothing captured · add one anytime with `aarg voice add`")
+            );
             Ok(false)
         }
     }
@@ -117,12 +130,26 @@ const EDITOR_TEMPLATE: &str = "\
 pub async fn list() -> Result<(), CliError> {
     let dataset = store::load()?;
     if dataset.voice_samples.is_empty() {
-        println!("no voice samples yet — add one with `aarg voice add < sample.txt`");
+        eprintln!(
+            "{}",
+            style::suggest("no voice samples yet · add one with `aarg voice add < sample.txt`")
+        );
         return Ok(());
     }
+    eprintln!(
+        "{}",
+        style::section(format!("Voice samples ({})", dataset.voice_samples.len()))
+    );
     for sample in &dataset.voice_samples {
-        let label = sample.context.as_deref().unwrap_or("—");
-        println!("{}  [{label}]  {}", sample.id.0, preview(&sample.text));
+        let label = sample.context.as_deref().unwrap_or("-");
+        eprintln!(
+            "  {}",
+            style::bullet(format!(
+                "{}  [{label}]  {}",
+                sample.id.0,
+                preview(&sample.text)
+            ))
+        );
     }
     Ok(())
 }
@@ -135,9 +162,12 @@ pub async fn remove(id: String) -> Result<(), CliError> {
     }
     dataset.metadata.updated_at = Utc::now();
     store::save(&dataset)?;
-    println!(
-        "removed {id} · {} sample(s) remaining (previous version backed up)",
-        dataset.voice_samples.len()
+    eprintln!(
+        "{}",
+        style::success(format!(
+            "removed {id} · {} sample(s) remaining (previous version backed up)",
+            dataset.voice_samples.len()
+        ))
     );
     Ok(())
 }

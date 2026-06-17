@@ -53,14 +53,14 @@ pub async fn run(build: Option<String>) -> Result<(), CliError> {
     let model = ctx.model.resolve("cover_letter_v1", ModelTier::Mid);
 
     eprintln!(
-        "\n{}",
-        style::bold(format!("cover letter · {} @ {}", jd.title, jd.company))
+        "{}",
+        style::section(format!("cover letter · {} @ {}", jd.title, jd.company))
     );
     let sp = Spinner::start(format!("drafting on {model}"));
     let (letter, warnings, usage) = write_cover_letter(&ctx, &resume, &jd, &samples).await?;
     sp.finish(style::done("cover letter drafted"));
     for warning in &warnings {
-        eprintln!("{} {warning}", style::yellow("cover:"));
+        eprintln!("{}", style::warn(warning));
     }
 
     let build_dir = builds::builds_root()?.join(&build);

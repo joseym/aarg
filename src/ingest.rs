@@ -296,10 +296,10 @@ fn assemble(raw: RawResume) -> IngestOutcome {
         links: raw.contact.links,
     };
     if contact.full_name.is_empty() {
-        warnings.push("no name found in the resume — edit the dataset to add one".to_string());
+        warnings.push("no name found in the resume · edit the dataset to add one".to_string());
     }
     if contact.email.is_empty() {
-        warnings.push("no email found in the resume — edit the dataset to add one".to_string());
+        warnings.push("no email found in the resume · edit the dataset to add one".to_string());
     }
 
     let mut dataset = ResumeDataset::new(contact);

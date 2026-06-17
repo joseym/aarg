@@ -12,6 +12,7 @@ use crate::agent::AgentContext;
 use crate::commands::{CliError, configured_client, load_requirements};
 use crate::dataset::types::SkillCategory;
 use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority};
+use crate::style;
 
 pub async fn parse(path: PathBuf, json: bool) -> Result<(), CliError> {
     let (client, config) = configured_client().await?;
@@ -33,37 +34,58 @@ pub async fn parse(path: PathBuf, json: bool) -> Result<(), CliError> {
         return Ok(());
     }
 
-    println!("company:   {}", or_unknown(&requirements.company));
-    println!("title:     {}", or_unknown(&requirements.title));
-    println!(
-        "level:     {} · {} · {}",
-        seniority_label(requirements.seniority),
-        remote_label(requirements.remote),
-        requirements
-            .location
-            .as_deref()
-            .unwrap_or("location unstated")
+    // Human summary on stderr (the stream the color helpers detect on); the
+    // `--json` form above is the machine output and stays on stdout.
+    let title = or_unknown(&requirements.title);
+    let company = or_unknown(&requirements.company);
+    eprintln!("\n{}", style::bold(format!("{title} @ {company}")));
+
+    let width = 8;
+    eprintln!(
+        "{}",
+        style::kv(
+            "level",
+            format!(
+                "{} · {} · {}",
+                seniority_label(requirements.seniority),
+                remote_label(requirements.remote),
+                requirements
+                    .location
+                    .as_deref()
+                    .unwrap_or("location unstated")
+            ),
+            width
+        )
     );
     if !requirements.domain_keywords.is_empty() {
-        println!("domain:    {}", requirements.domain_keywords.join(", "));
+        eprintln!(
+            "{}",
+            style::kv("domain", requirements.domain_keywords.join(", "), width)
+        );
     }
 
-    print_skills("required skills", &requirements.required_skills);
-    print_skills("preferred skills", &requirements.preferred_skills);
+    print_skills("Required skills", &requirements.required_skills);
+    print_skills("Preferred skills", &requirements.preferred_skills);
 
     if !requirements.responsibilities.is_empty() {
-        println!(
-            "\nresponsibilities ({}):",
-            requirements.responsibilities.len()
+        eprintln!(
+            "{}",
+            style::section(format!(
+                "Responsibilities ({})",
+                requirements.responsibilities.len()
+            ))
         );
         for r in &requirements.responsibilities {
-            println!("  - {r}");
+            eprintln!("  {}", style::bullet(r));
         }
     }
     if !requirements.ats_phrases.is_empty() {
-        println!("\nats phrases ({}):", requirements.ats_phrases.len());
+        eprintln!(
+            "{}",
+            style::section(format!("ATS phrases ({})", requirements.ats_phrases.len()))
+        );
         for p in &requirements.ats_phrases {
-            println!("  \"{p}\"");
+            eprintln!("  {}", style::bullet(format!("\"{p}\"")));
         }
     }
     Ok(())
@@ -73,18 +95,21 @@ fn print_skills(heading: &str, skills: &[JdSkill]) {
     if skills.is_empty() {
         return;
     }
-    println!("\n{heading} ({}):", skills.len());
+    eprintln!(
+        "{}",
+        style::section(format!("{heading} ({})", skills.len()))
+    );
     for skill in skills {
-        let mut line = format!(
-            "  - {} ({}, {})",
-            skill.name,
+        let meta = style::dim(format!(
+            "({}, {})",
             category_label(skill.category),
             importance_label(skill.importance)
-        );
+        ));
+        let mut line = format!("{} {meta}", skill.name);
         if let Some(quote) = skill.context_phrases.first() {
-            line.push_str(&format!(" — \"{quote}\""));
+            line.push_str(&format!(" {}", style::dim(format!("· \"{quote}\""))));
         }
-        println!("{line}");
+        eprintln!("  {}", style::bullet(line));
     }
 }
 

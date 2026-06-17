@@ -12,6 +12,7 @@ use inquire::{Password, PasswordDisplayMode};
 use crate::commands::{CliError, validate_key_label};
 use crate::config::{AuthKind, Config, DEFAULT_KEY_LABEL};
 use crate::secrets;
+use crate::style;
 
 /// `aarg key list` — show the stored labels, marking the active one. Never
 /// prints a secret; labels only.
@@ -24,22 +25,43 @@ pub async fn list() -> Result<(), CliError> {
         // slot, in which case it's what requests actually use.
         match secrets::load_legacy_key(provider.name()).await? {
             Some(_) => {
-                println!("One unlabeled key is stored (from before named keys).");
-                println!("Run `aarg init` to adopt it under a label.");
+                eprintln!(
+                    "{}",
+                    style::info("One unlabeled key is stored (from before named keys).")
+                );
+                eprintln!(
+                    "{}",
+                    style::suggest("run `aarg init` to adopt it under a label")
+                );
             }
-            None => println!("No keys stored. Run `aarg init` or `aarg key add <label>`."),
+            None => eprintln!(
+                "{}",
+                style::suggest("no keys stored · run `aarg init` or `aarg key add <label>`")
+            ),
         }
         return Ok(());
     }
 
     let active = config.anthropic.active_label();
-    println!("Stored keys for {}:", provider.name());
+    eprintln!(
+        "{}",
+        style::section(format!("Stored keys for {}", provider.name()))
+    );
     for label in &config.anthropic.keys {
-        let marker = if label == active { " (active)" } else { "" };
-        println!("  {label}{marker}");
+        let marker = if label == active {
+            style::dim(" (active)")
+        } else {
+            String::new()
+        };
+        eprintln!("  {}", style::bullet(format!("{label}{marker}")));
     }
     if let Ok(env_label) = std::env::var("AARG_KEY") {
-        println!("note: AARG_KEY overrides the active key to `{env_label}` in this shell.");
+        eprintln!(
+            "{}",
+            style::info(format!(
+                "AARG_KEY overrides the active key to `{env_label}` in this shell."
+            ))
+        );
     }
     Ok(())
 }
@@ -68,18 +90,30 @@ pub async fn add(label: Option<String>, oauth: bool, cli: bool) -> Result<(), Cl
     };
 
     if kind == AuthKind::Cli {
-        println!(
-            "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+        eprintln!(
+            "{}",
+            style::warn(
+                "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+            )
         );
-        println!(
-            "AARG will fetch a token via `ant auth print-credentials` each run — make sure `ant auth login` is done. Nothing is stored in the keychain."
+        eprintln!(
+            "{}",
+            style::info(
+                "AARG will fetch a token via `ant auth print-credentials` each run · make sure `ant auth login` is done. Nothing is stored in the keychain."
+            )
         );
     } else {
         let prompt = if oauth {
-            println!(
-                "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+            eprintln!(
+                "{}",
+                style::warn(
+                    "Claude subscription auth is experimental: Anthropic scopes plan credit to the official SDK and Claude Code, not third-party tools."
+                )
             );
-            println!("Generate a token with `claude setup-token`, then paste it below.");
+            eprintln!(
+                "{}",
+                style::info("Generate a token with `claude setup-token`, then paste it below.")
+            );
             format!("OAuth token for `{label}`:")
         } else {
             format!("API key for `{label}`:")
@@ -110,13 +144,20 @@ pub async fn add(label: Option<String>, oauth: bool, cli: bool) -> Result<(), Cl
             )
         }
     };
-    println!("{what}.");
+    eprintln!("{}", style::success(format!("{what}.")));
     if became_active {
-        println!("It is now the active credential.");
+        eprintln!("{}", style::info("It is now the active credential."));
     } else {
-        println!(
-            "Active credential unchanged ({}). Switch with `aarg key use {label}`.",
-            config.anthropic.active_label()
+        eprintln!(
+            "{}",
+            style::info(format!(
+                "active credential unchanged ({})",
+                config.anthropic.active_label()
+            ))
+        );
+        eprintln!(
+            "{}",
+            style::suggest(format!("switch with `aarg key use {label}`"))
         );
     }
     Ok(())
@@ -130,7 +171,7 @@ pub async fn use_key(label: String) -> Result<(), CliError> {
     }
     config.anthropic.active_key = Some(label.clone());
     config.save()?;
-    println!("Active key is now `{label}`.");
+    eprintln!("{}", style::success(format!("active key is now `{label}`")));
     Ok(())
 }
 
@@ -149,15 +190,24 @@ pub async fn remove(label: String) -> Result<(), CliError> {
     config.anthropic.forget_key(&label);
     config.save()?;
 
-    println!("Removed key `{label}`.");
+    eprintln!("{}", style::success(format!("removed key `{label}`")));
     if was_active {
         if config.anthropic.keys.is_empty() {
-            println!("No keys remain — run `aarg init` or `aarg key add <label>` to add one.");
-        } else {
-            println!(
-                "Active key cleared; it now resolves to `{}`. Pin one with `aarg key use <label>`.",
-                config.anthropic.active_label()
+            eprintln!(
+                "{}",
+                style::suggest(
+                    "no keys remain · run `aarg init` or `aarg key add <label>` to add one"
+                )
             );
+        } else {
+            eprintln!(
+                "{}",
+                style::info(format!(
+                    "active key cleared; it now resolves to `{}`",
+                    config.anthropic.active_label()
+                ))
+            );
+            eprintln!("{}", style::suggest("pin one with `aarg key use <label>`"));
         }
     }
     Ok(())
