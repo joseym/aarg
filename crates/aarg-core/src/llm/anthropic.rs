@@ -25,6 +25,16 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// rejects a plan token even though the bearer header is correct.
 const OAUTH_BETA: &str = "oauth-2025-04-20";
 
+/// The identity Claude Code and the Agent SDK lead their system prompt with.
+/// A Claude-plan OAuth token draws on plan credit only when the request
+/// presents as the official client: the system prompt's first block has to be
+/// this exact string. Omit it and the Messages API treats the plan token as
+/// ineligible — observed as an immediate `429 rate_limit_error` (a near-zero
+/// quota), not a 401/403 — even on the very first request. An `x-api-key`
+/// request has its own billing and no such gate, which is why the API key
+/// path never needs this. Sent on the OAuth path only.
+const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
 /// How the client proves who it is to the Messages API.
@@ -107,7 +117,11 @@ impl AnthropicClient {
         for (name, value) in auth_headers(&self.auth) {
             builder = builder.header(name, value);
         }
-        let response = builder.json(&request_body(request, stream)).send().await?;
+        let oauth = matches!(self.auth, Auth::Oauth(_));
+        let response = builder
+            .json(&request_body(request, stream, oauth))
+            .send()
+            .await?;
         Ok(response)
     }
 }
@@ -115,8 +129,9 @@ impl AnthropicClient {
 /// Build the Messages API request body from our provider-agnostic
 /// request. `system` and `temperature` are added only when set: the API
 /// rejects explicit `null`s, and newer models reject `temperature`
-/// entirely, so absence is the only safe default.
-fn request_body(request: &CompletionRequest, stream: bool) -> serde_json::Value {
+/// entirely, so absence is the only safe default. `oauth` selects the
+/// system-prompt shape (see [`system_value`]).
+fn request_body(request: &CompletionRequest, stream: bool, oauth: bool) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = request.messages.iter().map(wire_message).collect();
     let mut body = json!({
         "model": request.model,
@@ -124,8 +139,8 @@ fn request_body(request: &CompletionRequest, stream: bool) -> serde_json::Value 
         "messages": messages,
         "stream": stream,
     });
-    if let Some(system) = &request.system {
-        body["system"] = json!(system);
+    if let Some(system) = system_value(&request.system, oauth) {
+        body["system"] = system;
     }
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
@@ -134,6 +149,26 @@ fn request_body(request: &CompletionRequest, stream: bool) -> serde_json::Value 
         body["tools"] = json!(request.tools);
     }
     body
+}
+
+/// Shape the `system` field for the chosen auth path.
+///
+/// On the API-key path it is the caller's system prompt verbatim (a bare
+/// string), or absent when there is none. On the OAuth path the Claude Code
+/// identity must lead the prompt for the plan token to be eligible (see
+/// [`CLAUDE_CODE_IDENTITY`]), so `system` becomes a content-block array: the
+/// identity first, then the caller's prompt as a second block if present. An
+/// OAuth request therefore always carries a system prompt, even when the
+/// caller passed none.
+fn system_value(system: &Option<String>, oauth: bool) -> Option<serde_json::Value> {
+    if !oauth {
+        return system.as_ref().map(|s| json!(s));
+    }
+    let mut blocks = vec![json!({"type": "text", "text": CLAUDE_CODE_IDENTITY})];
+    if let Some(s) = system {
+        blocks.push(json!({"type": "text", "text": s}));
+    }
+    Some(json!(blocks))
 }
 
 /// One message as the wire wants it. Plain text stays a bare string —
@@ -240,27 +275,64 @@ fn parse_completion(body: &str) -> Result<CompletionResponse, LlmError> {
     })
 }
 
+/// Summarize the rate-limit headers on a response, if any are present. A 429
+/// body says only "slow down"; the headers say *how long* and *which limit* —
+/// `retry-after` plus the `anthropic-ratelimit-*` family (unified status and
+/// reset, per-request and per-token limit/remaining/reset). Surfacing them
+/// turns a guess about the cause into the server's own answer: a `retry-after`
+/// of hours means the plan window is genuinely spent, while seconds means a
+/// short burst limit. Returns `None` when the response carries none of them.
+fn rate_limit_summary(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    const KEYS: &[&str] = &[
+        "retry-after",
+        "anthropic-ratelimit-unified-status",
+        "anthropic-ratelimit-unified-reset",
+        "anthropic-ratelimit-requests-limit",
+        "anthropic-ratelimit-requests-remaining",
+        "anthropic-ratelimit-requests-reset",
+        "anthropic-ratelimit-tokens-limit",
+        "anthropic-ratelimit-tokens-remaining",
+        "anthropic-ratelimit-tokens-reset",
+    ];
+    let parts: Vec<String> = KEYS
+        .iter()
+        .filter_map(|key| {
+            headers
+                .get(*key)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| format!("{key}: {value}"))
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
+}
+
 /// Turn a non-2xx response body into a typed error. The API wraps errors
 /// in `{"type": "error", "error": {"type": ..., "message": ...}}`; if the
 /// body is anything else (a proxy's HTML page, an empty string), fall
-/// back to carrying it raw so the user still sees what came back.
-fn parse_api_error(status: u16, body: &str) -> LlmError {
+/// back to carrying it raw so the user still sees what came back. Any
+/// rate-limit header summary (see [`rate_limit_summary`]) is appended to the
+/// message so a 429 reports the real limit and reset time.
+fn parse_api_error(status: u16, body: &str, rate: Option<String>) -> LlmError {
     #[derive(Deserialize)]
     struct WireErrorEnvelope {
         error: WireError,
     }
 
-    match serde_json::from_str::<WireErrorEnvelope>(body) {
-        Ok(envelope) => LlmError::Api {
-            status,
-            kind: envelope.error.kind,
-            message: envelope.error.message,
-        },
-        Err(_) => LlmError::Api {
-            status,
-            kind: "unknown".to_string(),
-            message: body.trim().to_string(),
-        },
+    let (kind, mut message) = match serde_json::from_str::<WireErrorEnvelope>(body) {
+        Ok(envelope) => (envelope.error.kind, envelope.error.message),
+        Err(_) => ("unknown".to_string(), body.trim().to_string()),
+    };
+    if let Some(rate) = rate {
+        message = format!("{message} [rate limit: {rate}]");
+    }
+    LlmError::Api {
+        status,
+        kind,
+        message,
     }
 }
 
@@ -372,9 +444,14 @@ impl LlmClient for AnthropicClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let response = self.post_messages(&request, false).await?;
         let status = response.status().as_u16();
+        // Read the rate-limit headers before `text()` consumes the response;
+        // a 429 body alone doesn't say how long to wait or which limit tripped.
+        let rate = (!(200..300).contains(&status))
+            .then(|| rate_limit_summary(response.headers()))
+            .flatten();
         let body = response.text().await?;
         if !(200..300).contains(&status) {
-            return Err(parse_api_error(status, &body));
+            return Err(parse_api_error(status, &body, rate));
         }
         parse_completion(&body)
     }
@@ -383,8 +460,9 @@ impl LlmClient for AnthropicClient {
         let response = self.post_messages(&request, true).await?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
+            let rate = rate_limit_summary(response.headers());
             let body = response.text().await?;
-            return Err(parse_api_error(status, &body));
+            return Err(parse_api_error(status, &body, rate));
         }
 
         // Read the response body on a background task and forward parsed
@@ -479,7 +557,7 @@ mod tests {
 
     #[test]
     fn request_body_omits_unset_optional_fields() {
-        let body = request_body(&request(), false);
+        let body = request_body(&request(), false, false);
         assert_eq!(body["model"], "claude-opus-4-8");
         assert_eq!(body["stream"], false);
         assert!(body.get("system").is_none());
@@ -491,10 +569,38 @@ mod tests {
         let mut req = request();
         req.system = Some("be brief".to_string());
         req.temperature = Some(0.5);
-        let body = request_body(&req, true);
+        let body = request_body(&req, true, false);
         assert_eq!(body["system"], "be brief");
         assert_eq!(body["stream"], true);
         assert!((body["temperature"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn oauth_request_leads_the_system_prompt_with_the_claude_code_identity() {
+        // A plain api-key request with no system prompt sends no `system` at
+        // all; the same request on the OAuth path must lead with the Claude
+        // Code identity, or the plan token is treated as ineligible.
+        let body = request_body(&request(), false, true);
+        let system = &body["system"];
+        assert!(system.is_array(), "OAuth system must be a block array");
+        assert_eq!(system[0]["type"], "text");
+        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
+        // No caller system prompt → identity is the only block.
+        assert_eq!(system.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn oauth_request_keeps_the_caller_system_prompt_after_the_identity() {
+        let mut req = request();
+        req.system = Some("be brief".to_string());
+        let body = request_body(&req, false, true);
+        let system = &body["system"];
+        // Identity first, then the caller's prompt — same facts, official
+        // identity in front.
+        assert_eq!(system[0]["text"], CLAUDE_CODE_IDENTITY);
+        assert_eq!(system[1]["type"], "text");
+        assert_eq!(system[1]["text"], "be brief");
+        assert_eq!(system.as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -525,7 +631,7 @@ mod tests {
             }]),
         ];
 
-        let body = request_body(&request, false);
+        let body = request_body(&request, false, false);
 
         assert_eq!(body["tools"][0]["name"], "fetch_jd");
         // Plain text stays a bare string...
@@ -594,7 +700,7 @@ mod tests {
             "type": "error",
             "error": {"type": "rate_limit_error", "message": "slow down"}
         }"#;
-        let err = parse_api_error(429, body);
+        let err = parse_api_error(429, body, None);
         match err {
             LlmError::Api {
                 status,
@@ -610,8 +716,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_api_error_appends_the_rate_limit_summary() {
+        let body = r#"{
+            "type": "error",
+            "error": {"type": "rate_limit_error", "message": "slow down"}
+        }"#;
+        let rate =
+            Some("retry-after: 3600; anthropic-ratelimit-unified-status: rejected".to_string());
+        let err = parse_api_error(429, body, rate);
+        match err {
+            LlmError::Api { message, .. } => {
+                // The server's reset/limit detail rides along in the message so
+                // the CLI can show whether the window is spent or just bursty.
+                assert!(message.contains("slow down"));
+                assert!(message.contains("retry-after: 3600"));
+                assert!(message.contains("rejected"));
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_api_error_falls_back_to_the_raw_body() {
-        let err = parse_api_error(502, "<html>bad gateway</html>");
+        let err = parse_api_error(502, "<html>bad gateway</html>", None);
         match err {
             LlmError::Api { kind, message, .. } => {
                 assert_eq!(kind, "unknown");
@@ -619,6 +746,26 @@ mod tests {
             }
             other => panic!("expected Api error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rate_limit_summary_collects_present_headers_only() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("42"));
+        headers.insert(
+            "anthropic-ratelimit-unified-status",
+            HeaderValue::from_static("rejected"),
+        );
+        let summary = rate_limit_summary(&headers).expect("headers present");
+        assert!(summary.contains("retry-after: 42"));
+        assert!(summary.contains("anthropic-ratelimit-unified-status: rejected"));
+        // An unrelated header is not swept in.
+        assert!(!summary.contains("content-type"));
+
+        // No rate-limit headers → nothing to report.
+        let empty = HeaderMap::new();
+        assert!(rate_limit_summary(&empty).is_none());
     }
 
     #[test]
