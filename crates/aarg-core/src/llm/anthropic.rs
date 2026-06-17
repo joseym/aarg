@@ -42,14 +42,25 @@ pub enum Auth {
     Oauth(String),
 }
 
+/// Strip whitespace from a credential before it becomes a header value. API
+/// keys and OAuth tokens never contain whitespace, but one pasted from a phone
+/// or copied across a terminal line-wrap can pick up a stray space or newline.
+/// A header value with a newline or leading/trailing space is invalid, so
+/// `reqwest` fails to build the request ("failed to parse header value")
+/// before it ever reaches the network. Removing whitespace makes that
+/// copy-mangle a no-op rather than a baffling error.
+fn sanitize(secret: &str) -> String {
+    secret.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 /// The auth headers a given credential sends, as `(name, value)` pairs. A
 /// bare function so header selection is unit-testable without an HTTP round
 /// trip (the rest of `post_messages` needs the network).
 fn auth_headers(auth: &Auth) -> Vec<(&'static str, String)> {
     match auth {
-        Auth::ApiKey(key) => vec![("x-api-key", key.clone())],
+        Auth::ApiKey(key) => vec![("x-api-key", sanitize(key))],
         Auth::Oauth(token) => vec![
-            ("authorization", format!("Bearer {token}")),
+            ("authorization", format!("Bearer {}", sanitize(token))),
             ("anthropic-beta", OAUTH_BETA.to_string()),
         ],
     }
@@ -452,6 +463,18 @@ mod tests {
         );
         // Never the api-key header on the OAuth path.
         assert!(!headers.iter().any(|(name, _)| *name == "x-api-key"));
+    }
+
+    #[test]
+    fn whitespace_in_a_credential_is_stripped_so_the_header_is_valid() {
+        // A token pasted from a phone can arrive with a leading space, a
+        // trailing newline, or an internal line-wrap break. Each would make an
+        // invalid HTTP header value; sanitizing keeps the request buildable.
+        let mangled = " oat-\ntest\r\n";
+        let headers = auth_headers(&Auth::Oauth(mangled.to_string()));
+        assert_eq!(headers[0], ("authorization", "Bearer oat-test".to_string()));
+        let key = auth_headers(&Auth::ApiKey("sk-test\n".to_string()));
+        assert_eq!(key, vec![("x-api-key", "sk-test".to_string())]);
     }
 
     #[test]
