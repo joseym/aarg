@@ -27,9 +27,13 @@ use crate::agent::StreamSink;
 use crate::llm::TokenUsage;
 use crate::pricing::{self, Price};
 
-/// Dim text for secondary detail (paths, token counts, sub-items).
+/// Gray text for secondary detail (paths, token counts, sub-items). Uses
+/// bright-black rather than ANSI "faint" (code 2): faint is unevenly
+/// supported and washes out to near-invisible on many themes, while
+/// bright-black is a real color that stays legibly gray on both dark and
+/// light backgrounds — secondary, but never lost.
 pub fn dim(s: impl std::fmt::Display) -> String {
-    s.if_supports_color(Stream::Stderr, |t| t.dimmed())
+    s.if_supports_color(Stream::Stderr, |t| t.bright_black())
         .to_string()
 }
 
@@ -62,9 +66,120 @@ pub fn cyan(s: impl std::fmt::Display) -> String {
         .to_string()
 }
 
-/// A finished-step line: a green check and some text.
-pub fn done(text: impl std::fmt::Display) -> String {
+/// Blue for neutral, informational notes.
+pub fn blue(s: impl std::fmt::Display) -> String {
+    s.if_supports_color(Stream::Stderr, |t| t.blue())
+        .to_string()
+}
+
+// ---- semantic vocabulary -------------------------------------------------
+//
+// One documented "meaning → glyph + color" set so every command speaks the
+// same visual language. The rule that makes it accessible: the **glyph carries
+// the meaning, color only reinforces it**. Output therefore still reads under
+// `NO_COLOR`, when piped to a file, and for color-blind users — status is
+// never encoded in color alone. The glyphs:
+//
+//   ✓  success · present · matched      (green)
+//   ⚠  warning · "have it, off the page" (yellow)
+//   ✗  miss · failure                   (red)
+//   →  suggestion · next action          (cyan)
+//   ℹ  note · neutral info               (blue)
+//   ·  detail · list item                (dim)
+
+/// ✓ A good outcome: a step finished, an item present, a skill matched.
+pub fn success(text: impl std::fmt::Display) -> String {
     format!("{} {text}", green("✓"))
+}
+
+/// ⚠ A warning: something to notice but not a hard failure — a weak claim, a
+/// skill you have that didn't reach the page, a non-fatal hiccup.
+pub fn warn(text: impl std::fmt::Display) -> String {
+    format!("{} {text}", yellow("⚠"))
+}
+
+/// ✗ A genuine miss or failure: a required keyword with no backing, an error.
+pub fn fail(text: impl std::fmt::Display) -> String {
+    format!("{} {text}", red("✗"))
+}
+
+/// → A suggestion or next action — "try this", "run that". The one helper for
+/// telling the user what they can *do* next.
+pub fn suggest(text: impl std::fmt::Display) -> String {
+    format!("{} {text}", cyan("→"))
+}
+
+/// ℹ A neutral, informational note — context, not a problem.
+pub fn info(text: impl std::fmt::Display) -> String {
+    format!("{} {text}", blue("ℹ"))
+}
+
+/// · A list item or secondary detail. The dim bullet sets sub-items off from
+/// the section header above them without shouting.
+pub fn bullet(text: impl std::fmt::Display) -> String {
+    format!("{} {text}", dim("·"))
+}
+
+/// A finished-step line: a green check and some text. Alias of [`success`],
+/// kept for the many callers that already read `done("…")`.
+pub fn done(text: impl std::fmt::Display) -> String {
+    success(text)
+}
+
+/// Color a 0.0–1.0 quality figure by band so a column reads at a glance: a
+/// strong value green, a middling one yellow, a weak one red. The caller hands
+/// in the raw `ratio` to grade by and the already-formatted `text` to show, so
+/// it works for `"0.81"`, `"81%"`, or `"score 0.81"` alike. Same rule as the
+/// glyphs: the figure is always printed, color only grades it, so the value
+/// survives `NO_COLOR` and a color-blind reader. Thresholds are presentation
+/// only — nothing downstream reads them.
+pub fn grade(ratio: f32, text: impl std::fmt::Display) -> String {
+    if ratio >= 0.80 {
+        green(text)
+    } else if ratio >= 0.60 {
+        yellow(text)
+    } else {
+        red(text)
+    }
+}
+
+/// A section header: bold, with a blank line above so blocks of output
+/// breathe. Returns the text (with the leading newline) for the caller to
+/// print — keeping the vertical rhythm consistent across every command in one
+/// place rather than each caller hand-spacing.
+pub fn section(title: impl std::fmt::Display) -> String {
+    format!("\n{}", bold(title))
+}
+
+/// An aligned `key: value` status line. The key is padded to `width` and
+/// dimmed; the value is printed as given (the caller colors it if it carries
+/// status). Padding is applied to the *plain* key before coloring, so ANSI
+/// codes never throw the alignment off.
+pub fn kv(key: &str, value: impl std::fmt::Display, width: usize) -> String {
+    let label = format!("{key}:");
+    format!("{}  {}", dim(format!("{label:<width$}")), value)
+}
+
+/// The stderr terminal's column count, for width-adaptive layouts (a list
+/// that lays a row on one line when it fits and folds it when it wouldn't).
+/// Returns `usize::MAX` when stderr isn't a terminal — piped, redirected, or
+/// CI — because there's no margin to wrap against there, so the caller's
+/// single-line form is the right one and logs stay stable instead of
+/// reflowing to whatever width a capture buffer reports.
+pub fn term_width() -> usize {
+    if !std::io::stderr().is_terminal() {
+        return usize::MAX;
+    }
+    // `.size()` is `(rows, cols)`; we want the columns.
+    console::Term::stderr().size().1 as usize
+}
+
+/// The on-screen width of `s`, ignoring ANSI color codes and counting
+/// double-width characters as two columns. The counterpart to [`term_width`]:
+/// a *styled* line carries escape codes that `str::len` would miscount, so
+/// measure it through here before deciding whether it fits the terminal.
+pub fn display_width(s: &str) -> usize {
+    console::measure_text_width(s)
 }
 
 /// Whether to animate: a real terminal, and not CI. `NO_COLOR` is about
@@ -81,7 +196,12 @@ fn spinners_enabled() -> bool {
 /// default style rather than erroring a build.
 fn spinner_bar(message: String) -> ProgressBar {
     let bar = ProgressBar::new_spinner();
-    if let Ok(style) = ProgressStyle::with_template("{spinner} {msg}") {
+    // `{wide_msg}` truncates the message to a single terminal line. `{msg}`
+    // would let a long live-cost line wrap to two rows on a narrow terminal,
+    // and indicatif's redraw only clears the one line it tracks — so each tick
+    // left the wrapped remainder behind, stacking into garbled fragments.
+    // Truncating to one line keeps every redraw cleanly erasable.
+    if let Ok(style) = ProgressStyle::with_template("{spinner} {wide_msg}") {
         bar.set_style(style.tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "));
     }
     bar.enable_steady_tick(Duration::from_millis(90));
@@ -266,6 +386,64 @@ mod tests {
         assert_eq!(fmt_tokens(840), "840");
         assert_eq!(fmt_tokens(1200), "1.2k");
         assert_eq!(fmt_tokens(15000), "15.0k");
+    }
+
+    #[test]
+    fn semantic_helpers_lead_with_their_glyph() {
+        // Tests don't run on a TTY, so color is suppressed and the glyph
+        // stands alone — which is exactly the guarantee: meaning survives
+        // without color.
+        assert_eq!(success("matched"), "✓ matched");
+        assert_eq!(warn("weak"), "⚠ weak");
+        assert_eq!(fail("missing"), "✗ missing");
+        assert_eq!(suggest("try this"), "→ try this");
+        assert_eq!(info("note"), "ℹ note");
+        assert_eq!(bullet("item"), "· item");
+    }
+
+    #[test]
+    fn done_is_the_success_line() {
+        assert_eq!(done("rendered"), success("rendered"));
+    }
+
+    #[test]
+    fn grade_bands_by_ratio_but_always_shows_the_text() {
+        // Color is suppressed off a TTY, so only the text remains — proving
+        // the band is reinforcement, never the only signal. Each ratio lands
+        // in a different band (green ≥0.80, yellow ≥0.60, red below).
+        assert_eq!(grade(0.91, "0.91"), "0.91");
+        assert_eq!(grade(0.72, "72%"), "72%");
+        assert_eq!(grade(0.40, "score 0.40"), "score 0.40");
+    }
+
+    #[test]
+    fn a_section_header_breathes_above() {
+        // A blank line precedes every section so blocks don't run together.
+        assert_eq!(section("Tiers"), "\nTiers");
+    }
+
+    #[test]
+    fn display_width_ignores_ansi_color_codes() {
+        // Three visible characters wrapped in a bold escape sequence: the
+        // codes must not count toward the measured width, or every
+        // width-aware layout would fold too early on colored lines.
+        assert_eq!(display_width("\x1b[1mabc\x1b[0m"), 3);
+        assert_eq!(display_width("plain"), 5);
+    }
+
+    #[test]
+    fn term_width_is_unbounded_off_a_terminal() {
+        // The test harness's stderr is not a TTY, so there's no margin to
+        // wrap against and the single-line form should always be chosen.
+        assert_eq!(term_width(), usize::MAX);
+    }
+
+    #[test]
+    fn kv_pads_the_key_column_on_the_plain_text() {
+        // "model:" is 6 chars; padded to 8 then a two-space gap before the
+        // value. Padding the plain label (not the colored one) keeps columns
+        // aligned regardless of ANSI codes.
+        assert_eq!(kv("model", "opus", 8), "model:    opus");
     }
 
     #[test]
