@@ -10,6 +10,6 @@ pub use anthropic::{AnthropicClient, Auth};
 pub use client::LlmClient;
 pub use mock::MockLlmClient;
 pub use types::{
-    CompletionRequest, CompletionResponse, LlmError, Message, Role, StreamEvent, TokenStream,
-    TokenUsage, ToolCall, ToolResult, ToolSpec,
+    Attachment, CompletionRequest, CompletionResponse, LlmError, Message, Role, StreamEvent,
+    TokenStream, TokenUsage, ToolCall, ToolResult, ToolSpec,
 };

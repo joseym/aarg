@@ -181,10 +181,13 @@ fn system_value(system: &Option<String>, oauth: bool) -> Option<serde_json::Valu
 
 /// One message as the wire wants it. Plain text stays a bare string —
 /// the compact form the API has always taken; turns carrying tool
-/// traffic become content-block arrays.
+/// traffic or attachments become content-block arrays.
 fn wire_message(message: &crate::llm::Message) -> serde_json::Value {
     let role = json!(message.role);
-    if message.tool_calls.is_empty() && message.tool_results.is_empty() {
+    if message.tool_calls.is_empty()
+        && message.tool_results.is_empty()
+        && message.attachments.is_empty()
+    {
         return json!({"role": role, "content": message.content});
     }
     let mut blocks = Vec::new();
@@ -199,6 +202,11 @@ fn wire_message(message: &crate::llm::Message) -> serde_json::Value {
         }
         blocks.push(block);
     }
+    // Documents lead the text block: the model reads the attachment, then the
+    // instruction about it (the order the API recommends for best results).
+    for attachment in &message.attachments {
+        blocks.push(wire_attachment(attachment));
+    }
     if !message.content.is_empty() {
         blocks.push(json!({"type": "text", "text": message.content}));
     }
@@ -211,6 +219,24 @@ fn wire_message(message: &crate::llm::Message) -> serde_json::Value {
         }));
     }
     json!({"role": role, "content": blocks})
+}
+
+/// One attachment as its provider content block: an `image` block for a
+/// raster image, a `document` block for a PDF, both with an inline base64
+/// source. Vision and native PDF input are generally available, so no beta
+/// header is involved.
+fn wire_attachment(attachment: &crate::llm::Attachment) -> serde_json::Value {
+    use crate::llm::Attachment;
+    match attachment {
+        Attachment::Image { media_type, data } => json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }),
+        Attachment::Pdf { data } => json!({
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": data},
+        }),
+    }
 }
 
 // ---- non-streaming response parsing ------------------------------------
@@ -637,6 +663,7 @@ mod tests {
                     args: serde_json::json!({"url": "https://x"}),
                 }],
                 tool_results: Vec::new(),
+                attachments: Vec::new(),
             },
             Message::tool_results(vec![ToolResult {
                 call_id: "tu_1".into(),
@@ -660,6 +687,45 @@ mod tests {
         assert_eq!(result["tool_use_id"], "tu_1");
         assert_eq!(result["content"], "the posting");
         assert!(result.get("is_error").is_none());
+    }
+
+    #[test]
+    fn request_body_writes_attachments_as_source_blocks_before_the_text() {
+        use crate::llm::Attachment;
+        let mut request = request();
+        request.messages = vec![
+            Message::user_with_attachment(
+                "transcribe this",
+                Attachment::Image {
+                    media_type: "image/png".into(),
+                    data: "aGVsbG8=".into(),
+                },
+            ),
+            Message::user_with_attachment(
+                "and this",
+                Attachment::Pdf {
+                    data: "JVBERi0=".into(),
+                },
+            ),
+        ];
+
+        let body = request_body(&request, false, false);
+
+        // The image becomes an `image` block with a base64 source, and the
+        // attachment leads the instruction text within the content array.
+        let image_msg = &body["messages"][0]["content"];
+        assert_eq!(image_msg[0]["type"], "image");
+        assert_eq!(image_msg[0]["source"]["type"], "base64");
+        assert_eq!(image_msg[0]["source"]["media_type"], "image/png");
+        assert_eq!(image_msg[0]["source"]["data"], "aGVsbG8=");
+        assert_eq!(image_msg[1]["type"], "text");
+        assert_eq!(image_msg[1]["text"], "transcribe this");
+
+        // The PDF becomes a `document` block with the fixed media type.
+        let pdf_msg = &body["messages"][1]["content"];
+        assert_eq!(pdf_msg[0]["type"], "document");
+        assert_eq!(pdf_msg[0]["source"]["media_type"], "application/pdf");
+        assert_eq!(pdf_msg[0]["source"]["data"], "JVBERi0=");
     }
 
     #[test]

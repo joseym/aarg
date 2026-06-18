@@ -16,6 +16,20 @@ pub enum Role {
     Assistant,
 }
 
+/// A non-text part of a user turn, sent inline as base64 so the model can
+/// read a document the deterministic text path can't (a photo, a scanned
+/// PDF). Each client decides the provider-specific source block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Attachment {
+    /// A raster image. `media_type` is a provider-accepted image type, e.g.
+    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif`. `data` is the
+    /// base64-encoded bytes.
+    Image { media_type: String, data: String },
+    /// A PDF document. `data` is the base64-encoded bytes.
+    Pdf { data: String },
+}
+
 /// One turn of conversation sent to the model. Plain text turns leave
 /// the tool vectors empty; tool-use turns (the model calling out, the
 /// follow-up carrying results) fill them. Each client decides how the
@@ -30,6 +44,11 @@ pub struct Message {
     /// Results a user turn carries back for earlier tool calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_results: Vec<ToolResult>,
+    /// Images or PDFs this user turn carries for the model to read. Empty
+    /// for ordinary text turns. `#[serde(default)]` keeps older serialized
+    /// messages (traces) deserializing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
 }
 
 impl Message {
@@ -39,6 +58,7 @@ impl Message {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_results: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -48,6 +68,7 @@ impl Message {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_results: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 
@@ -58,6 +79,19 @@ impl Message {
             content: String::new(),
             tool_calls: Vec::new(),
             tool_results: results,
+            attachments: Vec::new(),
+        }
+    }
+
+    /// A user turn carrying a document (image or PDF) for the model to read,
+    /// alongside the instruction text. The one way `attachments` is set.
+    pub fn user_with_attachment(content: impl Into<String>, attachment: Attachment) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_results: Vec::new(),
+            attachments: vec![attachment],
         }
     }
 }

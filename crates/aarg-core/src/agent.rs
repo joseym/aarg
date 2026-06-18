@@ -327,6 +327,7 @@ where
                 content: response.text.clone(),
                 tool_calls: response.tool_calls.clone(),
                 tool_results: Vec::new(),
+                attachments: Vec::new(),
             });
             let mut results = Vec::new();
             for call in &response.tool_calls {
