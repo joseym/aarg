@@ -372,8 +372,9 @@ fn jd_role_label(jd: &JobRequirements) -> String {
     format!("{title} @ {company}")
 }
 
-/// Read a text argument that is either a file path or `-` for stdin.
-/// Extracted at its second consumer (`jd parse`, `gap`).
+/// Read a text argument that is either a file path or `-` for stdin. A `.pdf`
+/// file has its text layer extracted; everything else is read as UTF-8 text.
+/// Extracted at its second consumer (`jd parse`, `gap`); also backs `ingest`.
 pub(crate) fn read_text_input(path: &Path) -> Result<String, CliError> {
     use std::io::Read;
 
@@ -386,11 +387,36 @@ pub(crate) fn read_text_input(path: &Path) -> Result<String, CliError> {
                 source,
             })?;
         Ok(buffer)
+    } else if is_pdf(path) {
+        let text = pdf_extract::extract_text(path).map_err(|source| CliError::PdfExtract {
+            path: path.to_path_buf(),
+            source: Box::new(source),
+        })?;
+        require_text(text, path)
     } else {
         std::fs::read_to_string(path).map_err(|source| CliError::ReadInput {
             path: path.to_path_buf(),
             source,
         })
+    }
+}
+
+/// Whether a path names a PDF, by its extension (case-insensitive).
+fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
+/// A PDF that extracted only whitespace has no text layer (a scanned image),
+/// so there is nothing for the parser to work with: report it with a remedy
+/// rather than passing blank text downstream.
+fn require_text(text: String, path: &Path) -> Result<String, CliError> {
+    if text.trim().is_empty() {
+        Err(CliError::PdfNoText {
+            path: path.to_path_buf(),
+        })
+    } else {
+        Ok(text)
     }
 }
 
@@ -578,11 +604,21 @@ pub enum CliError {
         source: std::io::Error,
     },
 
-    #[error("{path} looks like a PDF — aarg ingests text, not PDF binaries")]
+    #[error("could not read text from the PDF {path}")]
     #[diagnostic(help(
-        "extract the text first (for example `pdftotext resume.pdf resume.txt`) and ingest that"
+        "the file may be corrupt or password-protected; try re-exporting it, or paste the text"
     ))]
-    PdfInput { path: PathBuf },
+    PdfExtract {
+        path: PathBuf,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    #[error("no extractable text in {path}")]
+    #[diagnostic(help(
+        "it looks like a scanned image with no text layer; paste the text or save a text-based PDF"
+    ))]
+    PdfNoText { path: PathBuf },
 
     #[error("the dataset has {problems} problem(s)")]
     #[diagnostic(help(
@@ -958,5 +994,26 @@ mod tests {
         }
         .into();
         assert!(matches!(other, CliError::Llm(_)));
+    }
+
+    #[test]
+    fn is_pdf_keys_on_the_extension_case_insensitively() {
+        assert!(is_pdf(Path::new("resume.pdf")));
+        assert!(is_pdf(Path::new("RESUME.PDF")));
+        assert!(!is_pdf(Path::new("resume.txt")));
+        assert!(!is_pdf(Path::new("-")));
+        assert!(!is_pdf(Path::new("resume")));
+    }
+
+    #[test]
+    fn require_text_rejects_a_blank_extraction_as_no_text() {
+        assert!(matches!(
+            require_text("   \n\t".into(), Path::new("scan.pdf")),
+            Err(CliError::PdfNoText { .. })
+        ));
+        assert_eq!(
+            require_text("real text".into(), Path::new("r.pdf")).unwrap(),
+            "real text"
+        );
     }
 }

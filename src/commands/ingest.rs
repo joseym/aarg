@@ -14,16 +14,8 @@ use crate::ingest::ingest_resume;
 use crate::style;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
-    if path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
-    {
-        return Err(CliError::PdfInput { path });
-    }
-    let text = std::fs::read_to_string(&path).map_err(|source| CliError::ReadInput {
-        path: path.clone(),
-        source,
-    })?;
+    // Reads a `.txt`, a text-layer `.pdf`, or `-` for stdin, all the same way.
+    let text = super::read_text_input(&path)?;
 
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
