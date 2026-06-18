@@ -17,6 +17,17 @@ in three places rather than promised in one.
 > Anthropic is the supported model provider; a fully-local one is on the
 > roadmap, not in the box yet.
 
+## Demo
+
+<p align="center">
+  <img src="docs/demo.gif" alt="aarg ingesting a resume, tailoring it to a posting through the adversarial loop, and exporting the PDFs" width="820">
+</p>
+
+A full run on a fictional candidate and posting: ingest a résumé into a
+structured dataset, then `tailor` parses the job, analyzes the gap, drafts, and
+works the review-and-revise loop, keeping the best draft rather than the last,
+before rendering both PDFs and exporting them under friendly names.
+
 ## The loop, briefly
 
 1. `ingest` turns an existing résumé into a structured **dataset**: roles,
@@ -82,7 +93,7 @@ cargo install --path .
 
 ```sh
 aarg init                  # set up a workspace here, store your key in the OS keychain
-aarg ingest resume.md      # build your dataset from an existing résumé (text or Markdown)
+aarg ingest resume.pdf     # build your dataset from an existing résumé (text, Markdown, or a text-layer PDF)
 aarg tailor job.txt        # parse, gap-analyze, tailor, review, revise, render
 ```
 
@@ -117,13 +128,17 @@ API-key path is the supported one. For headless or CI use, set `ANTHROPIC_API_KE
 | | |
 |---|---|
 | `aarg init` | create a workspace and store a key |
-| `aarg ingest <file>` | build your dataset from a résumé |
+| `aarg ingest <file>` | build your dataset from a résumé (text, Markdown, or a text-layer PDF) |
 | `aarg tailor [job]` | the adversarial loop, end to end |
+| `aarg chat [job]` | ask about a posting and how your background fits it |
 | `aarg gap [job]` | compare a posting against your dataset |
 | `aarg dataset show \| validate \| edit` | inspect and correct your data |
 | `aarg skills verify \| dedup` | back unverified skills, collapse duplicates |
 | `aarg roles enrich [id]` | flesh out thin roles with a short interview |
 | `aarg voice add \| list \| remove` | writing samples that steer phrasing |
+| `aarg cover [build]` | draft a cover letter for a past build |
+| `aarg render [build]` | re-render a build's PDFs without re-tailoring |
+| `aarg export [build] [--to <dir>]` | copy a build's PDFs out under friendly company names |
 | `aarg attack [build]` | re-review a saved build without re-tailoring |
 | `aarg history` / `aarg diff <a> <b>` | list past builds, compare two |
 | `aarg templates list \| use <name>` | choose a résumé template |
@@ -135,18 +150,50 @@ your own to render the human variant however you like.
 
 ## How it's built
 
-**AARG** is a Rust workspace: an `aarg` binary over an `aarg-core` library holding
-the agent runtime, which provides typed agents, tools, validation-retry, and run
-tracing over hand-rolled LLM clients. There's no agent framework underneath. The
-Anthropic client is written directly against the HTTP API, behind a small trait
-with a scripted mock, so the whole thing tests without a network or a key.
+**AARG** is a Rust workspace: an `aarg` binary over an `aarg-core` library. The
+library is the agent runtime, and it's the part of this repo most worth reading.
 
-The runtime was **extracted, not designed up front.** The first model-backed
-features were written as plain functions with honestly duplicated code, and the
-generic `Agent` trait was lifted out of them once they proved what they actually
-shared. New abstractions arrive when a second consumer does, not in anticipation
-of one. That story is told in
-[docs/design/agent-runtime.md](docs/design/agent-runtime.md).
+```mermaid
+flowchart TB
+    subgraph bin["aarg · binary"]
+        direction TB
+        CLI["CLI frontend<br/>clap commands · reedline REPL · inquire prompts"]
+        ORCH["Orchestrator<br/>routes commands · human-in-the-loop · drives the adversarial loop"]
+        AGENTS["Agents<br/>jd parser · gap · tailor · adversarial reviewer<br/>variant adapter · voice · skill / role / metric interviews"]
+        SERVICES["Services · deterministic, no LLM<br/>dataset store · Typst renderer · ATS coverage · readability · history / diff"]
+        CLI --> ORCH
+        ORCH --> AGENTS
+        ORCH --> SERVICES
+    end
+    subgraph core["aarg-core · library · the agent runtime"]
+        direction TB
+        RUNTIME["trait Agent · AgentContext · Tool · Tracer<br/>validation-retry · cost accounting · cancellation"]
+        CLIENTS["LLM clients<br/>Anthropic + scripted Mock, hand-rolled on reqwest<br/>behind a two-method LlmClient trait · Ollama planned"]
+        RUNTIME --> CLIENTS
+    end
+    AGENTS --> RUNTIME
+```
+
+There's no agent framework underneath. The Anthropic client is written directly
+against the HTTP API, behind a small trait with a scripted mock, so the whole
+thing tests without a network or a key.
+
+### The runtime was extracted, not designed up front
+
+This is the part the commit history is meant to show. Phase 1 shipped three
+model-backed features (JD parsing, gap analysis, tailoring) as plain `async`
+functions, with their prompt assembly, schema-validated parsing,
+retry-on-bad-output, and cost accounting honestly duplicated. By the third, what
+they shared was obvious. Phase 2 lifted a single generic `Agent` trait out of
+those three working cases in one reviewable diff, and the adversarial loop and
+the keyless eval harness then came almost for free, because every agent speaks
+one contract. New abstractions arrive when a second consumer does, not in
+anticipation of one.
+
+The reasoning behind the trait, and the alternatives weighed against it, is in
+[docs/design/agent-runtime.md](docs/design/agent-runtime.md). The convergence
+problem the loop solves, and the score-must-improve gate that keeps it from
+oscillating, is in [docs/design/adversarial-loop.md](docs/design/adversarial-loop.md).
 
 Determinism stays out of the model wherever it can. ATS keyword coverage and
 readability are pure code, not agents, so the facts the score leans on can't be
@@ -157,7 +204,9 @@ talked around.
 **Done and working**: the tailor/review/revise loop, both résumé variants with the
 claim-divergence lint, gap analysis, the skills/roles/metric interviews, voice
 rewriting, cover-letter generation (`aarg cover` or `tailor --cover`), history and
-diff, templates, the REPL, and experimental subscription auth.
+diff, templates, résumé ingestion from text-layer PDFs, an interactive Q&A about a
+posting (`aarg chat`), exporting finished PDFs under friendly company names
+(`aarg export`), the REPL, and experimental subscription auth.
 
 **Not there yet**: a fully-local model provider (the client trait and
 per-agent model tiers are already in place for it to slot into), and an
