@@ -19,6 +19,7 @@ pub mod ingest;
 pub mod init;
 pub mod jd;
 pub mod key;
+pub mod open;
 pub mod ping;
 pub mod render;
 pub mod roles;
@@ -933,6 +934,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         } => tailor::run(jd, variant.variants(), template, cover).await?,
         Command::Cover { build } => cover::run(build).await?,
         Command::Export { build, to } => export::run(build, to).await?,
+        Command::Open { build } => open::run(build).await?,
         Command::Render {
             build,
             no_llm,

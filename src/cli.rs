@@ -115,6 +115,11 @@ pub enum Command {
         #[arg(long, value_name = "DIR")]
         to: Option<std::path::PathBuf>,
     },
+    /// Open a build's PDFs in your system viewer
+    Open {
+        /// Build id to open (e.g. 029); omit to pick one interactively
+        build: Option<String>,
+    },
     /// Re-render a past build's PDFs from its saved draft (skips the tailor loop)
     Render {
         /// Build id to re-render (e.g. 029); omit to pick one interactively
@@ -502,6 +507,27 @@ mod tests {
                 assert_eq!(to, None);
             }
             other => panic!("expected export, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_parses_with_and_without_a_build_id() {
+        match Cli::try_parse_from(["aarg", "open", "029"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Open { build } => assert_eq!(build.as_deref(), Some("029")),
+            other => panic!("expected open, got {other:?}"),
+        }
+        // The build id is optional — omitting it means "pick interactively".
+        match Cli::try_parse_from(["aarg", "open"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Open { build } => assert_eq!(build, None),
+            other => panic!("expected open, got {other:?}"),
         }
     }
 
