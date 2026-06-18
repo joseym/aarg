@@ -173,7 +173,14 @@ pub enum Command {
         #[command(subcommand)]
         command: LlmCommand,
     },
-    /// Print a shell completion script (source it from your shell's rc file)
+    /// Print a shell completion script for tab-completion of aarg commands
+    #[command(after_help = "\
+To install, add the line for your shell to its startup file:
+  bash   echo 'source <(aarg completions bash)' >> ~/.bashrc
+  zsh    echo 'source <(aarg completions zsh)' >> ~/.zshrc
+  fish   aarg completions fish > ~/.config/fish/completions/aarg.fish
+  pwsh   aarg completions powershell >> $PROFILE
+then restart your shell.")]
     Completions {
         /// Which shell to generate for
         shell: clap_complete::Shell,
