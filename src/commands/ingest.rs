@@ -14,9 +14,9 @@ use crate::ingest::ingest_resume;
 use crate::style;
 
 pub async fn run(path: PathBuf) -> Result<(), CliError> {
-    // Reads a `.txt`, a text-layer `.pdf`, or `-` for stdin, all the same way.
-    let text = super::read_text_input(&path)?;
-
+    // The client comes first because reading the input may need it: a `.txt`,
+    // a text-layer `.pdf`, or `-` for stdin read deterministically, but an
+    // image or a scanned PDF is transcribed by the model via `read_input`.
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
     let ctx = AgentContext {
@@ -25,6 +25,7 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
         tracer: &tracer,
         sink: None,
     };
+    let text = super::read_input(&path, &ctx).await?;
 
     eprintln!(
         "{}",

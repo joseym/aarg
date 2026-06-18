@@ -43,5 +43,6 @@ pub mod templates;
 pub mod terminal;
 pub mod variant;
 pub mod verify;
+pub mod vision;
 pub mod voice;
 pub mod workspace;

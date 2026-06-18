@@ -15,6 +15,8 @@ repository = "https://github.com/joseymorton/aarg"
 [dependencies]
 aarg-core = { path = "crates/aarg-core" }
 async-trait = "0.1.89"
+# Encode image/PDF bytes for the vision content blocks sent to the model.
+base64 = "0.22"
 chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.1"

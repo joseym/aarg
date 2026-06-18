@@ -39,7 +39,7 @@ use crate::fetch::FetchError;
 use crate::gap::GapError;
 use crate::ingest::IngestError;
 use crate::jd::{JdError, JobRequirements};
-use crate::llm::{AnthropicClient, Auth, LlmError};
+use crate::llm::{AnthropicClient, Attachment, Auth, LlmError};
 use crate::render::RenderError;
 use crate::review::ReviewError;
 use crate::secrets::{self, SecretsError};
@@ -184,7 +184,9 @@ pub(crate) async fn load_requirements(
             source,
         })?
     } else {
-        let text = read_text_input(arg)?;
+        // A document JD: text or text-layer PDF read deterministically, an
+        // image or scanned PDF transcribed by vision first (read_input).
+        let text = read_input(arg, ctx).await?;
         eprintln!(
             "{}",
             style::dim(format!(
@@ -419,6 +421,67 @@ fn require_text(text: String, path: &Path) -> Result<String, CliError> {
     } else {
         Ok(text)
     }
+}
+
+/// Read a document with a vision fallback. Tries the deterministic text path
+/// first ([`read_text_input`]: a `.txt`, a text-layer `.pdf`, or `-` for
+/// stdin); only an image, or a `.pdf` with no text layer, falls back to the
+/// model via [`crate::vision`]. `ctx` supplies the LLM client that fallback
+/// needs. Text and text-layer-PDF inputs behave exactly as `read_text_input`,
+/// so vision never fires for them and adds no cost.
+pub(crate) async fn read_input(path: &Path, ctx: &AgentContext<'_>) -> Result<String, CliError> {
+    if let Some(media_type) = image_media_type(path) {
+        eprintln!(
+            "{}",
+            style::info(format!("reading {} with vision", path.display()))
+        );
+        let attachment = Attachment::Image {
+            media_type: media_type.to_string(),
+            data: base64_file(path)?,
+        };
+        return Ok(crate::vision::transcribe(ctx, attachment).await?);
+    }
+    match read_text_input(path) {
+        // A scanned PDF (no text layer) is the one text-read failure worth
+        // recovering from: hand the whole PDF to the model instead of failing.
+        Err(CliError::PdfNoText { .. }) => {
+            eprintln!(
+                "{}",
+                style::info(format!(
+                    "no text layer in {}; reading with vision",
+                    path.display()
+                ))
+            );
+            let attachment = Attachment::Pdf {
+                data: base64_file(path)?,
+            };
+            Ok(crate::vision::transcribe(ctx, attachment).await?)
+        }
+        other => other,
+    }
+}
+
+/// The Anthropic-accepted image media type for a path's extension, or `None`
+/// when it isn't an image kind we send to vision.
+fn image_media_type(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+/// Read a file and base64-encode its bytes for an inline attachment source.
+fn base64_file(path: &Path) -> Result<String, CliError> {
+    use base64::Engine as _;
+    let bytes = std::fs::read(path).map_err(|source| CliError::ReadInput {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 /// Open `path` in the user's `$VISUAL`/`$EDITOR` and wait for it to
@@ -1033,5 +1096,62 @@ mod tests {
             require_text("real text".into(), Path::new("r.pdf")).unwrap(),
             "real text"
         );
+    }
+
+    #[test]
+    fn image_media_type_maps_known_extensions_only() {
+        assert_eq!(image_media_type(Path::new("scan.png")), Some("image/png"));
+        assert_eq!(image_media_type(Path::new("photo.JPG")), Some("image/jpeg"));
+        assert_eq!(
+            image_media_type(Path::new("photo.jpeg")),
+            Some("image/jpeg")
+        );
+        assert_eq!(image_media_type(Path::new("p.webp")), Some("image/webp"));
+        assert_eq!(image_media_type(Path::new("p.gif")), Some("image/gif"));
+        // Not images: a PDF, plain text, stdin, no extension.
+        assert_eq!(image_media_type(Path::new("resume.pdf")), None);
+        assert_eq!(image_media_type(Path::new("resume.txt")), None);
+        assert_eq!(image_media_type(Path::new("-")), None);
+    }
+
+    #[tokio::test]
+    async fn read_input_transcribes_an_image_via_vision() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("resume.png");
+        std::fs::write(&img, b"\x89PNG not-a-real-image").unwrap();
+        let client = crate::llm::MockLlmClient::new();
+        client.enqueue("Sam Rivera\nStaff Engineer");
+        let ctx = AgentContext {
+            llm: &client,
+            model: &"claude-haiku-4-5",
+            tracer: &crate::trace::Tracer::DISABLED,
+            sink: None,
+        };
+
+        let text = read_input(&img, &ctx).await.unwrap();
+
+        assert_eq!(text, "Sam Rivera\nStaff Engineer");
+        // The model saw the image as an attachment, not bare text.
+        assert_eq!(client.requests()[0].messages[0].attachments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_input_reads_a_text_file_without_touching_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("resume.txt");
+        std::fs::write(&txt, "plain resume text").unwrap();
+        let client = crate::llm::MockLlmClient::new(); // nothing enqueued
+        let ctx = AgentContext {
+            llm: &client,
+            model: &"claude-haiku-4-5",
+            tracer: &crate::trace::Tracer::DISABLED,
+            sink: None,
+        };
+
+        let text = read_input(&txt, &ctx).await.unwrap();
+
+        assert_eq!(text, "plain resume text");
+        // A text file is read deterministically — vision never fires.
+        assert!(client.requests().is_empty());
     }
 }
