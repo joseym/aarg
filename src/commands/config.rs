@@ -209,5 +209,18 @@ pub async fn run() -> Result<(), CliError> {
             21
         )
     );
+
+    eprintln!("{}", style::section("Export"));
+    eprintln!(
+        "{}",
+        style::kv(
+            "destination",
+            match &config.export.dir {
+                Some(dir) => dir.display().to_string(),
+                None => "current directory (set `export.dir`, or pass `--to`)".to_string(),
+            },
+            11
+        )
+    );
     Ok(())
 }

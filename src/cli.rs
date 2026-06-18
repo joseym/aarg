@@ -107,6 +107,14 @@ pub enum Command {
         /// Build id to write a letter for (e.g. 029); omit to pick one interactively
         build: Option<String>,
     },
+    /// Copy a build's PDFs to a folder with friendly names (company.ats.pdf, ...)
+    Export {
+        /// Build id to export (e.g. 029); omit to pick one interactively
+        build: Option<String>,
+        /// Destination folder; overrides the configured export dir, defaults to the current directory
+        #[arg(long, value_name = "DIR")]
+        to: Option<std::path::PathBuf>,
+    },
     /// Re-render a past build's PDFs from its saved draft (skips the tailor loop)
     Render {
         /// Build id to re-render (e.g. 029); omit to pick one interactively
@@ -466,6 +474,34 @@ mod tests {
         {
             Command::Cover { build } => assert_eq!(build, None),
             other => panic!("expected cover, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn export_parses_with_build_and_to() {
+        // A build id and an explicit destination.
+        match Cli::try_parse_from(["aarg", "export", "029", "--to", "/tmp/out"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Export { build, to } => {
+                assert_eq!(build.as_deref(), Some("029"));
+                assert_eq!(to, Some(std::path::PathBuf::from("/tmp/out")));
+            }
+            other => panic!("expected export, got {other:?}"),
+        }
+        // Both are optional: bare `export` picks a build and defaults the dir.
+        match Cli::try_parse_from(["aarg", "export"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Export { build, to } => {
+                assert_eq!(build, None);
+                assert_eq!(to, None);
+            }
+            other => panic!("expected export, got {other:?}"),
         }
     }
 

@@ -12,6 +12,7 @@ pub mod completions;
 pub mod config;
 pub mod cover;
 pub mod dataset;
+pub mod export;
 pub mod gap;
 pub mod history;
 pub mod ingest;
@@ -778,6 +779,22 @@ pub enum CliError {
     #[error("the Anthropic CLI could not provide a token:\n{stderr}")]
     #[diagnostic(help("run `ant auth login` to sign in, then try again"))]
     CliTokenFailed { stderr: String },
+
+    #[error("could not prepare the export directory {path}")]
+    #[diagnostic(help("check the path is writable, or pass a different `--to <dir>`"))]
+    ExportDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("could not copy {from} to {to}")]
+    ExportCopy {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Route a transport error to the right diagnostic: an HTTP 429 is a rate
@@ -852,6 +869,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             cover,
         } => tailor::run(jd, variant.variants(), template, cover).await?,
         Command::Cover { build } => cover::run(build).await?,
+        Command::Export { build, to } => export::run(build, to).await?,
         Command::Render {
             build,
             no_llm,

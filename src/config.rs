@@ -276,6 +276,15 @@ impl TemplatesConfig {
     }
 }
 
+/// Where `aarg export` writes a build's PDFs when `--to` is omitted. A
+/// `None` (the default) exports to the current directory, so the feature
+/// works with no setup; set `dir` to point every export at one folder.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportConfig {
+    pub dir: Option<PathBuf>,
+}
+
 /// The contents of `config.toml`. Any field missing from the file falls
 /// back to its default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -286,6 +295,8 @@ pub struct Config {
     pub limits: Limits,
     /// Which template each variant renders with.
     pub templates: TemplatesConfig,
+    /// Where `aarg export` writes friendly-named PDFs by default.
+    pub export: ExportConfig,
     /// Per-model price overrides (dollars per million tokens), keyed by
     /// model id. Absent models fall back to `pricing`'s built-in family
     /// rates; an empty table (the default) uses the built-ins for all.
@@ -532,6 +543,28 @@ mod tests {
         let loaded = Config::load_from(&path).unwrap();
         assert_eq!(loaded, full);
         assert_eq!(loaded.anthropic.kind_for("plan"), AuthKind::Oauth);
+    }
+
+    #[test]
+    fn export_dir_round_trips_and_defaults_to_none() {
+        // Unset by default — export then targets the current directory.
+        assert_eq!(ExportConfig::default().dir, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            export: ExportConfig {
+                dir: Some(PathBuf::from("/home/me/applications")),
+            },
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(
+            loaded.export.dir,
+            Some(PathBuf::from("/home/me/applications"))
+        );
     }
 
     #[test]
