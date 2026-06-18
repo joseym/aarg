@@ -35,6 +35,9 @@ pub async fn run(
     no_llm: bool,
     template: Option<PathBuf>,
 ) -> Result<(), CliError> {
+    // Fail fast if `typst` isn't installed: re-rendering exists to produce
+    // PDFs, so check before picking a build or making the (paid) reprojection.
+    crate::render::ensure_available()?;
     // Resolve which build: an explicit id is used as-is; with none we offer a
     // picker, and a piped/CI run gets a typed pointer instead of a hang.
     let build = match build {

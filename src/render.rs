@@ -19,7 +19,7 @@
 //! point at one lands in Phase 6, but the renderer already handles it.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::cover::CoverLetter;
 use crate::variant::{Variant, VariantPayload};
@@ -242,6 +242,34 @@ fn render_cover_with(
     )
 }
 
+/// Check that the `typst` binary is on PATH, so a command can fail fast with
+/// the install message *before* doing expensive work (a whole tailor loop, an
+/// LLM cover-letter draft) that would otherwise only discover the missing
+/// binary at render time. Returns the same [`RenderError::TypstMissing`] that
+/// rendering would, so the diagnostic is identical wherever it surfaces.
+pub fn ensure_available() -> Result<(), RenderError> {
+    ensure_available_with("typst")
+}
+
+/// The testable core of [`ensure_available`]; the program name is a parameter
+/// so tests can point it at a stub or a path that doesn't exist.
+fn ensure_available_with(typst: &str) -> Result<(), RenderError> {
+    // `--version` is the cheapest invocation that proves the binary runs; its
+    // output is discarded — only whether it could be spawned matters. A
+    // non-zero exit still means the binary exists, so only a spawn failure is
+    // treated as missing.
+    match Command::new(typst)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(RenderError::TypstMissing),
+        Err(e) => Err(RenderError::Spawn(e)),
+    }
+}
+
 /// Stage a payload, its template, and the shared library into the build
 /// directory, then shell out to typst. Shared by the variant renderer and
 /// the cover-letter renderer — they differ only in the payload JSON and the
@@ -453,6 +481,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, RenderError::TypstMissing));
+    }
+
+    #[test]
+    fn ensure_available_reports_typst_missing_when_the_binary_is_absent() {
+        let err = ensure_available_with("/definitely/not/a/real/typst-binary").unwrap_err();
+        assert!(matches!(err, RenderError::TypstMissing));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_available_passes_when_the_binary_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = stub_typst(dir.path(), "exit 0");
+        assert!(ensure_available_with(&stub).is_ok());
     }
 
     #[test]

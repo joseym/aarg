@@ -17,6 +17,9 @@ use crate::style::{self, Spinner};
 use crate::tailor::TailoredResume;
 
 pub async fn run(build: Option<String>) -> Result<(), CliError> {
+    // Fail fast if `typst` isn't installed, before picking a build or paying
+    // for the cover-letter draft — the letter still has to render at the end.
+    crate::render::ensure_available()?;
     // Resolve which build: an explicit id is used as-is; with none we offer
     // a picker, and a piped/CI run gets a typed pointer instead of a hang.
     let build = match build {

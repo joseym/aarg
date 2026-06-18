@@ -55,6 +55,10 @@ pub async fn run(
     if human_template.is_some() && !variants.contains(&Variant::Human) {
         return Err(CliError::TemplateWithoutHuman);
     }
+    // Fail fast if `typst` isn't installed: the loop renders to score and to
+    // finalize, so without this the missing binary only surfaces after a whole
+    // round of (paid) LLM calls. Check before spending anything.
+    crate::render::ensure_available()?;
     let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
