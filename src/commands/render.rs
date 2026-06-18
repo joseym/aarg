@@ -120,11 +120,14 @@ pub async fn run(
     sp.finish(style::done("human resume rendered"));
 
     report(&ats_pdf, &human_pdf);
-    // Priced at the smart (reviewer) tier, which dominates the two calls.
+    // Priced at the smart (reviewer) tier, which dominates the two calls. On a
+    // Claude plan the cost is covered by the flat fee, so say that instead.
     let model = ctx
         .model
         .resolve("adversarial_reviewer_v1", ModelTier::Smart);
-    if let Some(cost) = crate::pricing::cost_usd(model, &total, &config.prices) {
+    if client.is_subscription() {
+        eprintln!("  {}", style::dim("covered by your Claude plan"));
+    } else if let Some(cost) = crate::pricing::cost_usd(model, &total, &config.prices) {
         eprintln!("  {}", style::dim(format!("~${cost:.2}")));
     }
     Ok(())

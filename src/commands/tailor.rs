@@ -58,10 +58,13 @@ pub async fn run(
     let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
+    // On a Claude plan the request cost is covered by the flat fee, so dollar
+    // estimates are suppressed everywhere this run reports cost.
+    let subscription = client.is_subscription();
     // Live progress + running cost for the long smart-tier calls, so the
     // loop is visibly working and the user can interrupt (FR-3.8). The spine
     // drives it for streamed runs; cheap/interactive calls leave it idle.
-    let reporter = StreamReporter::new(config.prices.clone());
+    let reporter = StreamReporter::new(config.prices.clone(), subscription);
     let ctx = AgentContext {
         llm: &client,
         model: &config.anthropic,
@@ -752,6 +755,7 @@ pub async fn run(
             model: model.to_string(),
             template: meta_template,
             tailor_usage: total,
+            subscription,
         },
     )?;
 
@@ -819,29 +823,41 @@ pub async fn run(
     }
     eprintln!("  {score}");
 
-    // Cost estimate (and a budget nudge), priced at the tailoring model.
-    let cost = crate::pricing::cost_usd(model, &total, &config.prices);
-    let cost_note = match cost {
-        Some(c) => format!(
-            "~${c:.2}  ·  {} in / {} out tokens",
-            total.input_tokens, total.output_tokens
-        ),
-        None => format!(
-            "{} in / {} out tokens",
-            total.input_tokens, total.output_tokens
-        ),
-    };
-    eprintln!("  {}", style::dim(cost_note));
-    if let (Some(c), Some(budget)) = (cost, config.limits.budget_usd)
-        && c > budget
-    {
+    // Cost summary. On a Claude plan the run is covered by the flat fee, so
+    // show tokens and say so rather than a misleading dollar figure, and skip
+    // the budget nudge (a dollar budget is meaningless on a plan).
+    if subscription {
         eprintln!(
             "  {}",
-            style::yellow(format!(
-                "over your ${budget:.2} budget by ${:.2}",
-                c - budget
+            style::dim(format!(
+                "{} in / {} out tokens  ·  covered by your Claude plan",
+                total.input_tokens, total.output_tokens
             ))
         );
+    } else {
+        let cost = crate::pricing::cost_usd(model, &total, &config.prices);
+        let cost_note = match cost {
+            Some(c) => format!(
+                "~${c:.2}  ·  {} in / {} out tokens",
+                total.input_tokens, total.output_tokens
+            ),
+            None => format!(
+                "{} in / {} out tokens",
+                total.input_tokens, total.output_tokens
+            ),
+        };
+        eprintln!("  {}", style::dim(cost_note));
+        if let (Some(c), Some(budget)) = (cost, config.limits.budget_usd)
+            && c > budget
+        {
+            eprintln!(
+                "  {}",
+                style::yellow(format!(
+                    "over your ${budget:.2} budget by ${:.2}",
+                    c - budget
+                ))
+            );
+        }
     }
     Ok(())
 }

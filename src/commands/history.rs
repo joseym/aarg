@@ -5,11 +5,13 @@
 //! two of them, or delete one. All output is on stderr like the rest of
 //! aarg's human output; stdout stays clean for a future `--json`.
 
+use std::collections::BTreeMap;
+
 use crate::commands::CliError;
 use crate::config::Config;
 use crate::history::{self, BuildDiff, BuildSummary};
 use crate::llm::TokenUsage;
-use crate::pricing;
+use crate::pricing::{self, Price};
 use crate::style;
 use crate::terminal::auto_user;
 use crate::user::{Answer, Question};
@@ -27,26 +29,45 @@ pub fn list() -> Result<(), CliError> {
     // Prices come from config (built-in family defaults otherwise).
     let prices = Config::load()?.prices;
     let mut total = 0.0;
+    let mut any_billed = false;
 
     let width = style::term_width();
 
     eprintln!("{}", style::section(format!("{} build(s)", builds.len())));
     for b in &builds {
-        let usage = TokenUsage {
-            input_tokens: b.tokens_in,
-            output_tokens: b.tokens_out,
-        };
-        let cost = pricing::cost_usd(&b.model, &usage, &prices);
-        if let Some(c) = cost {
+        let (cell, billed) = cost_cell(b, &prices);
+        if let Some(c) = billed {
             total += c;
+            any_billed = true;
         }
-        let cost_cell = cost.map_or_else(|| "    -".to_string(), |c| format!("~${c:.2}"));
-        for line in build_row(b, &cost_cell, width) {
+        for line in build_row(b, &cell, width) {
             eprintln!("{line}");
         }
     }
-    eprintln!("{}", style::dim(format!("total ~${total:.2}")));
+    if any_billed {
+        eprintln!("{}", style::dim(format!("total ~${total:.2}")));
+    } else {
+        eprintln!("{}", style::dim("total: covered by your Claude plan"));
+    }
     Ok(())
+}
+
+/// The cost column for one build: a `plan` marker on a subscription run (no
+/// marginal cost, so a dollar estimate would mislead), otherwise the priced
+/// estimate or a dash for an unpriced model. Returns the cell text and the
+/// dollar amount to fold into the billed total (`None` when the run wasn't
+/// billed), so the caller sums only what was actually charged.
+fn cost_cell(b: &BuildSummary, prices: &BTreeMap<String, Price>) -> (String, Option<f64>) {
+    if b.subscription {
+        return ("plan".to_string(), None);
+    }
+    let usage = TokenUsage {
+        input_tokens: b.tokens_in,
+        output_tokens: b.tokens_out,
+    };
+    let cost = pricing::cost_usd(&b.model, &usage, prices);
+    let cell = cost.map_or_else(|| "    -".to_string(), |c| format!("~${c:.2}"));
+    (cell, cost)
 }
 
 /// Lay out one build's row. Returns the line(s) to print: a single line when
@@ -275,6 +296,7 @@ mod tests {
             objections: 11,
             tokens_in: 1000,
             tokens_out: 2000,
+            subscription: false,
         }
     }
 
@@ -310,5 +332,20 @@ mod tests {
         assert!(score_cell(0.92).contains("0.92")); // green band
         assert!(score_cell(0.72).contains("0.72")); // yellow band
         assert!(score_cell(0.41).contains("0.41")); // red band
+    }
+
+    #[test]
+    fn cost_cell_marks_a_subscription_build_as_plan_and_leaves_it_unbilled() {
+        let mut sub = sample("VP Engineering @ Mainstay", 0.81);
+        sub.subscription = true;
+        let (cell, billed) = cost_cell(&sub, &BTreeMap::new());
+        assert_eq!(cell.trim(), "plan");
+        assert!(billed.is_none());
+
+        // A billed build on a priceable model still shows a dollar figure.
+        let billed_build = sample("VP Engineering @ Mainstay", 0.81);
+        let (cell, amount) = cost_cell(&billed_build, &BTreeMap::new());
+        assert!(cell.contains('$'));
+        assert!(amount.is_some());
     }
 }

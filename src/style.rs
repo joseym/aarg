@@ -282,6 +282,9 @@ fn human_label(agent_id: &str) -> String {
 pub struct StreamReporter {
     /// Per-model overrides from config; built-in family rates fill the gaps.
     prices: BTreeMap<String, Price>,
+    /// On a Claude plan the request cost is covered by the flat fee, so the
+    /// live line shows tokens only and never a (misleading) dollar estimate.
+    subscription: bool,
     state: Mutex<ReporterState>,
 }
 
@@ -302,9 +305,10 @@ struct ReporterState {
 }
 
 impl StreamReporter {
-    pub fn new(prices: BTreeMap<String, Price>) -> Self {
+    pub fn new(prices: BTreeMap<String, Price>, subscription: bool) -> Self {
         Self {
             prices,
+            subscription,
             state: Mutex::new(ReporterState::default()),
         }
     }
@@ -313,10 +317,14 @@ impl StreamReporter {
     /// count and the current call's cost are estimated from the streamed
     /// character count (real usage only lands at `end`); the running total
     /// folds in the real cost of completed calls. Everything is marked `~`
-    /// — a budget signal, not an invoice.
+    /// — a budget signal, not an invoice. On a subscription the dollar figure
+    /// is dropped (the plan covers it), leaving tokens only.
     fn line(&self, st: &ReporterState) -> String {
         let est_tokens = st.chars / 4;
         let toks = dim(format!("~{} tok", fmt_tokens(est_tokens)));
+        if self.subscription {
+            return format!("{} · {}", st.label, toks);
+        }
         let est_cost = pricing::cost_usd(
             &st.model,
             &TokenUsage {
@@ -457,7 +465,7 @@ mod tests {
 
     #[test]
     fn the_live_line_shows_tokens_and_a_running_cost() {
-        let reporter = StreamReporter::new(BTreeMap::new());
+        let reporter = StreamReporter::new(BTreeMap::new(), false);
         // Mid-stream on a priced model: ~4k chars ≈ 1k tokens.
         let st = ReporterState {
             bar: None,
@@ -474,7 +482,7 @@ mod tests {
 
     #[test]
     fn an_unpriced_model_shows_tokens_but_no_dollars() {
-        let reporter = StreamReporter::new(BTreeMap::new());
+        let reporter = StreamReporter::new(BTreeMap::new(), false);
         let st = ReporterState {
             bar: None,
             label: "tailoring".to_string(),
@@ -488,8 +496,23 @@ mod tests {
     }
 
     #[test]
+    fn a_subscription_shows_tokens_but_no_dollars_even_on_a_priced_model() {
+        let reporter = StreamReporter::new(BTreeMap::new(), true);
+        let st = ReporterState {
+            bar: None,
+            label: "tailoring".to_string(),
+            model: "claude-sonnet-4-6".to_string(), // priced, but the plan covers it
+            chars: 4000,
+            spent: 0.10,
+        };
+        let line = reporter.line(&st);
+        assert!(line.contains("~1.0k tok"));
+        assert!(!line.contains("$"));
+    }
+
+    #[test]
     fn end_accrues_real_cost_into_the_running_total() {
-        let reporter = StreamReporter::new(BTreeMap::new());
+        let reporter = StreamReporter::new(BTreeMap::new(), false);
         reporter.begin("tailoring_v1", "claude-sonnet-4-6");
         reporter.delta("some streamed text");
         // 1M output tokens on Sonnet = $15.

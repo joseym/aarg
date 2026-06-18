@@ -72,6 +72,9 @@ pub struct BuildSummary {
     pub objections: usize,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// The run was on a Claude plan, so its cost is covered by the flat fee
+    /// and a dollar estimate would mislead.
+    pub subscription: bool,
 }
 
 /// Every build with a complete-enough set of artifacts, newest first. A
@@ -148,6 +151,7 @@ fn summarize(dir: &Path, id: &str) -> Option<BuildSummary> {
         objections: report.objections.len(),
         tokens_in: meta.tailor_usage.input_tokens,
         tokens_out: meta.tailor_usage.output_tokens,
+        subscription: meta.subscription,
     })
 }
 
@@ -386,6 +390,7 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 50,
             },
+            subscription: false,
         };
         let ats = crate::ats::AtsReport {
             keyword_hits: Vec::new(),

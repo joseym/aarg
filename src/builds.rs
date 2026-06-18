@@ -48,6 +48,11 @@ pub struct BuildMeta {
     pub model: String,
     pub template: String,
     pub tailor_usage: TokenUsage,
+    /// Whether the run was on a Claude plan (cost covered by the flat fee)
+    /// rather than a billed API key. `#[serde(default)]` so builds written
+    /// before this field load as `false` and still show a dollar estimate.
+    #[serde(default)]
+    pub subscription: bool,
 }
 
 /// Where builds live: `builds/` under the active workspace's `.aarg/`, else
@@ -133,6 +138,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 20,
             },
+            subscription: false,
         };
 
         write_json(&build.dir, "meta.json", &meta).unwrap();
@@ -140,5 +146,13 @@ mod tests {
         let text = std::fs::read_to_string(build.dir.join("meta.json")).unwrap();
         let back: BuildMeta = serde_json::from_str(&text).unwrap();
         assert_eq!(back, meta);
+    }
+
+    #[test]
+    fn meta_without_subscription_defaults_to_false() {
+        // A meta.json written before the field existed must still load.
+        let json = r#"{"created_at":"2026-06-17T00:00:00Z","model":"m","template":"ats/classic","tailor_usage":{"input_tokens":1,"output_tokens":2}}"#;
+        let meta: BuildMeta = serde_json::from_str(json).unwrap();
+        assert!(!meta.subscription);
     }
 }

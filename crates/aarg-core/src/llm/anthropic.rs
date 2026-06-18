@@ -105,6 +105,14 @@ impl AnthropicClient {
         self
     }
 
+    /// Whether this client authenticates with a Claude plan (OAuth) rather than
+    /// a pay-per-token API key. On a plan the marginal cost of a request is
+    /// zero (it's covered by the flat fee), so callers use this to suppress
+    /// dollar estimates that would otherwise mislead.
+    pub fn is_subscription(&self) -> bool {
+        matches!(self.auth, Auth::Oauth(_))
+    }
+
     async fn post_messages(
         &self,
         request: &CompletionRequest,
@@ -525,6 +533,12 @@ mod tests {
     fn api_key_auth_sends_the_x_api_key_header() {
         let headers = auth_headers(&Auth::ApiKey("sk-test".to_string()));
         assert_eq!(headers, vec![("x-api-key", "sk-test".to_string())]);
+    }
+
+    #[test]
+    fn is_subscription_is_true_only_for_a_plan_token() {
+        assert!(AnthropicClient::with_auth(Auth::Oauth("oat".into())).is_subscription());
+        assert!(!AnthropicClient::with_auth(Auth::ApiKey("sk".into())).is_subscription());
     }
 
     #[test]
