@@ -152,13 +152,15 @@ fn print_diff(d: &BuildDiff) {
         }
         for change in &d.bullets_changed {
             eprintln!("    {} {}", style::yellow("~"), change.id);
+            // Red for the wording that left, green for what replaced it — the
+            // unified-diff convention, so the actual change reads at a glance.
             eprintln!(
                 "        {}",
-                style::dim(format!("- {}", truncate(&change.from)))
+                style::red(format!("- {}", truncate(&change.from)))
             );
             eprintln!(
                 "        {}",
-                style::dim(format!("+ {}", truncate(&change.to)))
+                style::green(format!("+ {}", truncate(&change.to)))
             );
         }
     }

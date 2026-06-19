@@ -26,7 +26,9 @@ fn print_trace(trace: &Trace) -> Result<(), CliError> {
     // The framing — headers, the metadata block, the section dividers — is
     // human chrome and goes to stderr. The trace's actual content (the input
     // JSON, the system prompt, every turn, the raw reply) is what a reader
-    // pipes or greps, so it stays on stdout, unstyled and verbatim.
+    // pipes or greps, so it stays on stdout. On a terminal the JSON parts are
+    // syntax-highlighted for reading; piped or redirected, the color drops out
+    // and the content is byte-for-byte verbatim, so `| jq` and `> file` work.
     eprintln!("{}", style::kv("trace", trace.trace_id.0.clone(), 9));
     eprintln!(
         "{}",
@@ -74,10 +76,9 @@ fn print_trace(trace: &Trace) -> Result<(), CliError> {
     }
 
     eprintln!("{}", style::section("input"));
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&trace.input).map_err(CliError::OutputJson)?
-    );
+    // The agent input is always JSON; highlight it (terminal-gated inside
+    // `style::json`, so a piped trace stays plain, valid JSON).
+    println!("{}", style::json(&trace.input));
     eprintln!("{}", style::section("system"));
     println!("{}", trace.system);
     for message in &trace.messages {
@@ -86,11 +87,69 @@ fn print_trace(trace: &Trace) -> Result<(), CliError> {
             Role::Assistant => "assistant",
         };
         eprintln!("{}", style::section(label));
-        println!("{}", message.content);
+        println!("{}", render_content(&message.content));
     }
     if let Some(reply) = &trace.reply {
         eprintln!("{}", style::section("reply"));
-        println!("{reply}");
+        println!("{}", render_content(reply));
     }
     Ok(())
+}
+
+/// Render a turn's text or the final reply for display. On a terminal, if the
+/// content is JSON — bare, or wrapped in a ```json fence the way agents reply —
+/// it's pretty-printed and highlighted. Piped, or when it isn't JSON (a prose
+/// prompt), it's the raw string verbatim, so a redirect keeps the exact bytes
+/// the model sent.
+fn render_content(content: &str) -> String {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal()
+        && let Some(value) = as_json(content)
+    {
+        return style::json(&value);
+    }
+    content.to_string()
+}
+
+/// Parse `content` as JSON, trying it raw first and then with a surrounding
+/// Markdown code fence stripped.
+fn as_json(content: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(content.trim())
+        .ok()
+        .or_else(|| serde_json::from_str(strip_fence(content)).ok())
+}
+
+/// The inner text of one Markdown code fence (``` or ```json … ```), or the
+/// trimmed input unchanged when it isn't fenced.
+fn strip_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    // Drop the rest of the opening line (an optional language tag like `json`).
+    let Some((_lang, body)) = after_open.split_once('\n') else {
+        return trimmed;
+    };
+    body.trim_end().strip_suffix("```").unwrap_or(body).trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn as_json_parses_bare_and_fenced_objects() {
+        assert!(as_json(r#"{"a": 1}"#).is_some());
+        assert!(as_json("```json\n{\"a\": 1}\n```").is_some());
+        assert!(as_json("```\n[1, 2, 3]\n```").is_some());
+        assert!(as_json("just prose, not json").is_none());
+    }
+
+    #[test]
+    fn render_content_is_verbatim_off_a_terminal() {
+        // Tests aren't a terminal, so content passes through unchanged even
+        // when it is JSON — the piped/redirected contract.
+        assert_eq!(render_content(r#"{"a":1}"#), r#"{"a":1}"#);
+        assert_eq!(render_content("plain prose"), "plain prose");
+    }
 }

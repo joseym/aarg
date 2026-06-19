@@ -72,6 +72,108 @@ pub fn blue(s: impl std::fmt::Display) -> String {
         .to_string()
 }
 
+// ---- JSON content highlighting (stdout) ----------------------------------
+//
+// Unlike everything above, this colors content written to STDOUT (the agent
+// I/O `trace show` prints), not the stderr chrome. That content is a
+// documented contract: piping or redirecting must yield byte-clean, valid
+// JSON (`aarg trace show | jq`, `> file`). So the color is gated on
+// `Stream::Stdout` — emitted only when stdout is a real terminal, absent the
+// moment it's piped — and string escaping is delegated to serde, so the
+// result is valid JSON whether colored or not.
+
+/// Pretty-print a JSON value with terminal-gated syntax highlighting: cyan
+/// keys, green strings, yellow numbers, magenta booleans, dim null and
+/// punctuation. Two-space indented. When stdout isn't a terminal the colors
+/// drop out and the result is plain, valid, pretty JSON.
+pub fn json(value: &serde_json::Value) -> String {
+    let mut out = String::new();
+    write_json(&mut out, value, 0);
+    out
+}
+
+fn write_json(out: &mut String, value: &serde_json::Value, depth: usize) {
+    use serde_json::Value;
+    match value {
+        Value::Null => out.push_str(&j_null("null")),
+        Value::Bool(b) => out.push_str(&j_bool(&b.to_string())),
+        Value::Number(n) => out.push_str(&j_number(&n.to_string())),
+        Value::String(s) => out.push_str(&j_string(&quote(s))),
+        Value::Array(items) if items.is_empty() => out.push_str(&j_punct("[]")),
+        Value::Array(items) => {
+            out.push_str(&j_punct("["));
+            let last = items.len() - 1;
+            for (i, item) in items.iter().enumerate() {
+                out.push('\n');
+                indent(out, depth + 1);
+                write_json(out, item, depth + 1);
+                if i != last {
+                    out.push_str(&j_punct(","));
+                }
+            }
+            out.push('\n');
+            indent(out, depth);
+            out.push_str(&j_punct("]"));
+        }
+        Value::Object(map) if map.is_empty() => out.push_str(&j_punct("{}")),
+        Value::Object(map) => {
+            out.push_str(&j_punct("{"));
+            let last = map.len() - 1;
+            for (i, (key, val)) in map.iter().enumerate() {
+                out.push('\n');
+                indent(out, depth + 1);
+                out.push_str(&j_key(&quote(key)));
+                out.push_str(&j_punct(": "));
+                write_json(out, val, depth + 1);
+                if i != last {
+                    out.push_str(&j_punct(","));
+                }
+            }
+            out.push('\n');
+            indent(out, depth);
+            out.push_str(&j_punct("}"));
+        }
+    }
+}
+
+/// JSON-quote and escape a string the way serde would, so colored output is
+/// still valid JSON. Falls back to debug quoting on the (practically
+/// impossible) serialization failure rather than panicking.
+fn quote(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}"))
+}
+
+fn indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
+}
+
+fn j_key(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.cyan())
+        .to_string()
+}
+fn j_string(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.green())
+        .to_string()
+}
+fn j_number(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.yellow())
+        .to_string()
+}
+fn j_bool(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.magenta())
+        .to_string()
+}
+fn j_null(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.bright_black())
+        .to_string()
+}
+fn j_punct(s: &str) -> String {
+    s.if_supports_color(Stream::Stdout, |t| t.bright_black())
+        .to_string()
+}
+
 // ---- semantic vocabulary -------------------------------------------------
 //
 // One documented "meaning → glyph + color" set so every command speaks the
@@ -394,6 +496,28 @@ mod tests {
         assert_eq!(fmt_tokens(840), "840");
         assert_eq!(fmt_tokens(1200), "1.2k");
         assert_eq!(fmt_tokens(15000), "15.0k");
+    }
+
+    #[test]
+    fn json_highlight_stays_valid_json_matching_the_input() {
+        // Tests run with stdout not a terminal, so `json` emits plain JSON.
+        // The contract that matters: whatever it emits round-trips to the same
+        // value (so a piped `trace show` stays machine-readable).
+        let value = serde_json::json!({
+            "name": "Ada \"Lovelace\"",
+            "skills": ["Rust", "Go"],
+            "years": 8,
+            "remote": true,
+            "manager": null,
+            "meta": {},
+            "tags": []
+        });
+        let rendered = json(&value);
+        let back: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(back, value);
+        // Pretty-printed (multi-line) and free of ANSI codes off a terminal.
+        assert!(rendered.contains('\n'));
+        assert!(!rendered.contains('\u{1b}'));
     }
 
     #[test]
