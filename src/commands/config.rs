@@ -222,5 +222,18 @@ pub async fn run() -> Result<(), CliError> {
             11
         )
     );
+
+    eprintln!("{}", style::section("Render"));
+    eprintln!(
+        "{}",
+        style::kv(
+            "typst",
+            match &config.render.typst {
+                Some(path) => path.clone(),
+                None => "auto (PATH, then next to aarg)".to_string(),
+            },
+            7
+        )
+    );
     Ok(())
 }

@@ -157,7 +157,9 @@ pub const BUILTINS: &[Builtin] = &[
 /// Everything that can go wrong while rendering.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
-    #[error("the `typst` binary was not found on PATH — aarg shells out to it to build PDFs")]
+    #[error(
+        "the `typst` binary was not found (looked on PATH and next to aarg) — aarg shells out to it to build PDFs"
+    )]
     TypstMissing,
 
     #[error("typst could not compile the resume:\n{stderr}")]
@@ -184,6 +186,109 @@ pub enum RenderError {
     Payload(#[from] serde_json::Error),
 }
 
+/// Resolve the `typst` program to invoke. Prefer the one on `PATH`, so the
+/// behavior matches the CLI exactly. When `PATH` doesn't have it — as in a
+/// stripped-down launch environment like an SSH-spawned MCP server, which
+/// never sourced the shell rc files that put `~/.cargo/bin` on `PATH` — fall
+/// back to well-known locations, **the directory holding aarg's own executable
+/// first** (a `cargo install`ed typst sits next to a `cargo install`ed aarg).
+/// So "typst works for the CLI" implies "typst works for the server" with no
+/// PATH configuration.
+fn typst_program() -> String {
+    // An explicit override wins and is trusted as-is (a wrong path then fails
+    // with the normal typst error). Otherwise resolve automatically.
+    if let Some(configured) = configured_typst() {
+        return configured;
+    }
+    resolve_typst(which("typst"), &fallback_dirs())
+}
+
+/// An explicitly configured typst path: the `AARG_TYPST` environment variable
+/// (a per-run override, handy in a stripped-down launch like an SSH-spawned MCP
+/// server), else the `[render] typst` config key. `None` when neither is set. A
+/// leading `~/` is expanded to the home directory.
+fn configured_typst() -> Option<String> {
+    let from_env = std::env::var("AARG_TYPST")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let configured = from_env.or_else(|| {
+        crate::config::Config::load()
+            .ok()
+            .and_then(|config| config.render.typst)
+            .filter(|value| !value.trim().is_empty())
+    });
+    configured.map(expand_tilde)
+}
+
+/// Expand a leading `~/` to `$HOME`, so a config or env value can use it.
+fn expand_tilde(path: String) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => format!("{}/{rest}", home.to_string_lossy()),
+            None => path,
+        },
+        None => path,
+    }
+}
+
+/// The testable core of [`typst_program`]: given whether `typst` is already on
+/// `PATH` and the fallback directories to search, choose what to invoke.
+fn resolve_typst(on_path: bool, fallback_dirs: &[PathBuf]) -> String {
+    if on_path {
+        return "typst".to_string();
+    }
+    for dir in fallback_dirs {
+        let candidate = dir.join("typst");
+        if is_executable(&candidate) {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+    // Found nowhere: the bare name yields the normal "not found" install error.
+    "typst".to_string()
+}
+
+/// Where to look for `typst` when it isn't on `PATH`, in priority order: next
+/// to aarg's own binary (the cargo-install case), then the usual user/local
+/// bin dirs.
+fn fallback_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        dirs.push(parent.to_path_buf());
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        dirs.push(home.join(".cargo").join("bin"));
+        dirs.push(home.join(".local").join("bin"));
+    }
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs
+}
+
+/// Whether `name` resolves to an executable on `PATH` — a `which`-style search
+/// that spawns nothing.
+fn which(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(name)))
+}
+
+/// Whether `path` is a file we can execute.
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
 /// Render `payload` with `template` into the build directory, returning the
 /// PDF path. The output filename and the payload JSON name come from the
 /// payload's variant (`resume.ats.pdf` / `resume.human.pdf`).
@@ -192,7 +297,7 @@ pub fn render(
     payload: &VariantPayload,
     template: &Template,
 ) -> Result<PathBuf, RenderError> {
-    render_with("typst", build_dir, payload, template)
+    render_with(&typst_program(), build_dir, payload, template)
 }
 
 /// The testable core: the typst program name is a parameter so tests can
@@ -221,7 +326,7 @@ pub fn render_cover(
     letter: &CoverLetter,
     template: &Template,
 ) -> Result<PathBuf, RenderError> {
-    render_cover_with("typst", build_dir, letter, template)
+    render_cover_with(&typst_program(), build_dir, letter, template)
 }
 
 /// The testable core of [`render_cover`]; the typst program name is a
@@ -248,7 +353,7 @@ fn render_cover_with(
 /// binary at render time. Returns the same [`RenderError::TypstMissing`] that
 /// rendering would, so the diagnostic is identical wherever it surfaces.
 pub fn ensure_available() -> Result<(), RenderError> {
-    ensure_available_with("typst")
+    ensure_available_with(&typst_program())
 }
 
 /// The testable core of [`ensure_available`]; the program name is a parameter
@@ -359,6 +464,7 @@ mod tests {
                 skills: vec!["Rust".into()],
             },
             projects: Vec::new(),
+            achievements: Vec::new(),
             certifications: Vec::new(),
         }
     }
@@ -495,6 +601,45 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let stub = stub_typst(dir.path(), "exit 0");
         assert!(ensure_available_with(&stub).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_typst_prefers_path_then_a_known_dir_else_the_bare_name() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // On PATH: the bare name, matching the CLI exactly.
+        assert_eq!(resolve_typst(true, &[]), "typst");
+
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = vec![dir.path().to_path_buf()];
+        // Not on PATH and not in the dir: the bare name (which yields the
+        // normal install error downstream), never a false positive.
+        assert_eq!(resolve_typst(false, &dirs), "typst");
+
+        // Drop an executable `typst` into the dir: it's found by absolute path,
+        // so a stripped-PATH server (e.g. over SSH) still renders.
+        let typst = dir.path().join("typst");
+        std::fs::write(&typst, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&typst, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(resolve_typst(false, &dirs), typst.to_string_lossy());
+    }
+
+    #[test]
+    fn expand_tilde_only_touches_a_leading_home_shortcut() {
+        // Non-tilde paths pass through unchanged.
+        assert_eq!(
+            expand_tilde("/usr/local/bin/typst".into()),
+            "/usr/local/bin/typst"
+        );
+        assert_eq!(expand_tilde("typst".into()), "typst");
+        // A leading `~/` expands against the real $HOME for this run.
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(
+                expand_tilde("~/.cargo/bin/typst".into()),
+                format!("{}/.cargo/bin/typst", home.to_string_lossy())
+            );
+        }
     }
 
     #[test]

@@ -285,6 +285,18 @@ pub struct ExportConfig {
     pub dir: Option<PathBuf>,
 }
 
+/// Where to find the `typst` binary `aarg` shells out to. `None` (the default)
+/// resolves typst automatically: on `PATH`, then next to aarg's own binary and
+/// the usual `~/.cargo/bin` / `~/.local/bin` / `/usr/local/bin`. Set `typst` to
+/// pin an explicit path — useful when aarg runs somewhere typst isn't on `PATH`
+/// (e.g. an MCP server launched over SSH). The `AARG_TYPST` environment
+/// variable overrides this for a single run.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RenderConfig {
+    pub typst: Option<String>,
+}
+
 /// The contents of `config.toml`. Any field missing from the file falls
 /// back to its default, so an empty file is a valid config.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -297,6 +309,8 @@ pub struct Config {
     pub templates: TemplatesConfig,
     /// Where `aarg export` writes friendly-named PDFs by default.
     pub export: ExportConfig,
+    /// Where to find the `typst` binary (auto-resolved when unset).
+    pub render: RenderConfig,
     /// Per-model price overrides (dollars per million tokens), keyed by
     /// model id. Absent models fall back to `pricing`'s built-in family
     /// rates; an empty table (the default) uses the built-ins for all.
