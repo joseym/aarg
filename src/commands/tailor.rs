@@ -21,7 +21,7 @@ use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::{CliError, configured_client, load_requirements};
 use crate::config::Config;
 use crate::dataset::store;
-use crate::dataset::types::ResumeDataset;
+use crate::dataset::types::{ResumeDataset, SkillCategory};
 use crate::enrich;
 use crate::gap::{GapReport, analyze_gap};
 use crate::jd::JobRequirements;
@@ -36,19 +36,25 @@ use crate::review::{
 use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
 use crate::style::{self, Spinner, StreamReporter};
 use crate::summary;
-use crate::tailor::{JdId, RevisionContext, TailoredResume, tailor_resume};
+use crate::tailor::{JdId, RevisionContext, TailorOutcome, TailoredResume, tailor_resume};
 use crate::templates;
-use crate::terminal::auto_user;
-use crate::user::{Answer, Question};
+use crate::user::{Answer, Question, UserHandle};
 use crate::variant::{self, TemplateId, Variant, VariantAdapterAgent, VariantInput};
-use crate::verify::{unbacked_keywords, verify_keywords};
+use crate::verify::{add_one_skill, unbacked_keywords, verify_keywords};
 use crate::voice;
 
+// Each copilot guards on two distinct conditions: is there work to do (an
+// objection, a thin role, an unbacked keyword) and is a person here to answer.
+// They're kept as nested `if`s for readability; they only *read* as collapsible
+// because the refactor to an injected `user` removed the binding that used to
+// sit between the two checks.
+#[allow(clippy::collapsible_if)]
 pub async fn run(
     jd: Option<PathBuf>,
     variants: Vec<Variant>,
     human_template: Option<PathBuf>,
     cover: bool,
+    user: &dyn UserHandle,
 ) -> Result<(), CliError> {
     // A custom template applies to the human variant; reject it up front if
     // that variant won't be rendered, rather than silently ignoring it.
@@ -122,7 +128,6 @@ pub async fn run(
     // each run; a piped or CI run skips the whole detour (no one to ask).
     let candidates = unbacked_keywords(&dataset, &requirements, &gap);
     if !candidates.is_empty() {
-        let user = auto_user();
         if user.is_interactive() {
             let wants = user
                 .confirm(
@@ -135,8 +140,7 @@ pub async fn run(
                 .await
                 .unwrap_or(false);
             if wants {
-                let outcome =
-                    verify_keywords(&mut dataset, &candidates, user.as_ref(), Some(&ctx)).await?;
+                let outcome = verify_keywords(&mut dataset, &candidates, user, Some(&ctx)).await?;
                 if outcome.changed() {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
@@ -162,7 +166,6 @@ pub async fn run(
     // skips this silently.
     let thin = enrich::thin_roles(&dataset);
     if !thin.is_empty() {
-        let user = auto_user();
         if user.is_interactive() {
             let names: Vec<String> = thin
                 .iter()
@@ -181,8 +184,7 @@ pub async fn run(
                 .await
                 .unwrap_or(false);
             if wants {
-                let outcome =
-                    enrich::enrich_roles(&mut dataset, &thin, user.as_ref(), &ctx).await?;
+                let outcome = enrich::enrich_roles(&mut dataset, &thin, user, &ctx).await?;
                 if outcome.changed() {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
@@ -204,9 +206,11 @@ pub async fn run(
     builds::write_json(&build.dir, "gap_report.json", &gap)?;
     eprintln!("{}", style::dim(format!("build {}", build.id.0)));
 
+    let mut total = TokenUsage::default();
+
     // The streamed smart-tier calls below (tailoring, review, voice) show a
     // live token/cost line via the reporter instead of a spinner.
-    let first = tailor_resume(
+    let mut first = tailor_resume(
         &ctx,
         build.id.clone(),
         jd_id.clone(),
@@ -216,13 +220,59 @@ pub async fn run(
         None,
     )
     .await?;
-    eprintln!("{}", style::done("first draft tailored"));
-    for warning in &first.warnings {
-        eprintln!("{} {warning}", style::yellow("warning:"));
-    }
-
-    let mut total = TokenUsage::default();
     add_usage(&mut total, first.usage);
+    eprintln!("{}", style::done("first draft tailored"));
+    print_tailor_warnings(&first);
+
+    // Inline "add what's missing" pivot. The model wanted skills the dataset
+    // can't back (the "not a recorded skill" drops). Rather than just warn,
+    // offer to record the ones the user genuinely has — the same evidence
+    // interview as `skills add`, with the typed line polished into resume
+    // wording — then re-tailor so they land in this build instead of the
+    // next. Interactive only; a piped/CI run keeps the warnings and moves on.
+    {
+        if user.is_interactive() && !first.dropped_unrecorded.is_empty() {
+            let added =
+                offer_inline_skill_add(&mut dataset, &first.dropped_unrecorded, user, &ctx).await?;
+            if added > 0 {
+                dataset.metadata.updated_at = Utc::now();
+                store::save(&dataset)?;
+                let retailor = user
+                    .confirm(
+                        &format!("re-tailor to include the {added} new skill(s)?"),
+                        true,
+                    )
+                    .await
+                    .unwrap_or(false);
+                if retailor {
+                    let sp = Spinner::start("re-analyzing the gap");
+                    gap = analyze_gap(&ctx, &requirements, &dataset).await?;
+                    sp.finish(style::done("gap re-analyzed"));
+                    builds::write_json(&build.dir, "gap_report.json", &gap)?;
+                    first = tailor_resume(
+                        &ctx,
+                        build.id.clone(),
+                        jd_id.clone(),
+                        &requirements,
+                        &dataset,
+                        &gap,
+                        None,
+                    )
+                    .await?;
+                    add_usage(&mut total, first.usage);
+                    eprintln!("{}", style::done("re-tailored with the new skill(s)"));
+                    print_tailor_warnings(&first);
+                } else {
+                    eprintln!(
+                        "{}",
+                        style::dim(
+                            "recorded - this build keeps the current draft; they'll apply next run"
+                        )
+                    );
+                }
+            }
+        }
+    }
 
     let mut best = evaluate(
         &ctx,
@@ -256,7 +306,6 @@ pub async fn run(
         })
         .collect();
     if !metric_targets.is_empty() {
-        let user = auto_user();
         if user.is_interactive() {
             let wants = user
                 .confirm(
@@ -270,8 +319,7 @@ pub async fn run(
                 .unwrap_or(false);
             if wants {
                 let added =
-                    metric::capture_metrics(&mut dataset, &metric_targets, user.as_ref(), &ctx)
-                        .await?;
+                    metric::capture_metrics(&mut dataset, &metric_targets, user, &ctx).await?;
                 if added > 0 {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
@@ -331,7 +379,6 @@ pub async fn run(
         })
         .collect();
     if !strengthen_targets.is_empty() {
-        let user = auto_user();
         if user.is_interactive() {
             let wants = user
                 .confirm(
@@ -347,7 +394,7 @@ pub async fn run(
                 let changed = strengthen::strengthen_bullets(
                     &mut dataset,
                     &strengthen_targets,
-                    user.as_ref(),
+                    user,
                     &ctx,
                     interview_limits,
                 )
@@ -398,7 +445,6 @@ pub async fn run(
     // untouched), or leave it for the revision loop. Interactive only; a
     // piped/CI run skips it.
     if !best.report.objections.is_empty() {
-        let user = auto_user();
         if user.is_interactive() {
             let wants = user
                 .confirm(
@@ -450,7 +496,7 @@ pub async fn run(
                                             kind: objection.kind,
                                             concern: objection.message.clone(),
                                         }],
-                                        user.as_ref(),
+                                        user,
                                         &ctx,
                                         interview_limits,
                                     )
@@ -460,7 +506,7 @@ pub async fn run(
                                     summary::refine_summary(
                                         &mut dataset,
                                         &objection.message,
-                                        user.as_ref(),
+                                        user,
                                         &ctx,
                                         interview_limits.revises,
                                     )
@@ -1021,6 +1067,62 @@ fn check_readability(
 fn add_usage(total: &mut TokenUsage, other: TokenUsage) {
     total.input_tokens += other.input_tokens;
     total.output_tokens += other.output_tokens;
+}
+
+/// Print a draft's guard warnings, one yellow line each.
+fn print_tailor_warnings(outcome: &TailorOutcome) {
+    for warning in &outcome.warnings {
+        eprintln!("{} {warning}", style::yellow("warning:"));
+    }
+}
+
+/// The inline "add what's missing" pivot. The first draft named skills the
+/// dataset can't back; offer the user a checklist of exactly those and run
+/// the same evidence interview as `skills add` on each one they tick — so a
+/// real-but-unrecorded skill becomes usable rather than just a warning.
+/// Returns how many were added (the caller saves and offers a re-tailor).
+/// The category is unknown for a model-proposed skill, so a new one is
+/// recorded as `Hard`, which the user can refine later via `dataset edit`.
+async fn offer_inline_skill_add(
+    dataset: &mut ResumeDataset,
+    dropped: &[String],
+    user: &dyn UserHandle,
+    ctx: &AgentContext<'_>,
+) -> Result<usize, CliError> {
+    let wants = user
+        .confirm(
+            &format!(
+                "the model wanted {} skill(s) you haven't recorded - add any you have?",
+                dropped.len()
+            ),
+            true,
+        )
+        .await
+        .unwrap_or(false);
+    if !wants {
+        return Ok(0);
+    }
+
+    let picks = match user
+        .ask(Question::MultiSelect {
+            prompt: "check the ones you genuinely have (space toggles, enter confirms)".into(),
+            options: dropped.to_vec(),
+        })
+        .await?
+    {
+        Answer::Choices(indexes) => indexes,
+        _ => Vec::new(),
+    };
+
+    let mut added = 0;
+    for index in picks {
+        let Some(name) = dropped.get(index) else {
+            continue;
+        };
+        let outcome = add_one_skill(dataset, name, SkillCategory::Hard, user, Some(ctx)).await?;
+        added += outcome.verified;
+    }
+    Ok(added)
 }
 
 /// A one-line iteration summary: the label, the score color-graded by quality,

@@ -959,7 +959,10 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             variant,
             template,
             cover,
-        } => tailor::run(jd, variant.variants(), template, cover).await?,
+        } => {
+            let user = auto_user();
+            tailor::run(jd, variant.variants(), template, cover, user.as_ref()).await?
+        }
         Command::Cover { build } => cover::run(build).await?,
         Command::Export { build, to } => export::run(build, to).await?,
         Command::Open { build } => open::run(build).await?,
