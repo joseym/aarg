@@ -27,6 +27,7 @@ pub mod jd;
 pub mod jdchat;
 pub mod jdstore;
 pub mod keywords;
+pub mod mcp;
 pub mod metric;
 pub mod mirror;
 pub mod pricing;

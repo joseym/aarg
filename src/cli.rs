@@ -195,6 +195,8 @@ then restart your shell.")]
         #[command(subcommand)]
         command: TemplatesCommand,
     },
+    /// Run AARG as a Model Context Protocol server over stdio (for Claude Desktop, Claude Code, and other MCP clients)
+    Mcp,
 }
 
 // EXERCISE(EX-004)

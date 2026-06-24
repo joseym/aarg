@@ -20,6 +20,7 @@ pub mod ingest;
 pub mod init;
 pub mod jd;
 pub mod key;
+pub mod mcp;
 pub mod open;
 pub mod ping;
 pub mod render;
@@ -881,6 +882,9 @@ pub enum CliError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error(transparent)]
+    Mcp(#[from] crate::mcp::McpError),
 }
 
 /// Route a transport error to the right diagnostic: an HTTP 429 is a rate
@@ -1029,6 +1033,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         Command::Templates {
             command: TemplatesCommand::Use { name },
         } => templates::use_template(name).await?,
+        Command::Mcp => mcp::run().await?,
     }
     Ok(())
 }
