@@ -263,6 +263,14 @@ pub enum HistoryCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SkillsCommand {
+    /// Add a skill you have and back it with evidence (interview)
+    Add {
+        /// The skill name, e.g. "TypeScript"; omit to be prompted
+        name: Option<String>,
+        /// Category for a new skill: hard, soft, domain, tool, language, framework
+        #[arg(long)]
+        category: Option<String>,
+    },
     /// Interview: back unverified skills with evidence (or remove them)
     Verify,
     /// Collapse redundant skills: auto-remove near-duplicates, then pick off the rest
@@ -780,6 +788,89 @@ mod tests {
                 command: SkillsCommand::Dedup
             }
         ));
+    }
+
+    #[test]
+    fn skills_add_parses_name_and_optional_category() {
+        // Bare `skills add` is valid — the name is prompted for.
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "skills", "add"])
+                .unwrap()
+                .command
+                .unwrap(),
+            Command::Skills {
+                command: SkillsCommand::Add {
+                    name: None,
+                    category: None
+                }
+            }
+        ));
+        match Cli::try_parse_from([
+            "aarg",
+            "skills",
+            "add",
+            "TypeScript",
+            "--category",
+            "language",
+        ])
+        .unwrap()
+        .command
+        .unwrap()
+        {
+            Command::Skills {
+                command: SkillsCommand::Add { name, category },
+            } => {
+                assert_eq!(name.as_deref(), Some("TypeScript"));
+                assert_eq!(category.as_deref(), Some("language"));
+            }
+            other => panic!("expected skills add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn experience_add_parses_name_flags_and_repeated_skills() {
+        // Bare `experience add` is valid — the name is prompted for.
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "experience", "add"])
+                .unwrap()
+                .command
+                .unwrap(),
+            Command::Experience {
+                command: ExperienceCommand::Add { name: None, .. }
+            }
+        ));
+        match Cli::try_parse_from([
+            "aarg",
+            "experience",
+            "add",
+            "aarg",
+            "--summary",
+            "a resume tailor",
+            "--skill",
+            "Rust",
+            "--skill",
+            "Typst",
+        ])
+        .unwrap()
+        .command
+        .unwrap()
+        {
+            Command::Experience {
+                command:
+                    ExperienceCommand::Add {
+                        name,
+                        summary,
+                        url,
+                        skills,
+                    },
+            } => {
+                assert_eq!(name.as_deref(), Some("aarg"));
+                assert_eq!(summary.as_deref(), Some("a resume tailor"));
+                assert_eq!(url, None);
+                assert_eq!(skills, vec!["Rust".to_string(), "Typst".to_string()]);
+            }
+            other => panic!("expected experience add, got {other:?}"),
+        }
     }
 
     #[test]

@@ -42,6 +42,11 @@ use crate::user::{Answer, AskError, Question, UserHandle};
 /// is an LLM call.
 const MAX_GUIDE_EXCHANGES: usize = 4;
 
+/// Revise-loop cap when polishing a typed evidence sentence into resume
+/// wording. Like strengthen's, it exists only to guarantee the loop ends,
+/// so the PRD's 3 is plenty.
+const EVIDENCE_REVISES: usize = 3;
+
 /// What an interview session accomplished.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct VerifyOutcome {
@@ -310,7 +315,7 @@ async fn collect_evidence(
     };
     let sentence = match user
         .ask(Question::Text {
-            prompt: format!("One sentence on what you did with {name} (blank to skip)"),
+            prompt: format!("In a few words, what did you do with {name}? (blank to skip)"),
         })
         .await?
     {
@@ -319,6 +324,18 @@ async fn collect_evidence(
             (!text.is_empty()).then_some(text)
         }
         _ => None,
+    };
+    // Polish the user's plain words into resume wording when a guide is
+    // present: they type facts concisely, an agent phrases them well, and
+    // they accept, revise, or keep their own. The shared digit-guard rejects
+    // a rewrite that invents a number, and their own words are the floor —
+    // so this sharpens phrasing without ever inflating the claim. Keyless,
+    // the sentence is recorded verbatim (no offer, nothing invented).
+    let sentence = match (sentence, guide) {
+        (Some(words), Some(ctx)) => {
+            Some(crate::strengthen::polish(ctx, "", &words, user, EVIDENCE_REVISES).await?)
+        }
+        (other, _) => other,
     };
     Ok(Evidence::Provide {
         role_index,
@@ -648,6 +665,76 @@ async fn record_keyword(
     }
 }
 
+/// `aarg skills add <name>` and the tailor inline pivot: record one skill
+/// the user names and back it with evidence in a single interview. If the
+/// name already resolves to a recorded skill (by alias or canonical
+/// spelling), that one gains the new evidence rather than a duplicate being
+/// minted; otherwise a fresh skill is created under `category`. Like every
+/// evidence flow here, the user points it at a real role and writes the
+/// line — polished into resume wording when a guide is present, never
+/// inflated — so nothing is invented. Backing out at the role step records
+/// nothing.
+pub async fn add_one_skill(
+    dataset: &mut ResumeDataset,
+    name: &str,
+    category: SkillCategory,
+    user: &dyn UserHandle,
+    guide: Option<&AgentContext<'_>>,
+) -> Result<VerifyOutcome, AskError> {
+    let mut outcome = VerifyOutcome::default();
+    if dataset.roles.is_empty() {
+        user.notify("the dataset has no roles to attach evidence to; ingest a resume first");
+        return Ok(outcome);
+    }
+
+    // Reuse an existing skill if the name already resolves — add evidence to
+    // it, never a near-duplicate.
+    let existing = dataset
+        .skills
+        .aliases
+        .get(&name.to_lowercase())
+        .cloned()
+        .or_else(|| {
+            dataset
+                .skills
+                .skills
+                .iter()
+                .find(|s| s.canonical_name.eq_ignore_ascii_case(name))
+                .map(|s| s.id.clone())
+        });
+    if existing.is_some() {
+        user.notify(&format!(
+            "{name} is already recorded - adding evidence to it"
+        ));
+    }
+
+    let role_options = role_options(dataset);
+    match collect_evidence(name, &role_options, user, guide).await? {
+        Evidence::Provide {
+            role_index,
+            years,
+            sentence,
+        } => {
+            let skill_id = match existing {
+                Some(id) => id,
+                None => add_skill(dataset, name, category),
+            };
+            attach_evidence(
+                dataset,
+                &skill_id,
+                role_index,
+                years,
+                sentence,
+                &mut outcome,
+            );
+            user.notify(&format!("added evidence for {name}"));
+            outcome.verified += 1;
+        }
+        Evidence::Skip => {}
+    }
+    Ok(outcome)
+}
+
 /// Remember a keyword the user didn't claim, so the checklist shrinks
 /// instead of re-offering it every run.
 fn decline_keyword(
@@ -946,6 +1033,162 @@ mod tests {
         dataset
     }
 
+    /// A guide context whose only LLM call is the rewrite agent's, fed one
+    /// scripted reply. Mirrors the strengthen tests' setup.
+    fn rewrite_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
+        AgentContext {
+            llm: mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn add_one_skill_creates_a_new_skill_backed_by_a_role() {
+        // "Kubernetes" isn't in the dataset yet; adding it mints a skill.
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        let before = dataset.skills.skills.len();
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choice(0)); // role-1 (no guide: menu is [role, skip])
+        user.answer(Answer::Text("3".into())); // years
+        user.answer(Answer::Text("Ran the cluster".into())); // sentence
+
+        let outcome = add_one_skill(&mut dataset, "Kubernetes", SkillCategory::Tool, &user, None)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.verified, 1);
+        assert_eq!(dataset.skills.skills.len(), before + 1);
+        let added = dataset
+            .skills
+            .skills
+            .iter()
+            .find(|s| s.canonical_name == "Kubernetes")
+            .unwrap();
+        assert!(added.verified);
+        assert_eq!(
+            added.evidence,
+            vec![EvidenceRef::Role(RoleId("role-1".into()))]
+        );
+        // The alias map resolves the JD spelling to the new skill.
+        assert!(dataset.skills.aliases.contains_key("kubernetes"));
+        // Keyless: the sentence is recorded verbatim.
+        assert!(
+            dataset.roles[0]
+                .bullets
+                .iter()
+                .any(|b| b.text == "Ran the cluster")
+        );
+    }
+
+    #[tokio::test]
+    async fn add_one_skill_backs_an_existing_skill_without_duplicating() {
+        // "TypeScript" is already recorded (unbacked); adding it must reuse
+        // that skill, not create a second one.
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        let before = dataset.skills.skills.len();
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choice(0)); // role-1
+        user.answer(Answer::Text("".into())); // no years
+        user.answer(Answer::Text("Built the trading UI".into())); // sentence
+
+        let outcome = add_one_skill(
+            &mut dataset,
+            "typescript", // different case: resolves via the alias map
+            SkillCategory::Language,
+            &user,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.verified, 1);
+        assert_eq!(dataset.skills.skills.len(), before); // no duplicate
+        let skill = &dataset.skills.skills[0];
+        assert_eq!(
+            skill.evidence,
+            vec![EvidenceRef::Role(RoleId("role-1".into()))]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_typed_sentence_is_polished_when_a_guide_is_present() {
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        let mock = MockLlmClient::default();
+        // The rewrite agent's polished line (no invented numbers).
+        mock.enqueue(r#"{"bullet": "Built the trading dashboard in TypeScript"}"#);
+        let ctx = rewrite_ctx(&mock);
+        let user = ScriptedUser::new();
+        // With a guide, the role menu is [role-1, "explain it", "skip"].
+        user.answer(Answer::Choice(0)); // role-1
+        user.answer(Answer::Text("".into())); // years
+        user.answer(Answer::Text(
+            "built the trading dashboard, lots of ts".into(),
+        ));
+        user.answer(Answer::Choice(0)); // polish: "Use this wording"
+
+        let outcome = add_one_skill(
+            &mut dataset,
+            "Kubernetes",
+            SkillCategory::Tool,
+            &user,
+            Some(&ctx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.verified, 1);
+        assert_eq!(mock.requests().len(), 1); // only the rewrite call
+        // The recorded bullet is the polished wording, not the raw answer.
+        assert!(
+            dataset.roles[0]
+                .bullets
+                .iter()
+                .any(|b| b.text == "Built the trading dashboard in TypeScript")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_polished_sentence_that_invents_a_number_falls_back_to_the_users_words() {
+        let mut dataset = dataset_with_unbacked("TypeScript");
+        let mock = MockLlmClient::default();
+        // The rewrite slips in "40%", a number the answer never stated — the
+        // digit-guard rejects it and the user's own words stand.
+        mock.enqueue(r#"{"bullet": "Cut load times 40% with a TypeScript rewrite"}"#);
+        let ctx = rewrite_ctx(&mock);
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choice(0)); // role-1
+        user.answer(Answer::Text("".into())); // years
+        user.answer(Answer::Text("rewrote the dashboard in typescript".into()));
+        // No accept/revise prompt is shown: the guarded rewrite was discarded.
+
+        let outcome = add_one_skill(
+            &mut dataset,
+            "Kubernetes",
+            SkillCategory::Tool,
+            &user,
+            Some(&ctx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.verified, 1);
+        assert!(
+            dataset.roles[0]
+                .bullets
+                .iter()
+                .any(|b| b.text == "rewrote the dashboard in typescript")
+        );
+        // No invented figure reached the dataset.
+        assert!(
+            !dataset.roles[0]
+                .bullets
+                .iter()
+                .any(|b| b.text.contains("40%"))
+        );
+    }
+
     #[tokio::test]
     async fn a_yes_adds_evidence_years_and_a_user_written_bullet() {
         let mut dataset = dataset_with_unbacked("TypeScript");
@@ -1214,10 +1457,12 @@ mod tests {
             },
         ];
         let mock = MockLlmClient::default();
-        // The guide's opener description for the keyword being discussed.
+        // The guide's opener description for the keyword being discussed,
+        // then the rewrite that polishes the evidence sentence.
         mock.enqueue(
             r#"{"reply": "SOC 2 Type 2 is an audited security/compliance attestation; if you owned or drove one, that counts."}"#,
         );
+        mock.enqueue(r#"{"bullet": "Drove the SOC 2 Type 2 audit to completion"}"#);
         let ctx = AgentContext {
             llm: &mock,
             model: &"m",
@@ -1233,6 +1478,7 @@ mod tests {
         user.answer(Answer::Choice(0)); // role-1
         user.answer(Answer::Text("2".into())); // years
         user.answer(Answer::Text("Drove the SOC 2 Type 2 audit".into())); // sentence
+        user.answer(Answer::Choice(0)); // polish: use the suggested wording
         user.answer(Answer::Choice(1)); // "Done" — set the rest aside
 
         let outcome = verify_keywords(&mut dataset, &candidates, &user, Some(&ctx))
@@ -1258,8 +1504,9 @@ mod tests {
             dataset.metadata.declined_skills,
             vec!["data engineering".to_string()]
         );
-        // The guide was consulted once (the opener) and its reply shown.
-        assert_eq!(mock.requests().len(), 1);
+        // The guide ran twice: the opener, then the rewrite that polished
+        // the evidence sentence into resume wording.
+        assert_eq!(mock.requests().len(), 2);
         assert!(user.notices().iter().any(|n| n.contains("attestation")));
     }
 
@@ -1358,6 +1605,7 @@ mod tests {
         mock.enqueue(
             r#"{"reply": "Backend engineering is server-side systems work — APIs, databases, services."}"#,
         );
+        mock.enqueue(r#"{"bullet": "Ran the backend engineering team"}"#);
         let ctx = AgentContext {
             llm: &mock,
             model: &"m",
@@ -1373,14 +1621,16 @@ mod tests {
         user.answer(Answer::Choice(0));
         user.answer(Answer::Text(String::new()));
         user.answer(Answer::Text("Ran the backend team".into()));
+        user.answer(Answer::Choice(0)); // polish: use the suggested wording
 
         let outcome = verify_keywords(&mut dataset, &candidates, &user, Some(&ctx))
             .await
             .unwrap();
 
         assert_eq!(outcome.verified, 1);
-        // The guide answered mid-populate, before any role was chosen.
-        assert_eq!(mock.requests().len(), 1);
+        // Two guide calls: the explain opener, then the rewrite that polished
+        // the evidence sentence.
+        assert_eq!(mock.requests().len(), 2);
         assert!(user.notices().iter().any(|n| n.contains("server-side")));
         let added = dataset
             .skills

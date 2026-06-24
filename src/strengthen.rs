@@ -229,10 +229,17 @@ impl Agent for StrengthenRewriteAgent {
         REPLY_BUDGET
     }
     fn user_message(&self, input: &StrengthenRewriteInput) -> String {
-        let mut text = format!(
-            "Original bullet:\n{}\n\nWhat the candidate said actually happened:\n{}\n\n",
-            input.original, input.answer
-        );
+        // With no original bullet (a fresh skill's evidence sentence rather
+        // than a flagged line being strengthened), there's nothing to
+        // preserve, so frame it as just the candidate's own words.
+        let mut text = if input.original.trim().is_empty() {
+            format!("What the candidate said they did:\n{}\n\n", input.answer)
+        } else {
+            format!(
+                "Original bullet:\n{}\n\nWhat the candidate said actually happened:\n{}\n\n",
+                input.original, input.answer
+            )
+        };
         if !input.notes.is_empty() {
             text.push_str("The candidate asked you to revise your previous attempt:\n");
             for note in &input.notes {
@@ -543,7 +550,13 @@ pub async fn strengthen_bullets(
 /// text to record: the agent's rewrite if the user takes it, or their own
 /// words if they keep them or the rewrite can't be produced safely. The
 /// user's words are the safe floor — never lost.
-async fn polish(
+///
+/// Shared with skill verification (`crate::verify`), which polishes the
+/// one-sentence evidence a user types when backing a skill: the same
+/// "phrase my plain words well, invent nothing" job, just with no
+/// `original` line to preserve (pass `""`). The digit-guard and the
+/// user-as-final-gate loop bind identically in both callers.
+pub(crate) async fn polish(
     ctx: &AgentContext<'_>,
     original: &str,
     answer: &str,

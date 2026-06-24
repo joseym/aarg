@@ -975,6 +975,9 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         } => history::remove(ids).await?,
         Command::Diff { from, to } => history::diff(from, to)?,
         Command::Skills {
+            command: SkillsCommand::Add { name, category },
+        } => skills::add(name, category).await?,
+        Command::Skills {
             command: SkillsCommand::Verify,
         } => skills::verify().await?,
         Command::Skills {
