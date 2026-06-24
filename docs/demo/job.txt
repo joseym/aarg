@@ -1,0 +1,30 @@
+Northwind Labs - Senior Backend Engineer (Platform)
+
+About the role
+
+Northwind Labs builds the data platform that powers logistics for mid-market
+retailers. We are looking for a senior backend engineer to help us scale the
+platform team's core services and raise the bar on reliability.
+
+What you'll do
+
+- Design, build, and operate distributed services in Go that handle high
+  request volume with tight latency targets.
+- Own services end to end, including on-call, and drive down operational toil.
+- Improve observability so the team can diagnose production issues quickly.
+- Mentor engineers and help establish backend best practices across the team.
+- Partner with product to turn ambiguous requirements into shipped features.
+
+What we're looking for
+
+- 5+ years building backend services in production.
+- Strong Go experience; familiarity with gRPC and event-driven architectures.
+- Hands-on experience operating services on Kubernetes.
+- A track record of improving reliability and reducing incident load.
+- Experience mentoring other engineers.
+
+Nice to have
+
+- Experience with Terraform and infrastructure as code.
+- Exposure to streaming systems such as Kafka.
+- Background in logistics, supply chain, or fintech.
