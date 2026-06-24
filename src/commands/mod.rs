@@ -757,6 +757,9 @@ pub enum CliError {
     History(#[from] crate::history::HistoryError),
 
     #[error(transparent)]
+    JdStore(#[from] crate::jdstore::JdStoreError),
+
+    #[error(transparent)]
     #[diagnostic(help("save the posting text to a file and pass that path (or pipe it with `-`)"))]
     Fetch(#[from] FetchError),
 
@@ -943,6 +946,12 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         Command::Jd {
             command: JdCommand::Parse { path, json },
         } => jd::parse(path, json).await?,
+        Command::Jd {
+            command: JdCommand::Rate { jd, json },
+        } => jd::rate(jd, json).await?,
+        Command::Jd {
+            command: JdCommand::Rm { all },
+        } => jd::rm(all).await?,
         Command::Chat { path } => chat::run(path).await?,
         Command::Gap { jd, json } => gap::run(jd, json).await?,
         Command::Tailor {

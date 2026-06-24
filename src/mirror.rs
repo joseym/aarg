@@ -17,7 +17,7 @@
 
 use crate::dataset::types::ResumeDataset;
 use crate::jd::JobRequirements;
-use crate::keywords::keyword_key;
+use crate::keywords::{is_token_subset, keyword_key};
 
 /// A JD phrase a recorded skill backs, paired with the skill backing it —
 /// the auditable unit of a mirror.
@@ -70,7 +70,7 @@ pub fn backed_phrases(jd: &JobRequirements, dataset: &ResumeDataset) -> Vec<Mirr
         // phrase is the same competency in the JD's words.
         if let Some((_, skill_name)) = skills
             .iter()
-            .find(|(skill_key, _)| key.iter().all(|t| skill_key.contains(t)))
+            .find(|(skill_key, _)| is_token_subset(&key, skill_key))
         {
             seen.push(key);
             out.push(MirrorMatch {

@@ -189,6 +189,7 @@ Rules — all of them matter:
 - Extract only what the job description actually says. Never invent or embellish requirements that are not in the text.
 - Unknown or absent optional values are null. Unknown lists are [].
 - required_skills are things the JD demands; preferred_skills are nice-to-haves ("bonus", "a plus", "ideally"). Mark a required skill's importance "critical" only when the JD emphasizes it ("must have", "extensive experience", "deep expertise"); otherwise "required". Preferred skills get importance "preferred".
+- A skill is a capability, technology, or competency a candidate can possess and be evaluated on ("Kubernetes", "engineering management", "incident response"). Do NOT list as skills: descriptions of the company, its stage, size, or environment ("Series A startup", "lean team", "product-driven company", "fast-paced environment") — those go in domain_keywords. A whole responsibility sentence is not a skill either ("translate ambiguous business requirements into clear technical strategies") — that belongs in responsibilities. Each skill name is a noun phrase, not a sentence.
 - context_phrases are short verbatim quotes from the JD where that skill appears.
 - ats_phrases are the exact multi-word phrases from the JD that a resume should mirror word-for-word (role title, key technologies, recurring domain terms) — typically 5 to 15.
 - domain_keywords are industry/domain terms, not technologies.

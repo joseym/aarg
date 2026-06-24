@@ -104,17 +104,43 @@ fn remember_at(path: &Path, jd: &JobRequirements, now: DateTime<Utc>) -> Result<
     );
     list.truncate(MAX_REMEMBERED);
 
+    write_list(path, &list)
+}
+
+/// Overwrite the store with `list` (already newest-first). The shared write
+/// path behind both [`remember`] and [`save`]: ensure the directory exists,
+/// then atomically replace the file with the serialized list.
+fn write_list(path: &Path, list: &[StoredJd]) -> Result<(), JdStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| JdStoreError::Io {
             path: parent.to_path_buf(),
             source,
         })?;
     }
-    let json = serde_json::to_vec_pretty(&list)?;
+    let json = serde_json::to_vec_pretty(list)?;
     std::fs::write(path, json).map_err(|source| JdStoreError::Io {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Replace the remembered JDs with exactly `list` (newest first) — the write
+/// half of `aarg jd rm`, which reads [`recent`], drops the entries the user
+/// picked, and saves what's left.
+pub fn save(list: &[StoredJd]) -> Result<(), JdStoreError> {
+    write_list(&store_path()?, list)
+}
+
+/// Forget every remembered JD by removing the store file. A missing file is
+/// already empty, so that counts as success. The builds keep their own
+/// `jd.json`, so nothing authoritative is lost — only the reuse cache.
+pub fn clear() -> Result<(), JdStoreError> {
+    let path = store_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(JdStoreError::Io { path, source }),
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +213,25 @@ mod tests {
         remember_at(&path, &req("Acme", "Engineer", Some("https://a/1")), at(1)).unwrap();
         remember_at(&path, &req("Acme", "Engineer", Some("https://a/2")), at(2)).unwrap();
         assert_eq!(recent_in(&path).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn write_list_overwrites_the_store_so_a_prune_can_drop_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jds.json");
+        remember_at(&path, &req("Acme", "Engineer", None), at(1)).unwrap();
+        remember_at(&path, &req("Globex", "Manager", None), at(2)).unwrap();
+
+        // Keep only one (what `jd rm` does after the user picks the other).
+        let kept = vec![StoredJd {
+            saved_at: at(2),
+            requirements: req("Globex", "Manager", None),
+        }];
+        write_list(&path, &kept).unwrap();
+
+        let list = recent_in(&path).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].requirements.company, "Globex");
     }
 
     #[test]

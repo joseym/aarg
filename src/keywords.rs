@@ -56,6 +56,18 @@ pub(crate) fn keyword_key(name: &str) -> Vec<String> {
     tokens
 }
 
+/// True when every meaningful token of `phrase` also appears in `skill`'s
+/// token set — the phrase names the same competency the skill does, in
+/// fewer or reordered words ("AI-powered products" inside "AI-Powered
+/// Product Development"). The shared gate behind both phrase mirroring
+/// (`mirror.rs`) and gap matching (`gap.rs`): a phrase that subsets an
+/// evidence-backed skill is something the user demonstrably has, just
+/// worded differently. An empty phrase never matches — it would subset
+/// everything.
+pub(crate) fn is_token_subset(phrase: &[String], skill: &[String]) -> bool {
+    !phrase.is_empty() && phrase.iter().all(|t| skill.contains(t))
+}
+
 /// A deliberately crude stem: strip one common suffix, then a trailing
 /// "e", so "manage"/"manager"/"management"/"managing" all land on
 /// "manag". Only touches words long enough that the stub stays

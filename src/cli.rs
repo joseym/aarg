@@ -341,6 +341,20 @@ pub enum JdCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Rate how well your profile fits a posting (a tight coverage score)
+    Rate {
+        /// JD file, Greenhouse/Lever URL, `jd parse --json` output, or "-"; omit to pick a past one
+        jd: Option<std::path::PathBuf>,
+        /// Print the rating as JSON instead of a summary
+        #[arg(long)]
+        json: bool,
+    },
+    /// Forget remembered parsed JDs (pick from a checklist, or --all)
+    Rm {
+        /// Forget every remembered JD instead of picking from a list
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[cfg(test)]
@@ -431,6 +445,56 @@ mod tests {
             cli.command.unwrap(),
             Command::Jd {
                 command: JdCommand::Parse { json: true, .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn jd_rm_parses_bare_and_with_all() {
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "jd", "rm"])
+                .unwrap()
+                .command
+                .unwrap(),
+            Command::Jd {
+                command: JdCommand::Rm { all: false }
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "jd", "rm", "--all"])
+                .unwrap()
+                .command
+                .unwrap(),
+            Command::Jd {
+                command: JdCommand::Rm { all: true }
+            }
+        ));
+    }
+
+    #[test]
+    fn jd_rate_parses_with_an_optional_jd_and_json_flag() {
+        let cli = Cli::try_parse_from(["aarg", "jd", "rate", "jd.txt"]).unwrap();
+        match cli.command.unwrap() {
+            Command::Jd {
+                command: JdCommand::Rate { jd, json },
+            } => {
+                assert_eq!(jd, Some(std::path::PathBuf::from("jd.txt")));
+                assert!(!json);
+            }
+            other => panic!("expected jd rate, got {other:?}"),
+        }
+
+        // Bare (the picker fallback) plus --json.
+        assert!(matches!(
+            Cli::try_parse_from(["aarg", "jd", "rate", "--json"])
+                .unwrap()
+                .command
+                .unwrap(),
+            Command::Jd {
+                command: JdCommand::Rate {
+                    jd: None,
+                    json: true
+                }
             }
         ));
     }

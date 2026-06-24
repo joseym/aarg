@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext, AgentRun, ModelTier, run_agent};
 use crate::dataset::types::{Proficiency, ResumeDataset, Skill, SkillId};
 use crate::jd::{JdSkill, JobRequirements};
+use crate::keywords::{is_token_subset, keyword_key};
 use crate::llm::{LlmError, TokenUsage};
 
 /// The reply is a small name-to-name mapping.
@@ -70,7 +71,9 @@ pub struct SkillMatch {
     pub skill_id: SkillId,
     /// The recorded skill's canonical name (may differ from the JD's).
     pub dataset_name: String,
-    /// True when the model made the connection; false for the alias map.
+    /// True when the match is by meaning — the model connected the names,
+    /// or the JD phrase's tokens were a subset of the skill's — rather than
+    /// an exact recorded name or alias.
     pub semantic: bool,
 }
 
@@ -203,12 +206,43 @@ fn deterministic_pass(
         .chain(jd.preferred_skills.iter())
         .filter(|s| seen.insert(s.name.to_lowercase()))
     {
-        match lookup(dataset, &jd_skill.name) {
-            Some(id) => resolved.push((jd_skill.clone(), id, false)),
-            None => unresolved.push(jd_skill.clone()),
+        if let Some(id) = lookup(dataset, &jd_skill.name) {
+            resolved.push((jd_skill.clone(), id, false));
+        } else if let Some(id) = subset_match(dataset, &jd_skill.name) {
+            // Same competency, different words: the JD phrase's tokens are
+            // a subset of a recorded skill's ("engineering leadership"
+            // inside "engineering team leadership and management"). Code,
+            // not the model — but a meaning match, so it's flagged as one.
+            resolved.push((jd_skill.clone(), id, true));
+        } else {
+            unresolved.push(jd_skill.clone());
         }
     }
     (resolved, unresolved)
+}
+
+/// A meaning match made in code: the JD phrase's normalized tokens are a
+/// subset of an evidence-backed skill's, so it names the same competency
+/// in fewer or reordered words. The evidence filter makes this gate
+/// exactly as strict as `mirror.rs` — a fuzzy match is the riskier kind,
+/// so it leans on a skill the user can actually back, never an unbacked
+/// one. Single-token phrases are too loose to gate on ("engineering"
+/// alone subsets half a dataset), so they fall through to the model. When
+/// several skills qualify, the tightest (fewest extra tokens) wins.
+fn subset_match(dataset: &ResumeDataset, name: &str) -> Option<SkillId> {
+    let key = keyword_key(name);
+    if key.len() < 2 {
+        return None;
+    }
+    dataset
+        .skills
+        .skills
+        .iter()
+        .filter(|s| !s.evidence.is_empty())
+        .map(|s| (keyword_key(&s.canonical_name), &s.id))
+        .filter(|(skill_key, _)| is_token_subset(&key, skill_key))
+        .min_by_key(|(skill_key, _)| skill_key.len())
+        .map(|(_, id)| id.clone())
 }
 
 /// Bucketing: pure code over dataset facts.
@@ -271,6 +305,7 @@ Rules — all of them matter:
 - For each requirement, name the one recorded skill that genuinely covers it, or null if none does.
 - Match on meaning: "container orchestration" is covered by a recorded "Kubernetes". Never stretch: "Java" does not cover "JavaScript", and a related-but-different tool is not a match.
 - "dataset_skill" must be copied verbatim from the recorded-skills list. Never answer with a name that is not on that list.
+- Role titles and recurring themes may be listed for context, to help you recognize that a requirement is a synonym of a recorded skill (a "Director of Engineering" makes clear that "engineering leadership" is the recorded "Engineering management"). They are context only: never answer with a role title or a theme.
 - Include every requirement exactly once.
 - Reply with exactly one JSON object and nothing else — no markdown fences, no commentary.
 
@@ -295,6 +330,31 @@ fn semantic_message(unresolved: &[JdSkill], dataset: &ResumeDataset) -> String {
                 skill.aliases.join(", ")
             ));
         }
+    }
+
+    // Role titles and themes as *context* (the system prompt forbids
+    // answering with them): they let the model see that "engineering
+    // leadership" on a Director of Engineering maps to a recorded
+    // management skill — the synonym a token match can't reach.
+    if !dataset.roles.is_empty() {
+        text.push_str("\nFor context only — the candidate's roles:\n");
+        for role in &dataset.roles {
+            text.push_str(&format!("- {} at {}\n", role.title, role.company));
+        }
+    }
+    let mut themes: Vec<&str> = dataset
+        .roles
+        .iter()
+        .flat_map(|role| role.bullets.iter())
+        .flat_map(|bullet| bullet.theme.iter())
+        .map(|theme| theme.0.as_str())
+        .collect();
+    themes.sort_unstable();
+    themes.dedup();
+    if !themes.is_empty() {
+        text.push_str("\nFor context only — recurring themes in their work: ");
+        text.push_str(&themes.join(", "));
+        text.push('\n');
     }
     text
 }
@@ -420,6 +480,66 @@ mod tests {
         assert!(report.weak.is_empty() && report.unknown.is_empty());
         // The decisive assertion: zero tokens were spent.
         assert!(mock.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reworded_requirement_matches_a_recorded_skill_in_code() {
+        let mock = MockLlmClient::default();
+        // "Engineering leadership" is not a recorded name or alias, but its
+        // tokens are a subset of this evidence-backed skill's.
+        let dataset = dataset_with(vec![skill(
+            "skill-1",
+            "Engineering team leadership and management",
+            &[],
+            Proficiency::Expert,
+            true,
+        )]);
+        let jd = jd_with(
+            vec![jd_skill("Engineering leadership", Importance::Required)],
+            vec![],
+        );
+
+        let report = analyze_gap(&test_ctx(&mock), &jd, &dataset).await.unwrap();
+
+        assert_eq!(report.matched.len(), 1);
+        assert_eq!(
+            report.matched[0].dataset_name,
+            "Engineering team leadership and management"
+        );
+        assert!(
+            report.matched[0].semantic,
+            "a reworded match is a meaning match"
+        );
+        // Code resolved it; the model was never asked.
+        assert!(mock.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_subset_match_requires_an_evidence_backed_skill() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"matches": [{"jd_skill": "Engineering leadership", "dataset_skill": null}]}"#,
+        );
+        // Same token subset, but the skill has no evidence: the code gate
+        // declines it (a fuzzy match leans only on backed skills), so it
+        // falls through to the model — which here also declines.
+        let dataset = dataset_with(vec![skill(
+            "skill-1",
+            "Engineering team leadership and management",
+            &[],
+            Proficiency::Expert,
+            false,
+        )]);
+        let jd = jd_with(
+            vec![jd_skill("Engineering leadership", Importance::Required)],
+            vec![],
+        );
+
+        let report = analyze_gap(&test_ctx(&mock), &jd, &dataset).await.unwrap();
+
+        assert!(report.matched.is_empty());
+        assert_eq!(report.unknown.len(), 1);
+        assert_eq!(mock.requests().len(), 1, "fell through to the model");
     }
 
     #[tokio::test]
