@@ -12,6 +12,7 @@ pub mod completions;
 pub mod config;
 pub mod cover;
 pub mod dataset;
+pub mod experience;
 pub mod export;
 pub mod gap;
 pub mod history;
@@ -911,8 +912,8 @@ pub(crate) fn validate_key_label(label: &str) -> Result<&str, CliError> {
 /// wrapper over this, not a parallel implementation.
 pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
     use crate::cli::{
-        Command, DatasetCommand, HistoryCommand, JdCommand, KeyCommand, LlmCommand, RolesCommand,
-        SkillsCommand, TemplatesCommand, TraceCommand, VoiceCommand,
+        Command, DatasetCommand, ExperienceCommand, HistoryCommand, JdCommand, KeyCommand,
+        LlmCommand, RolesCommand, SkillsCommand, TemplatesCommand, TraceCommand, VoiceCommand,
     };
     match command {
         Command::Init { global, dir } => init::run(global, dir).await?,
@@ -982,6 +983,21 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
         Command::Roles {
             command: RolesCommand::Enrich { id },
         } => roles::enrich(id).await?,
+        Command::Experience {
+            command:
+                ExperienceCommand::Add {
+                    name,
+                    summary,
+                    url,
+                    skills,
+                },
+        } => experience::add(name, summary, url, skills).await?,
+        Command::Experience {
+            command: ExperienceCommand::List,
+        } => experience::list().await?,
+        Command::Experience {
+            command: ExperienceCommand::Remove { id },
+        } => experience::remove(id).await?,
         Command::Trace {
             command: TraceCommand::Last,
         } => trace::last().await?,

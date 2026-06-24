@@ -146,6 +146,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RolesCommand,
     },
+    /// Record projects, open-source, or other experience outside a job
+    Experience {
+        #[command(subcommand)]
+        command: ExperienceCommand,
+    },
     /// Re-review a saved build with the adversarial reviewer (no re-tailor)
     Attack {
         /// Build id to re-review (e.g. 021); omit to pick one interactively
@@ -287,6 +292,31 @@ pub enum RolesCommand {
     Enrich {
         /// A specific role id, e.g. "role-3"; omit to cover every thin role
         id: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExperienceCommand {
+    /// Record a project / non-job experience and link the skills it demonstrates
+    Add {
+        /// The project or experience name; omit to be prompted
+        name: Option<String>,
+        /// One-line summary of what it was; omit to be prompted (or left blank in a script)
+        #[arg(long)]
+        summary: Option<String>,
+        /// A link: repo, demo, or write-up
+        #[arg(long)]
+        url: Option<String>,
+        /// A recorded skill this demonstrates (repeat for several); skips the picker
+        #[arg(long = "skill", value_name = "NAME")]
+        skills: Vec<String>,
+    },
+    /// List the recorded projects / experience
+    List,
+    /// Remove an entry by id (see `aarg experience list`)
+    Remove {
+        /// The project id, e.g. "project-2"
+        id: String,
     },
 }
 
