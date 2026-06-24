@@ -85,9 +85,12 @@ pub struct ModelTiers {
 /// - `ApiKey` — a pay-as-you-go key sent as `x-api-key`.
 /// - `Oauth` — a Claude-plan token (from `claude setup-token`) sent as a
 ///   bearer token; the secret lives in the keychain.
-/// - `Cli` — a Claude plan delegated to the official Anthropic CLI: no
-///   secret is stored, and a fresh bearer token is fetched per run via
-///   `ant auth print-credentials` (the official client owns refresh).
+/// - `Cli` — the bearer token is fetched per run by running a command, so no
+///   secret is stored in aarg. The command defaults to the official Anthropic
+///   CLI (`ant auth print-credentials --access-token`, which owns the OAuth
+///   refresh) and is overridable per label via `credential_commands` — read a
+///   0600 file, call `pass`, or hit a vault. This is the headless path for
+///   when the OS keychain isn't reachable.
 ///
 /// `ApiKey` is the default so a config written before OAuth — where every
 /// key is implicitly an API key — keeps working unchanged.
@@ -99,6 +102,12 @@ pub enum AuthKind {
     Oauth,
     Cli,
 }
+
+/// The default command a `Cli`-delegated key runs to fetch a fresh bearer
+/// token: the official Anthropic CLI, which owns the OAuth refresh. A config
+/// `credential_commands` entry overrides it per label.
+pub const DEFAULT_CREDENTIAL_COMMAND: [&str; 4] =
+    ["ant", "auth", "print-credentials", "--access-token"];
 
 /// Settings specific to the Anthropic provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +137,13 @@ pub struct AnthropicConfig {
     /// configs knew), so old `config.toml`s keep working; OAuth keys record
     /// their kind so the client sends bearer + the oauth beta header.
     pub key_kinds: std::collections::BTreeMap<String, AuthKind>,
+    /// Per-label override of the command a `Cli`-delegated key runs to fetch
+    /// its bearer token. A label absent here (or mapped to an empty command)
+    /// falls back to `DEFAULT_CREDENTIAL_COMMAND` (the official `ant` CLI), so
+    /// existing delegated setups keep working. Only the command lives here;
+    /// the secret stays wherever the command reads it from (a 0600 file,
+    /// `pass`, a vault), never in this file.
+    pub credential_commands: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for AnthropicConfig {
@@ -139,6 +155,7 @@ impl Default for AnthropicConfig {
             keys: Vec::new(),
             active_key: None,
             key_kinds: std::collections::BTreeMap::new(),
+            credential_commands: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -162,6 +179,20 @@ impl AnthropicConfig {
     /// so unknown and legacy labels behave like the API keys they are.
     pub fn kind_for(&self, label: &str) -> AuthKind {
         self.key_kinds.get(label).copied().unwrap_or_default()
+    }
+
+    /// The command a `Cli`-delegated `label` runs to fetch its token: an
+    /// explicit `credential_commands` entry if non-empty, else the default
+    /// `ant` CLI. Never returns an empty command, so callers always have a
+    /// program to run.
+    pub fn credential_command(&self, label: &str) -> Vec<String> {
+        match self.credential_commands.get(label) {
+            Some(argv) if !argv.is_empty() => argv.clone(),
+            _ => DEFAULT_CREDENTIAL_COMMAND
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect(),
+        }
     }
 
     /// Record that a key labeled `label` of `kind` now exists (idempotent).
@@ -557,6 +588,53 @@ mod tests {
         let loaded = Config::load_from(&path).unwrap();
         assert_eq!(loaded, full);
         assert_eq!(loaded.anthropic.kind_for("plan"), AuthKind::Oauth);
+    }
+
+    #[test]
+    fn credential_command_defaults_to_ant_and_honors_overrides() {
+        let mut config = AnthropicConfig::default();
+        // No override: the default `ant` CLI command, and never empty.
+        assert_eq!(
+            config.credential_command("subscription"),
+            vec![
+                "ant".to_string(),
+                "auth".to_string(),
+                "print-credentials".to_string(),
+                "--access-token".to_string(),
+            ]
+        );
+
+        // An explicit per-label command wins — this is what lets a headless
+        // deployment point at a file / `pass` / vault instead of the keychain.
+        config.credential_commands.insert(
+            "subscription".to_string(),
+            vec!["cat".to_string(), "/home/me/.config/aarg/token".to_string()],
+        );
+        assert_eq!(
+            config.credential_command("subscription"),
+            vec!["cat".to_string(), "/home/me/.config/aarg/token".to_string()]
+        );
+
+        // An empty override falls back to the default rather than yielding a
+        // command with no program to run.
+        config
+            .credential_commands
+            .insert("blank".to_string(), Vec::new());
+        assert_eq!(config.credential_command("blank")[0], "ant");
+
+        // And the override survives a TOML round trip.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let full = Config {
+            anthropic: config.clone(),
+            ..Config::default()
+        };
+        full.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(
+            loaded.anthropic.credential_command("subscription"),
+            vec!["cat".to_string(), "/home/me/.config/aarg/token".to_string()]
+        );
     }
 
     #[test]

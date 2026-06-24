@@ -82,7 +82,7 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
     // A CLI-delegated credential has no stored secret: fetch a fresh bearer
     // token from the official Anthropic CLI, which owns the OAuth refresh.
     if config.anthropic.kind_for(label) == crate::config::AuthKind::Cli {
-        let token = fetch_cli_token()?;
+        let token = fetch_cli_token(&config.anthropic.credential_command(label))?;
         return Ok((AnthropicClient::with_auth(Auth::Oauth(token)), config));
     }
 
@@ -113,25 +113,37 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
     Ok((AnthropicClient::with_auth(auth), config))
 }
 
-/// Fetch a fresh OAuth access token from the official Anthropic CLI for a
-/// CLI-delegated credential. `ant auth print-credentials --access-token`
-/// prints just the token and refreshes it if needed, so the official client
-/// owns the OAuth + refresh — AARG only invokes it (no impersonation, no
-/// stored secret). A missing `ant` or a logged-out profile is a clear,
-/// actionable error rather than a failed request.
-fn fetch_cli_token() -> Result<String, CliError> {
-    let output = std::process::Command::new("ant")
-        .args(["auth", "print-credentials", "--access-token"])
+/// Fetch a fresh OAuth access token by running a `Cli`-delegated key's
+/// credential command. The command prints just the token on stdout and owns
+/// any refresh — AARG only invokes it and never stores the result. The default
+/// command is the official Anthropic CLI (`ant auth print-credentials
+/// --access-token`); a config-set command can instead read a 0600 file, call a
+/// password manager, or hit a vault. A missing program or a non-zero exit is a
+/// clear, actionable error rather than a failed request.
+fn fetch_cli_token(argv: &[String]) -> Result<String, CliError> {
+    let (program, args) = argv.split_first().ok_or_else(|| CliError::CliTokenFailed {
+        command: String::new(),
+        stderr: "no credential command is configured".to_string(),
+    })?;
+    let output = std::process::Command::new(program)
+        .args(args)
         .output()
-        .map_err(CliError::CliTokenUnavailable)?;
+        .map_err(|source| CliError::CliTokenUnavailable {
+            command: argv.join(" "),
+            source,
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(CliError::CliTokenFailed { stderr });
+        return Err(CliError::CliTokenFailed {
+            command: argv.join(" "),
+            stderr,
+        });
     }
     let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if token.is_empty() {
         return Err(CliError::CliTokenFailed {
-            stderr: "the CLI returned no token".to_string(),
+            command: argv.join(" "),
+            stderr: "the command returned no token on stdout".to_string(),
         });
     }
     Ok(token)
@@ -834,15 +846,21 @@ pub enum CliError {
     #[diagnostic(help("run `aarg templates list` to see the available templates"))]
     UnknownTemplate { name: String },
 
-    #[error("could not run the Anthropic CLI (`ant`) to fetch a token")]
+    #[error("could not run the credential command `{command}` to fetch a token")]
     #[diagnostic(help(
-        "this credential is delegated to the official CLI: install it (https://github.com/anthropics/anthropic-cli) and run `ant auth login`"
+        "this key delegates to a command (`[anthropic.credential_commands]` in config); make sure the program exists and is runnable. The default delegates to the official CLI: install it (https://github.com/anthropics/anthropic-cli) and run `ant auth login`"
     ))]
-    CliTokenUnavailable(#[source] std::io::Error),
+    CliTokenUnavailable {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
 
-    #[error("the Anthropic CLI could not provide a token:\n{stderr}")]
-    #[diagnostic(help("run `ant auth login` to sign in, then try again"))]
-    CliTokenFailed { stderr: String },
+    #[error("the credential command `{command}` could not provide a token:\n{stderr}")]
+    #[diagnostic(help(
+        "run the command yourself to see why; if it's the default `ant`, run `ant auth login` and try again"
+    ))]
+    CliTokenFailed { command: String, stderr: String },
 
     #[error("could not prepare the export directory {path}")]
     #[diagnostic(help("check the path is writable, or pass a different `--to <dir>`"))]
@@ -1016,6 +1034,34 @@ mod tests {
             label: label.to_string(),
             requirements: req(company, title, source),
         }
+    }
+
+    #[test]
+    fn fetch_cli_token_runs_the_command_and_validates_its_output() {
+        // Happy path: the command's stdout, trimmed, becomes the token. This
+        // is the whole feature — any program that prints a token works, so a
+        // headless box can `cat` a file or call `pass` instead of the keychain.
+        let token = fetch_cli_token(&["echo".to_string(), "tok-abc123".to_string()]).unwrap();
+        assert_eq!(token, "tok-abc123");
+
+        // A non-zero exit is a clear failure, never a token.
+        assert!(matches!(
+            fetch_cli_token(&["false".to_string()]),
+            Err(CliError::CliTokenFailed { .. })
+        ));
+
+        // Exit 0 but no output is also a failure — an empty token must never
+        // authenticate.
+        assert!(matches!(
+            fetch_cli_token(&["true".to_string()]),
+            Err(CliError::CliTokenFailed { .. })
+        ));
+
+        // A missing program is a distinct, actionable error from a bad token.
+        assert!(matches!(
+            fetch_cli_token(&["aarg-no-such-program-xyzzy".to_string()]),
+            Err(CliError::CliTokenUnavailable { .. })
+        ));
     }
 
     #[test]

@@ -25,10 +25,13 @@ pub async fn run() -> Result<(), CliError> {
         crate::config::AuthKind::Cli => "CLI-delegated",
     };
     // A CLI-delegated credential has no stored secret — its token is fetched
-    // from `ant` at request time, so don't probe the keychain for it.
+    // by running the configured command at request time, so don't probe the
+    // keychain for it. Show the actual command (the default `ant …` or a
+    // per-label override) rather than assuming `ant`.
     let key_status = if kind == crate::config::AuthKind::Cli {
+        let command = config.anthropic.credential_command(label).join(" ");
         style::success(format!(
-            "delegated to `ant auth print-credentials` {}",
+            "delegated to `{command}` {}",
             style::dim(format!("(label: {label}, {kind_str})"))
         ))
     } else {
