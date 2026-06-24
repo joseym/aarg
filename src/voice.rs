@@ -361,6 +361,7 @@ mod tests {
             education: Vec::new(),
             skills_section: SkillsSection { skills: Vec::new() },
             projects: Vec::new(),
+            achievements: Vec::new(),
             certifications: Vec::new(),
         }
     }

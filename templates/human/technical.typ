@@ -212,6 +212,16 @@
   }
 }
 
+#let achievements_section = {
+  let items = field(data, "achievements", default: ())
+  if items.len() > 0 {
+    tech_heading("Achievements")
+    for a in items [
+      - #text(fill: luma(45))[#a.text]
+    ]
+  }
+}
+
 #let skills_section = {
   if has_skills {
     tech_heading("Skills")
@@ -253,6 +263,7 @@
       #summary_section
       #experience_section
       #projects_section
+      #achievements_section
       #education_section
       #certifications_section
     ],
@@ -270,6 +281,7 @@
   skills_section
   experience_section
   projects_section
+  achievements_section
   education_section
   certifications_section
 }

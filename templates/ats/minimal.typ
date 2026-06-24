@@ -138,6 +138,15 @@
   ]
 ]
 
+// ----- achievements -----
+#let achievements = field(data, "achievements", default: ())
+#if achievements.len() > 0 [
+  #section("Achievements")
+  #for a in achievements [
+    - #a.text
+  ]
+]
+
 // ----- certifications -----
 #let certifications = field(data, "certifications", default: ())
 #if certifications.len() > 0 [

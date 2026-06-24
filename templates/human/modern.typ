@@ -152,6 +152,16 @@
   }
 }
 
+#let achievements_section = {
+  let items = field(data, "achievements", default: ())
+  if items.len() > 0 {
+    heading_rule("Achievements", accent)
+    for a in items [
+      - #text(fill: luma(40))[#a.text]
+    ]
+  }
+}
+
 // Skills: chip-like inline list separated by accent dots. Rendered in the
 // sidebar when present, otherwise as a normal section.
 #let skills_body = {
@@ -208,6 +218,7 @@
       #summary_section
       #experience_section
       #projects_section
+      #achievements_section
       #education_section
       #certifications_section
     ],
@@ -227,6 +238,7 @@
     skills_body
   }
   projects_section
+  achievements_section
   education_section
   certifications_section
 }

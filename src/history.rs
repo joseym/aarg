@@ -349,6 +349,7 @@ mod tests {
                 skills: skills.iter().map(|s| (*s).to_string()).collect(),
             },
             projects: Vec::new(),
+            achievements: Vec::new(),
             certifications: Vec::new(),
         }
     }

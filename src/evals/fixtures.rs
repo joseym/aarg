@@ -176,6 +176,7 @@ pub fn draft() -> TailoredResume {
             skills: vec!["Rust".into()],
         },
         projects: Vec::new(),
+        achievements: Vec::new(),
         certifications: Vec::new(),
     }
 }

@@ -224,6 +224,7 @@ mod tests {
                 skills: vec!["Rust".into(), "Kubernetes".into()],
             },
             projects: Vec::new(),
+            achievements: Vec::new(),
             certifications: Vec::new(),
         }
     }

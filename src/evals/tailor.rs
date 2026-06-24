@@ -58,7 +58,7 @@ async fn run(dataset: ResumeDataset, reply: &str) -> Result<TailoredResume, Stri
     TailoringAgent
         .run(&ctx, input)
         .await
-        .map(|r| r.output.0)
+        .map(|r| r.output.resume)
         .map_err(|e| format!("agent errored: {e}"))
 }
 

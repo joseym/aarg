@@ -238,6 +238,15 @@
   }
 }
 
+// ACHIEVEMENTS: reusable wins (awards, talks, open source), one per bullet.
+#let achievements_section = {
+  let items = field(data, "achievements", default: ())
+  if items.len() > 0 {
+    section_head("Achievements")
+    for a in items [ - #text(fill: muted)[#a.text] ]
+  }
+}
+
 // ===== assemble the page =====
 
 // Full-width centered masthead above the two columns.
@@ -267,5 +276,6 @@
     #profile_section
     #experience_section
     #projects_section
+    #achievements_section
   ],
 )

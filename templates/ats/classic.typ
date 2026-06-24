@@ -81,6 +81,14 @@
   ]
 ]
 
+// ----- achievements -----
+#if "achievements" in data and data.achievements.len() > 0 [
+  #section("Achievements")
+  #for a in data.achievements [
+    - #a.text
+  ]
+]
+
 // ----- education -----
 #if data.education.len() > 0 [
   #section("Education")

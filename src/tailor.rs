@@ -25,8 +25,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::dataset::types::{
-    Bullet, BulletId, Certification, Contact, Education, ProjectId, ResumeDataset, Role, RoleId,
-    Strength, YearMonth,
+    AchievementId, Bullet, BulletId, Certification, Contact, Education, ProjectId, ResumeDataset,
+    Role, RoleId, Skill, Strength, YearMonth,
 };
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
@@ -94,6 +94,11 @@ pub struct TailoredResume {
     /// Evidence-backed skills, ordered by JD relevance.
     pub skills_section: SkillsSection,
     pub projects: Vec<TailoredProject>,
+    /// Reusable wins (awards, talks, open source) the model judged relevant,
+    /// resolved verbatim from the dataset. `serde(default)` keeps older build
+    /// artifacts (saved before achievements were rendered) deserializing.
+    #[serde(default)]
+    pub achievements: Vec<TailoredAchievement>,
     pub certifications: Vec<Certification>,
 }
 
@@ -130,12 +135,25 @@ pub struct TailoredProject {
     pub url: Option<String>,
 }
 
+/// One selected achievement, traceable to its dataset id. The `text` is
+/// copied verbatim from the recorded achievement — like projects and
+/// bullets, the model only chooses which ids belong, never the words.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TailoredAchievement {
+    pub id: AchievementId,
+    pub text: String,
+}
+
 /// What tailoring produced: the canonical resume, anything the guards
 /// had to drop or revert, and the tokens it cost.
 #[derive(Debug)]
 pub struct TailorOutcome {
     pub resume: TailoredResume,
     pub warnings: Vec<String>,
+    /// Cleaned skill names the model proposed that resolved to no recorded,
+    /// evidence-backed skill. The CLI offers these for the user to back
+    /// inline (the "add what's missing" pivot) instead of just warning.
+    pub dropped_unrecorded: Vec<String>,
     pub usage: TokenUsage,
 }
 
@@ -167,7 +185,7 @@ pub struct TailoringAgent;
 impl Agent for TailoringAgent {
     type Input = TailorInput;
     type Wire = RawSelection;
-    type Output = (TailoredResume, Vec<String>);
+    type Output = Assembled;
     type Error = TailorError;
 
     fn id(&self) -> &'static str {
@@ -203,11 +221,7 @@ impl Agent for TailoringAgent {
     fn bad_reply(&self, snippet: String, source: serde_json::Error) -> TailorError {
         TailorError::BadReply { snippet, source }
     }
-    fn assemble(
-        &self,
-        wire: RawSelection,
-        input: TailorInput,
-    ) -> Result<(TailoredResume, Vec<String>), TailorError> {
+    fn assemble(&self, wire: RawSelection, input: TailorInput) -> Result<Assembled, TailorError> {
         assemble(
             wire,
             input.build_id,
@@ -239,10 +253,11 @@ pub async fn tailor_resume(
         revision,
     };
     let run = TailoringAgent.run(ctx, input).await?;
-    let (resume, warnings) = run.output;
+    let assembled = run.output;
     Ok(TailorOutcome {
-        resume,
-        warnings,
+        resume: assembled.resume,
+        warnings: assembled.warnings,
+        dropped_unrecorded: assembled.dropped_unrecorded,
         usage: run.usage,
     })
 }
@@ -262,10 +277,11 @@ Rules — all of them matter:
 - "summary": 2-3 sentences, factual, drawn only from the work history given. No superlatives the material doesn't earn.
 - "skills": the usable skills ordered by relevance to this JD, spelled exactly as given in the usable-skills list. Include only skills from that list. Never mention anything from the do-not-claim list anywhere in your output.
 - "projects": ids of projects that strengthen this application; may be empty.
+- "achievements": ids of achievements (awards, talks, open source, reusable wins) that strengthen this application; may be empty.
 - Reply with exactly one JSON object and nothing else — no markdown fences, no commentary.
 
 The JSON object:
-{"summary": "...", "roles": [{"id": "role-1", "bullets": [{"source_id": "bullet-2", "text": "the selected, possibly rephrased line"}]}], "skills": ["..."], "projects": ["project-1"]}"#;
+{"summary": "...", "roles": [{"id": "role-1", "bullets": [{"source_id": "bullet-2", "text": "the selected, possibly rephrased line"}]}], "skills": ["..."], "projects": ["project-1"], "achievements": ["achievement-1"]}"#;
 
 /// Everything the model is allowed to work from, in one message: the
 /// JD's asks, the work history with IDs, the usable (evidence-backed)
@@ -355,6 +371,13 @@ fn build_user_message(jd: &JobRequirements, dataset: &ResumeDataset, gap: &GapRe
         }
     }
 
+    if !dataset.achievements.is_empty() {
+        text.push_str("\nACHIEVEMENTS\n");
+        for achievement in &dataset.achievements {
+            text.push_str(&format!("{}: {}\n", achievement.id.0, achievement.text));
+        }
+    }
+
     let mut do_not_claim: Vec<&str> = gap.unknown.iter().map(|s| s.name.as_str()).collect();
     for weak in &gap.weak {
         if weak.weakness == crate::gap::Weakness::NoEvidence {
@@ -385,6 +408,8 @@ pub struct RawSelection {
     skills: Vec<String>,
     #[serde(default)]
     projects: Vec<String>,
+    #[serde(default)]
+    achievements: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,6 +429,53 @@ struct RawBulletSelection {
 // Assembly: every claim checked against the dataset
 // ---------------------------------------------------------------------
 
+/// What `assemble` distilled from the model's raw selection: the canonical
+/// resume, the human-readable guard `warnings`, and the cleaned
+/// `dropped_unrecorded` skill names — the ones the model wanted that no
+/// recorded, evidence-backed skill could support, surfaced separately (not
+/// just buried in a warning string) so the CLI can offer to back them.
+#[derive(Debug)]
+pub struct Assembled {
+    pub resume: TailoredResume,
+    pub warnings: Vec<String>,
+    pub dropped_unrecorded: Vec<String>,
+}
+
+/// Resolve a model-proposed skill name to a recorded skill. Tries the name
+/// as written, then with the prompt's `(covers the JD's ...)` display
+/// annotation stripped — the model sometimes echoes that note back as the
+/// name, and the canonical skill is what precedes it. Resolution still goes
+/// through the alias map and the caller still requires evidence, so this
+/// only repairs the lookup; it never loosens the never-fabricate gate.
+fn resolve_skill<'a>(dataset: &'a ResumeDataset, name: &str) -> Option<&'a Skill> {
+    let lookup = |key: &str| {
+        dataset
+            .skills
+            .aliases
+            .get(&key.to_lowercase())
+            .and_then(|id| dataset.skills.skills.iter().find(|s| s.id == *id))
+    };
+    lookup(name).or_else(|| {
+        let stripped = strip_coverage_note(name);
+        if stripped == name {
+            None
+        } else {
+            lookup(stripped)
+        }
+    })
+}
+
+/// The canonical part of a proposed skill name: everything before the
+/// prompt's " (covers the JD's ..." annotation, or the trimmed name when
+/// there's no such annotation. Used both to resolve and to clean the name
+/// shown in a warning / offered for inline backing.
+fn strip_coverage_note(name: &str) -> &str {
+    match name.split_once(" (covers the JD's") {
+        Some((head, _)) => head.trim(),
+        None => name.trim(),
+    }
+}
+
 fn assemble(
     raw: RawSelection,
     build_id: BuildId,
@@ -411,8 +483,11 @@ fn assemble(
     jd: &JobRequirements,
     dataset: &ResumeDataset,
     gap: &GapReport,
-) -> Result<(TailoredResume, Vec<String>), TailorError> {
+) -> Result<Assembled, TailorError> {
     let mut warnings = Vec::new();
+    // Cleaned names the model proposed that no recorded skill backs — the
+    // inline-add pivot's candidates (deduped, in first-seen order).
+    let mut dropped_unrecorded: Vec<String> = Vec::new();
 
     // Index the model's picks by role ID, then walk the DATASET's roles
     // in order. Two guarantees fall out: chronology is the dataset's
@@ -528,12 +603,7 @@ fn assemble(
     let mut skills = Vec::new();
     let mut seen = HashSet::new();
     for name in &raw.skills {
-        let resolved = dataset
-            .skills
-            .aliases
-            .get(&name.to_lowercase())
-            .and_then(|id| dataset.skills.skills.iter().find(|s| s.id == *id));
-        match resolved {
+        match resolve_skill(dataset, name) {
             Some(skill) if !skill.evidence.is_empty() => {
                 if seen.insert(skill.canonical_name.clone()) {
                     skills.push(skill.canonical_name.clone());
@@ -543,9 +613,17 @@ fn assemble(
                 "the model listed {:?}, which has no evidence; dropped",
                 skill.canonical_name
             )),
-            None => warnings.push(format!(
-                "the model listed {name:?}, which is not a recorded skill; dropped"
-            )),
+            None => {
+                // Show and offer the canonical name, not the model's
+                // "(covers the JD's ...)"-annotated echo of it.
+                let clean = strip_coverage_note(name).to_string();
+                warnings.push(format!(
+                    "the model listed {clean:?}, which is not a recorded skill; dropped"
+                ));
+                if !clean.is_empty() && !dropped_unrecorded.contains(&clean) {
+                    dropped_unrecorded.push(clean);
+                }
+            }
         }
     }
     if skills.is_empty() {
@@ -620,6 +698,21 @@ fn assemble(
         }
     }
 
+    // Achievements ride the same rails as projects: resolved by id to the
+    // recorded text (never reworded), an unknown id dropped with a warning.
+    let mut achievements = Vec::new();
+    for id in &raw.achievements {
+        match dataset.achievements.iter().find(|a| a.id.0 == *id) {
+            Some(achievement) => achievements.push(TailoredAchievement {
+                id: achievement.id.clone(),
+                text: achievement.text.clone(),
+            }),
+            None => warnings.push(format!(
+                "the model selected achievement {id:?}, which is not in the dataset; dropped"
+            )),
+        }
+    }
+
     let summary = if dataset.summary_confirmed && dataset.summary.is_some() {
         // The user confirmed this summary as their own words (via the objection
         // triage's summary refine); use it verbatim instead of the model's
@@ -635,8 +728,8 @@ fn assemble(
         }
     };
 
-    Ok((
-        TailoredResume {
+    Ok(Assembled {
+        resume: TailoredResume {
             build_id,
             jd_id,
             generated_at: Utc::now(),
@@ -647,10 +740,12 @@ fn assemble(
             education: dataset.education.clone(),
             skills_section: SkillsSection { skills },
             projects,
+            achievements,
             certifications: dataset.certifications.clone(),
         },
         warnings,
-    ))
+        dropped_unrecorded,
+    })
 }
 
 /// The fewest bullets any included role should carry, so the resume
@@ -817,8 +912,8 @@ pub(crate) fn within_evidence(candidate: &str, allowed: &[&str]) -> bool {
 mod tests {
     use super::*;
     use crate::dataset::types::{
-        Bullet, Contact, EmploymentType, EvidenceRef, Metric, Proficiency, Skill, SkillCategory,
-        SkillId, Strength,
+        Achievement, AchievementId, Bullet, Contact, EmploymentType, EvidenceRef, Metric,
+        Proficiency, Skill, SkillCategory, SkillId, Strength,
     };
     use crate::gap::{SkillMatch, WeakMatch, Weakness};
     use crate::jd::{Importance, JdSkill, RemotePolicy, Seniority};
@@ -1034,6 +1129,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn selected_achievements_resolve_verbatim_and_unknown_ids_drop() {
+        let mut dataset = sample_dataset();
+        dataset.achievements.push(Achievement {
+            id: AchievementId("achievement-1".into()),
+            text: "Keynoted RustConf 2024".into(),
+            skill_ids: Vec::new(),
+        });
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"summary":"Lead.",
+                "roles":[{"id":"role-1","bullets":[
+                  {"source_id":"bullet-1","text":"Led a team of 12 engineers across 3 squads"}
+                ]}],
+                "skills":["Rust"],
+                "projects":[],
+                "achievements":["achievement-1","achievement-9"]}"#,
+        );
+
+        let outcome = tailor_resume(
+            &test_ctx(&mock),
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &dataset,
+            &sample_gap(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // The valid id resolves to its recorded text, copied verbatim — the
+        // model chose the id, never the words.
+        assert_eq!(outcome.resume.achievements.len(), 1);
+        assert_eq!(outcome.resume.achievements[0].id.0, "achievement-1");
+        assert_eq!(
+            outcome.resume.achievements[0].text,
+            "Keynoted RustConf 2024"
+        );
+        // The unknown id is dropped with a warning, never invented.
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("achievement-9") && w.contains("not in the dataset")),
+            "got: {:?}",
+            outcome.warnings
+        );
+    }
+
+    #[tokio::test]
     async fn a_backed_jd_phrase_is_mirrored_but_an_unbacked_one_is_not() {
         let mut jd = sample_jd();
         // Neutral title so the title guard doesn't filter the test phrase
@@ -1209,6 +1354,78 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|w| w.contains("not a recorded skill"))
+        );
+        // Only the genuinely unrecorded name is offered for inline backing;
+        // the evidence-less "TypeScript" isn't (it needs evidence, not a new
+        // record).
+        assert_eq!(outcome.dropped_unrecorded, vec!["Kafka".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_annotated_recorded_skill_still_resolves() {
+        // The model echoes the prompt's "(covers the JD's ...)" note back as
+        // the skill name; it must still resolve to the recorded skill rather
+        // than be dropped as unrecorded.
+        let outcome = run_tailor(
+            r#"{"summary": "s",
+                "roles": [{"id": "role-1", "bullets": [
+                  {"source_id": "bullet-1", "text": "Led a team of 12 engineers across 3 squads"}
+                ]}],
+                "skills": ["Engineering management (covers the JD's \"people leadership\")", "Rust"],
+                "projects": []}"#,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome.resume.skills_section.skills,
+            vec!["Engineering management", "Rust"]
+        );
+        assert!(outcome.dropped_unrecorded.is_empty());
+        assert!(
+            !outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("not a recorded skill"))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unrecorded_skill_is_offered_under_its_clean_name() {
+        // An unrecorded skill the model annotated: the drop warning and the
+        // inline-add candidate both use the canonical "Kubernetes", not the
+        // "(covers ...)" echo.
+        let outcome = run_tailor(
+            r#"{"summary": "s",
+                "roles": [{"id": "role-1", "bullets": [
+                  {"source_id": "bullet-1", "text": "Led a team of 12 engineers across 3 squads"}
+                ]}],
+                "skills": ["Kubernetes (covers the JD's \"k8s\")", "Rust"],
+                "projects": []}"#,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.dropped_unrecorded, vec!["Kubernetes".to_string()]);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("\"Kubernetes\"") && w.contains("not a recorded skill"))
+        );
+    }
+
+    #[test]
+    fn strip_coverage_note_keeps_a_bare_name_and_trims_the_annotation() {
+        assert_eq!(
+            strip_coverage_note("TypeScript (covers the JD's \"Typescript\")"),
+            "TypeScript"
+        );
+        assert_eq!(strip_coverage_note("Rust"), "Rust");
+        // A legitimate parenthetical that isn't the coverage note is kept.
+        assert_eq!(
+            strip_coverage_note("Amazon Web Services (AWS)"),
+            "Amazon Web Services (AWS)"
         );
     }
 

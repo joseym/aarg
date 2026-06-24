@@ -32,7 +32,8 @@ use crate::review::{
     AdversarialReviewerAgent, ObjectionKind, ObjectionTarget, ReviewError, ReviewInput,
 };
 use crate::tailor::{
-    SkillsSection, TailoredBullet, TailoredProject, TailoredResume, TailoredRole, digit_runs,
+    SkillsSection, TailoredAchievement, TailoredBullet, TailoredProject, TailoredResume,
+    TailoredRole, digit_runs,
 };
 
 /// Which presentation a payload is shaped for.
@@ -130,6 +131,11 @@ pub struct VariantPayload {
     #[serde(default)]
     pub skill_groups: Vec<SkillGroup>,
     pub projects: Vec<TailoredProject>,
+    /// Same achievements as the canonical draft, projected verbatim into both
+    /// variants (no rewording, so no claim divergence). `serde(default)` keeps
+    /// older payloads deserializing for `render`/`history`/`diff`.
+    #[serde(default)]
+    pub achievements: Vec<TailoredAchievement>,
     pub certifications: Vec<Certification>,
     pub layout_hints: LayoutHints,
 }
@@ -150,6 +156,7 @@ pub fn ats_payload(draft: &TailoredResume) -> VariantPayload {
         // The ATS variant stays a flat keyword-dense list; no grouping.
         skill_groups: Vec::new(),
         projects: draft.projects.clone(),
+        achievements: draft.achievements.clone(),
         certifications: draft.certifications.clone(),
         layout_hints: LayoutHints {
             sidebar: false,
@@ -422,6 +429,7 @@ fn project_human(wire: RawVariant, draft: TailoredResume, summary_locked: bool) 
         skills_section: SkillsSection { skills },
         skill_groups,
         projects: draft.projects,
+        achievements: draft.achievements,
         certifications: draft.certifications,
         layout_hints: LayoutHints {
             sidebar: true,
@@ -630,6 +638,7 @@ fn human_as_draft(canonical: &TailoredResume, human: &VariantPayload) -> Tailore
         education: human.education.clone(),
         skills_section: human.skills_section.clone(),
         projects: human.projects.clone(),
+        achievements: human.achievements.clone(),
         certifications: human.certifications.clone(),
     }
 }
@@ -678,6 +687,7 @@ mod tests {
                 skills: vec!["Rust".into(), "Kubernetes".into()],
             },
             projects: Vec::new(),
+            achievements: Vec::new(),
             certifications: Vec::new(),
         }
     }
