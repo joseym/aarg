@@ -312,22 +312,59 @@ impl CallToolResult {
             structured_content: None,
         }
     }
+
+    /// Append resource-link content blocks (e.g. rendered PDFs) so the client
+    /// surfaces them as openable artifacts alongside the text result.
+    pub fn with_resource_links(mut self, links: impl IntoIterator<Item = Content>) -> Self {
+        self.content.extend(links);
+        self
+    }
 }
 
 /// A single content block. MCP defines several kinds (text, image, embedded
-/// resource); this server returns text. Rendered PDFs are delivered through
-/// the resources capability (`resources/read`), not inlined here — a binary
-/// PDF can't be placed into a tool result's model-visible content (the client
-/// would try to read it as an image and reject the media type).
+/// resource, resource link); this server returns text plus `resource_link`s. A
+/// rendered PDF is handed over as a `resource_link` pointing at its
+/// `resources/read` uri, never as an embedded blob: a binary PDF inlined in the
+/// model-visible content makes the client try to read it as an image and reject
+/// the media type, whereas a link resolves to the PDF the client opens.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Content {
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    /// A reference to a resource the client can fetch via `resources/read`
+    /// (here, a rendered PDF). It carries no bytes, so it surfaces as an
+    /// openable artifact without the client choking on a binary blob.
+    #[serde(rename = "resource_link")]
+    ResourceLink {
+        uri: String,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
+    },
 }
 
 impl Content {
     pub fn text(text: impl Into<String>) -> Self {
         Content::Text { text: text.into() }
+    }
+
+    /// A link to a fetchable resource (e.g. a rendered PDF by its `aarg://`
+    /// uri), so a tool result hands over an openable artifact, not a path.
+    pub fn resource_link(
+        uri: impl Into<String>,
+        name: impl Into<String>,
+        mime_type: Option<String>,
+    ) -> Self {
+        Content::ResourceLink {
+            uri: uri.into(),
+            name: name.into(),
+            description: None,
+            mime_type,
+        }
     }
 }
 
@@ -396,6 +433,27 @@ mod tests {
         assert_eq!(wire["content"][0]["text"], "hello");
         // No error flag on a success.
         assert!(wire.get("isError").is_none());
+    }
+
+    #[test]
+    fn a_resource_link_serializes_with_snake_case_type_and_camel_mime() {
+        let result = CallToolResult::json(json!({"build_id": "047"})).with_resource_links([
+            Content::resource_link(
+                "aarg://build/047/resume.ats.pdf",
+                "build 047 · resume.ats.pdf",
+                Some("application/pdf".to_string()),
+            ),
+        ]);
+        let wire = serde_json::to_value(&result).unwrap();
+        // The text result is still first; the link rides alongside it.
+        assert_eq!(wire["content"][0]["type"], "text");
+        let link = &wire["content"][1];
+        assert_eq!(link["type"], "resource_link");
+        assert_eq!(link["uri"], "aarg://build/047/resume.ats.pdf");
+        assert_eq!(link["name"], "build 047 · resume.ats.pdf");
+        assert_eq!(link["mimeType"], "application/pdf");
+        // No description key when it is unset.
+        assert!(link.get("description").is_none());
     }
 
     #[test]

@@ -38,7 +38,9 @@ use crate::trace::Tracer;
 use crate::variant::Variant;
 
 use super::client::{ElicitationUser, McpClient};
-use super::protocol::{CallToolResult, ReadResourceResult, Resource, ResourceContents, Tool};
+use super::protocol::{
+    CallToolResult, Content, ReadResourceResult, Resource, ResourceContents, Tool,
+};
 
 /// The tools advertised to the client, in a stable, discovery-friendly
 /// order: cheap read-only first, then analysis, then the writers.
@@ -193,10 +195,11 @@ async fn get_build(arguments: Value) -> Result<CallToolResult, CliError> {
     insert_serialized(&mut obj, "adversarial_report", &report)?;
     insert_serialized(&mut obj, "ats_report", &ats)?;
     obj.insert("pdfs".into(), json!(build_pdf_paths(&args.build_id)));
-    // PDFs are delivered through the resources capability (resources/read), not
-    // inlined here: a binary PDF can't ride inside a tool result (the client
-    // would try to place it into the model's content as an image and reject it).
-    Ok(CallToolResult::json(Value::Object(obj)))
+    // The PDFs ride along as resource links (the client fetches each via
+    // resources/read), never inlined: a binary PDF in a tool result makes the
+    // client try to read it as an image and reject the media type.
+    Ok(CallToolResult::json(Value::Object(obj))
+        .with_resource_links(build_pdf_links(&args.build_id)))
 }
 
 // ---------------------------------------------------------------------
@@ -338,9 +341,9 @@ async fn tailor(arguments: Value, client: &McpClient) -> Result<CallToolResult, 
     {
         insert_serialized(&mut obj, "adversarial_report", &report)?;
     }
-    // PDFs are delivered through the resources capability (see get_build), not
-    // inlined: a binary PDF can't ride inside a tool result.
-    Ok(CallToolResult::json(Value::Object(obj)))
+    // The PDFs ride along as resource links (see get_build); the client fetches
+    // each via resources/read rather than receiving a binary blob inline.
+    Ok(CallToolResult::json(Value::Object(obj)).with_resource_links(build_pdf_links(&summary.id)))
 }
 
 // ---------------------------------------------------------------------
@@ -505,6 +508,24 @@ fn build_pdf_paths(id: &str) -> Vec<String> {
     build_pdfs(id)
         .iter()
         .map(|path| path.display().to_string())
+        .collect()
+}
+
+/// Resource-link content blocks for a build's rendered PDFs, so a tool result
+/// hands the client openable artifacts (it fetches each via `resources/read`)
+/// instead of bare filesystem paths. Same `aarg://` uri scheme as
+/// [`list_resources`].
+fn build_pdf_links(id: &str) -> Vec<Content> {
+    build_pdfs(id)
+        .iter()
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            Some(Content::resource_link(
+                format!("aarg://build/{id}/{name}"),
+                format!("build {id} · {name}"),
+                Some("application/pdf".to_string()),
+            ))
+        })
         .collect()
 }
 
