@@ -131,6 +131,11 @@ pub enum Command {
         #[arg(long, value_name = "TEMPLATE")]
         template: Option<std::path::PathBuf>,
     },
+    /// Change a past build's resume in plain words (remove a bullet, adjust tone), then re-render
+    Tune {
+        /// Build id to tune (e.g. 029); omit to pick one interactively
+        build: Option<String>,
+    },
     /// Maintain the skills in your dataset
     Skills {
         #[command(subcommand)]

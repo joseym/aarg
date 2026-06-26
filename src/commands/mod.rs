@@ -29,6 +29,7 @@ pub mod skills;
 pub mod tailor;
 pub mod templates;
 pub mod trace;
+pub mod tune;
 pub mod voice;
 
 use std::path::{Path, PathBuf};
@@ -977,6 +978,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             no_llm,
             template,
         } => render::run(build, no_llm, template).await?,
+        Command::Tune { build } => tune::run(build).await?,
         Command::Attack { build } => attack::run(build).await?,
         Command::History { command: None } => history::list()?,
         Command::History {
