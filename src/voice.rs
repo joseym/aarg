@@ -17,6 +17,12 @@
 //!
 //! Only `summary` and bullet lines are touched; the skills section and
 //! every structural field are left exactly as tailoring produced them.
+//!
+//! The same engine backs conversational tuning ([`rewrite_lines`]): there the
+//! *user* names the lines and an optional register ("make it more
+//! conversational") instead of a cliché scan choosing them. The guards are
+//! identical — phrasing only, the `digit_runs` fact guard, scope held by the
+//! prompt — so a tone request can never become a fabrication.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -87,11 +93,17 @@ pub struct VoiceStats {
     pub usage: TokenUsage,
 }
 
-/// What the agent needs: the flagged lines and the user's samples.
+/// What the agent needs: the lines to rewrite and the user's samples.
 #[derive(Serialize)]
 pub struct VoiceRewriteInput {
     pub lines: Vec<Line>,
     pub samples: Vec<String>,
+    /// An optional register to aim for ("conversational", "more direct"),
+    /// from a tune request. Shapes phrasing only; the fact and scope guards in
+    /// the system prompt are unchanged. `None` is the plain voice pass, whose
+    /// traced input stays byte-identical (the field is skipped when empty).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<String>,
 }
 
 /// Rewrites flagged lines toward the user's voice.
@@ -127,7 +139,17 @@ impl Agent for VoiceRewriteAgent {
                 text.push_str(&format!("[sample {}] {}\n", i + 1, sample));
             }
         }
-        text.push_str("\nRewrite each of these lines in that voice, keeping every fact:\n");
+        match &input.tone {
+            Some(tone) if input.samples.is_empty() => text.push_str(&format!(
+                "\nRewrite each of these lines in a {tone} register, keeping every fact:\n"
+            )),
+            Some(tone) => text.push_str(&format!(
+                "\nRewrite each of these lines in that voice, leaning {tone}, keeping every fact:\n"
+            )),
+            None => {
+                text.push_str("\nRewrite each of these lines in that voice, keeping every fact:\n")
+            }
+        }
         for line in &input.lines {
             text.push_str(&format!("[{}] {}\n", line.id, line.text));
         }
@@ -184,7 +206,7 @@ struct RawLine {
     text: String,
 }
 
-const SUMMARY_ID: &str = "summary";
+pub(crate) const SUMMARY_ID: &str = "summary";
 
 /// The draft lines that need a voice pass: the summary and any bullet
 /// that either trips the cliché deny-list *or* reads raw — a verbatim,
@@ -248,8 +270,63 @@ pub async fn rewrite_to_voice(
     resume: &TailoredResume,
     samples: &[String],
 ) -> Result<(TailoredResume, VoiceStats), VoiceError> {
-    let flagged = flagged_lines(resume);
-    if flagged.is_empty() {
+    apply_rewrites(ctx, resume, flagged_lines(resume), samples, None).await
+}
+
+/// Rewrite a caller-chosen set of lines (by id) toward a register and/or the
+/// user's samples — the engine behind a tune "make it more conversational"
+/// request. Unlike [`rewrite_to_voice`], the lines are named by the caller
+/// (the tune router), not found by the cliché scan, so a clean line the user
+/// still wants warmer is rewritten. Same guards: phrasing only, the
+/// `digit_runs` fact guard, scope held by the prompt. Ids that don't resolve
+/// are skipped; an empty resolved set costs no model call.
+pub async fn rewrite_lines(
+    ctx: &crate::agent::AgentContext<'_>,
+    resume: &TailoredResume,
+    ids: &[String],
+    samples: &[String],
+    tone: Option<String>,
+) -> Result<(TailoredResume, VoiceStats), VoiceError> {
+    let lines: Vec<Line> = ids
+        .iter()
+        .filter_map(|id| {
+            line_text(resume, id).map(|text| Line {
+                id: id.clone(),
+                text,
+            })
+        })
+        .collect();
+    apply_rewrites(ctx, resume, lines, samples, tone).await
+}
+
+/// Every rewritable line id in presentation order: the summary then each
+/// bullet's source id. For a "make the whole thing more conversational"
+/// request that names no single line.
+pub fn all_line_ids(resume: &TailoredResume) -> Vec<String> {
+    let mut ids = Vec::new();
+    if !resume.summary.is_empty() {
+        ids.push(SUMMARY_ID.to_string());
+    }
+    for role in &resume.roles {
+        for bullet in &role.bullets {
+            ids.push(bullet.source_id.0.clone());
+        }
+    }
+    ids
+}
+
+/// Run the agent over `lines`, then fold back only the rewrites that keep the
+/// facts. The shared body of [`rewrite_to_voice`] and [`rewrite_lines`]: the
+/// only difference between them is which lines and tone arrive here. An empty
+/// line set short-circuits with no model call.
+async fn apply_rewrites(
+    ctx: &crate::agent::AgentContext<'_>,
+    resume: &TailoredResume,
+    lines: Vec<Line>,
+    samples: &[String],
+    tone: Option<String>,
+) -> Result<(TailoredResume, VoiceStats), VoiceError> {
+    if lines.is_empty() {
         return Ok((resume.clone(), VoiceStats::default()));
     }
 
@@ -257,8 +334,9 @@ pub async fn rewrite_to_voice(
         .run(
             ctx,
             VoiceRewriteInput {
-                lines: flagged,
+                lines,
                 samples: samples.to_vec(),
+                tone,
             },
         )
         .await?;
@@ -475,5 +553,81 @@ mod tests {
         assert!(system.contains("generic resume-speak"));
         assert!(system.contains("could not defend in an interview"));
         assert!(system.contains("AI detection"));
+    }
+
+    #[tokio::test]
+    async fn rewrite_lines_rewrites_named_lines_in_the_requested_register() {
+        // A clean draft: nothing the cliché scan would flag. The user still
+        // asks for a conversational register on lines they name.
+        let resume = draft(
+            "Built and shipped the settlement platform.",
+            &[("bullet-1", "Owned the release process")],
+        );
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"rewrites": [
+                {"id": "summary", "text": "I built and shipped the settlement platform."},
+                {"id": "bullet-1", "text": "I ran how we shipped releases"}
+            ]}"#,
+        );
+
+        let (out, stats) = rewrite_lines(
+            &ctx(&mock),
+            &resume,
+            &["summary".to_string(), "bullet-1".to_string()],
+            &[],
+            Some("conversational".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stats.rewritten, 2);
+        assert_eq!(out.summary, "I built and shipped the settlement platform.");
+        assert_eq!(
+            out.roles[0].bullets[0].text,
+            "I ran how we shipped releases"
+        );
+        // The requested register reached the prompt; with no samples it leads.
+        let requests = mock.requests();
+        let user = &requests[0].messages[0].content;
+        assert!(user.contains("conversational register"));
+    }
+
+    #[tokio::test]
+    async fn rewrite_lines_holds_the_digit_guard_and_skips_unknown_ids() {
+        let resume = draft("A plain summary.", &[("bullet-1", "Ran the rollout")]);
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"rewrites": [
+                {"id": "bullet-1", "text": "Ran the rollout across 5 teams"},
+                {"id": "ghost", "text": "anything"}
+            ]}"#,
+        );
+
+        let (out, stats) = rewrite_lines(
+            &ctx(&mock),
+            &resume,
+            // "ghost" doesn't resolve to a line, so it never reaches the agent
+            // as input and its echoed rewrite is dropped on fold-back.
+            &["bullet-1".to_string(), "ghost".to_string()],
+            &[],
+            Some("warmer".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // The invented "5" is reverted; nothing else changes.
+        assert_eq!(out.roles[0].bullets[0].text, "Ran the rollout");
+        assert_eq!(stats.reverted, 1);
+        assert_eq!(stats.rewritten, 0);
+    }
+
+    #[test]
+    fn all_line_ids_lists_the_summary_then_each_bullet() {
+        let resume = draft("A summary.", &[("bullet-1", "One"), ("bullet-2", "Two")]);
+        assert_eq!(
+            all_line_ids(&resume),
+            vec!["summary", "bullet-1", "bullet-2"]
+        );
     }
 }
