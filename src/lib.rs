@@ -42,6 +42,7 @@ pub mod summary;
 pub mod tailor;
 pub mod templates;
 pub mod terminal;
+pub mod tune;
 pub mod variant;
 pub mod verify;
 pub mod vision;
