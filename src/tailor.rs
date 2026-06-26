@@ -907,6 +907,82 @@ pub(crate) fn within_evidence(candidate: &str, allowed: &[&str]) -> bool {
     digit_runs(candidate).is_subset(&permitted)
 }
 
+/// Replace em/en dashes in finalized prose with plain punctuation. A dash clause
+/// break (`led the team — shipped it`) is a well-known AI-writing tell, and an
+/// imported dataset may carry dashes from its source, so the output is normalized
+/// deterministically rather than left to the model. Punctuation only — it never
+/// touches a number, name, or claim, so it's safe to run after scoring and over
+/// verbatim dataset text alike.
+///
+/// A dash between two digits becomes a hyphen (a numeric range, `2020–2023` →
+/// `2020-2023`); used as a clause separator it becomes a comma; at a string edge
+/// it's dropped. Surrounding spaces collapse.
+pub(crate) fn normalize_dashes(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\u{2014}' || c == '\u{2013}' {
+            // The last non-space output char and the next non-space input char
+            // decide whether this dash is a numeric range or a clause break.
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            let next = chars.get(j).copied();
+            let prev = out.trim_end().chars().last();
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            match (prev, next) {
+                (Some(p), Some(n)) if p.is_ascii_digit() && n.is_ascii_digit() => out.push('-'),
+                (Some(p), Some(_)) => {
+                    // Don't double up if the clause already closes with punctuation.
+                    if !matches!(p, ',' | ';' | ':' | '.' | '!' | '?') {
+                        out.push(',');
+                    }
+                    out.push(' ');
+                }
+                // A dash with nothing on one side is just dropped.
+                _ => {}
+            }
+            i = j;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Normalize dashes across every free-text field of a finalized resume (headline,
+/// summary, bullets, project text, achievements, skills). Run on the canonical
+/// draft before it's saved and on the reworded human variant before it's rendered,
+/// so neither the stored JSON nor either PDF ships an em-dash. It only rewrites
+/// punctuation, so it can't change what the page claims.
+pub(crate) fn scrub_resume_text(resume: &mut TailoredResume) {
+    if let Some(title) = resume.target_title.as_mut() {
+        *title = normalize_dashes(title);
+    }
+    resume.summary = normalize_dashes(&resume.summary);
+    for role in &mut resume.roles {
+        for bullet in &mut role.bullets {
+            bullet.text = normalize_dashes(&bullet.text);
+        }
+    }
+    for project in &mut resume.projects {
+        project.name = normalize_dashes(&project.name);
+        project.summary = normalize_dashes(&project.summary);
+    }
+    for achievement in &mut resume.achievements {
+        achievement.text = normalize_dashes(&achievement.text);
+    }
+    for skill in &mut resume.skills_section.skills {
+        *skill = normalize_dashes(skill);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -1653,6 +1729,39 @@ mod tests {
             runs,
             ["99", "40", "2024"].iter().map(|s| s.to_string()).collect()
         );
+    }
+
+    #[test]
+    fn normalize_dashes_turns_clause_breaks_into_commas() {
+        // A spaced em-dash clause break becomes a comma; surrounding spaces collapse.
+        assert_eq!(
+            normalize_dashes("Led the platform team — shipped three products"),
+            "Led the platform team, shipped three products"
+        );
+        // An unspaced em-dash too.
+        assert_eq!(
+            normalize_dashes("Senior Engineer—Platform"),
+            "Senior Engineer, Platform"
+        );
+        // En-dash clause break, same treatment.
+        assert_eq!(normalize_dashes("fast – reliable"), "fast, reliable");
+    }
+
+    #[test]
+    fn normalize_dashes_keeps_numeric_ranges_as_hyphens_and_leaves_plain_text() {
+        // Between digits it's a range → hyphen, no comma.
+        assert_eq!(
+            normalize_dashes("grew revenue 10–15%"),
+            "grew revenue 10-15%"
+        );
+        assert_eq!(normalize_dashes("2020 — 2023"), "2020-2023");
+        // No dash, no change (and an ASCII hyphen is left alone).
+        assert_eq!(
+            normalize_dashes("end-to-end delivery"),
+            "end-to-end delivery"
+        );
+        // Don't double punctuation when a clause already closes with one.
+        assert_eq!(normalize_dashes("done, — next"), "done, next");
     }
 
     #[test]

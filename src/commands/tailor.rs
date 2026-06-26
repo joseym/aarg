@@ -702,7 +702,11 @@ pub async fn run(
         }
     }
 
-    // Finalize from the best draft seen.
+    // Finalize from the best draft seen. Strip AI-tell em/en dashes from the
+    // canonical prose first, so the stored JSON, the ATS projection, the human
+    // adapter's input, and the cover letter's input all start clean. Punctuation
+    // only — no claim changes, so it runs after scoring without re-review.
+    crate::tailor::scrub_resume_text(&mut best.resume);
     builds::write_json(&build.dir, "canonical.json", &best.resume)?;
     builds::write_json(&build.dir, "adversarial_report.json", &best.report)?;
     builds::write_json(&build.dir, "ats_report.json", &best.ats_report)?;
@@ -756,6 +760,10 @@ pub async fn run(
         // presentation, never in claims. A divergence fails the build.
         variant::check_claims(&best.resume, &human)?;
         let mut human = human;
+        // The adapter reworded the canonical prose, so it can have re-introduced
+        // em-dashes the canonical scrub already removed; clean the human payload
+        // before it renders. Claim-divergence was already vetted above.
+        variant::scrub_variant_text(&mut human);
         human.template = TemplateId(chosen.id.clone());
         let sp = Spinner::start("rendering the human resume");
         let pdf = render::render(&build.dir, &human, &chosen.template)?;

@@ -133,7 +133,15 @@ pub async fn write_cover_letter(
         voice_samples: voice_samples.to_vec(),
     };
     let run = CoverLetterAgent.run(ctx, input).await?;
-    let (letter, warnings) = run.output;
+    let (mut letter, warnings) = run.output;
+    // The prompt asks the model to avoid em-dashes, but instructions aren't a
+    // guarantee — strip any it produced anyway, deterministically, so the
+    // rendered letter never carries an AI-writing tell. Punctuation only.
+    letter.greeting = crate::tailor::normalize_dashes(&letter.greeting);
+    for paragraph in &mut letter.paragraphs {
+        *paragraph = crate::tailor::normalize_dashes(paragraph);
+    }
+    letter.signoff = crate::tailor::normalize_dashes(&letter.signoff);
     Ok((letter, warnings, run.usage))
 }
 

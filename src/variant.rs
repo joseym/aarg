@@ -140,6 +140,40 @@ pub struct VariantPayload {
     pub layout_hints: LayoutHints,
 }
 
+/// Strip AI-tell em/en dashes from a variant payload's free-text fields. The ATS
+/// payload is a copy of the already-scrubbed canonical draft, so it's clean; the
+/// human payload is reworded by the adapter LLM, which can re-introduce a dash —
+/// so the reworded payload is normalized before it renders. Punctuation only,
+/// never a claim (delegates to `tailor::normalize_dashes`).
+pub(crate) fn scrub_variant_text(payload: &mut VariantPayload) {
+    use crate::tailor::normalize_dashes;
+    if let Some(title) = payload.target_title.as_mut() {
+        *title = normalize_dashes(title);
+    }
+    payload.summary = normalize_dashes(&payload.summary);
+    for role in &mut payload.roles {
+        for bullet in &mut role.bullets {
+            bullet.text = normalize_dashes(&bullet.text);
+        }
+    }
+    for project in &mut payload.projects {
+        project.name = normalize_dashes(&project.name);
+        project.summary = normalize_dashes(&project.summary);
+    }
+    for achievement in &mut payload.achievements {
+        achievement.text = normalize_dashes(&achievement.text);
+    }
+    for skill in &mut payload.skills_section.skills {
+        *skill = normalize_dashes(skill);
+    }
+    for group in &mut payload.skill_groups {
+        group.label = normalize_dashes(&group.label);
+        for skill in &mut group.skills {
+            *skill = normalize_dashes(skill);
+        }
+    }
+}
+
 /// The ATS projection: a faithful, deterministic copy of the canonical draft
 /// plus plain ATS layout hints. No rewording, no model call — the canonical
 /// draft is already what an ATS wants.
