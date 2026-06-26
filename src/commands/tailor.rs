@@ -1204,14 +1204,19 @@ fn objection_card(objection: &Objection) -> String {
 }
 
 /// Whether an objection can be refined through a grounded-suggestion flow: it
-/// must target a specific bullet or the summary (the free-prose fields with a
-/// refine path) and be a wording kind the copilot handles (not layout, not a
-/// missing metric, not a catch-all). Skills and "overall" have no refine path.
+/// must target a specific bullet or the summary — the free-prose fields with a
+/// refine path. Any flagged bullet or summary qualifies, whatever the flaw
+/// kind: the evidence interview can act on a weak verb, a generic line, a
+/// missing metric, or a catch-all alike, all by asking the user to restate the
+/// truth. (This used to also require a "strengthenable" kind, which left the
+/// user only "accept" or "leave" on a bullet the reviewer had even printed a
+/// suggestion for — a fix with no way to act on it.) Skills, layout, and
+/// "overall" have no single line to refine, so they still offer accept/leave.
 fn refine_eligible(objection: &Objection) -> bool {
     matches!(
         objection.target,
         ObjectionTarget::Bullet(_) | ObjectionTarget::Summary
-    ) && strengthen::is_strengthenable(objection.kind)
+    )
 }
 
 fn kind_str(kind: ObjectionKind) -> &'static str {
@@ -1404,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn refine_is_eligible_for_strengthenable_bullets_and_the_summary() {
+    fn refine_is_eligible_for_any_bullet_or_the_summary() {
         // A wording objection on a specific bullet: eligible (bullet flow).
         assert!(refine_eligible(&objection(
             ObjectionTarget::Bullet(BulletId("b1".into())),
@@ -1419,17 +1424,25 @@ mod tests {
             Severity::Minor,
             None,
         )));
-        // A bullet, but not a wording kind the copilot handles.
-        assert!(!refine_eligible(&objection(
+        // A bullet flagged for a missing metric is now eligible too: the
+        // interview can act on it, so a printed suggestion is never a dead end.
+        assert!(refine_eligible(&objection(
             ObjectionTarget::Bullet(BulletId("b2".into())),
             ObjectionKind::NoMetric,
             Severity::Major,
             None,
         )));
-        // Targets with no free-prose refine path: skills and "overall".
+        // Targets with no single free-prose line to refine: skills, layout,
+        // and "overall" still offer only accept/leave.
         assert!(!refine_eligible(&objection(
             ObjectionTarget::SkillsSection,
             ObjectionKind::GenericPhrasing,
+            Severity::Minor,
+            None,
+        )));
+        assert!(!refine_eligible(&objection(
+            ObjectionTarget::Layout,
+            ObjectionKind::LayoutDense,
             Severity::Minor,
             None,
         )));
