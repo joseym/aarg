@@ -38,6 +38,7 @@ use crate::style::{self, Spinner, StreamReporter};
 use crate::summary;
 use crate::tailor::{JdId, RevisionContext, TailorOutcome, TailoredResume, tailor_resume};
 use crate::templates;
+use crate::tune;
 use crate::user::{Answer, Question, UserHandle};
 use crate::variant::{self, TemplateId, Variant, VariantAdapterAgent, VariantInput};
 use crate::verify::{add_one_skill, unbacked_keywords, verify_keywords};
@@ -699,6 +700,42 @@ pub async fn run(
             }
             // Voice is a finish, not a gate: if it fails, ship the draft.
             Err(e) => eprintln!("{}", style::dim(format!("voice: skipped ({e})"))),
+        }
+    }
+
+    // Conversational tuning: a last, optional pass where the person changes the
+    // finished draft in plain words — "drop the intern bullet", "make the
+    // summary read more conversational". It runs here, after the revision loop
+    // and the voice pass (both of which regenerate the draft from the dataset),
+    // so a surgical removal or tone change survives to the page. The router only
+    // maps a request onto a grounded operation (a removal, or the same guarded
+    // voice rewrite), never writes a claim. A piped/CI run skips it.
+    if user.is_interactive() {
+        let samples: Vec<String> = dataset
+            .voice_samples
+            .iter()
+            .map(|s| s.text.clone())
+            .collect();
+        let (changed, usage) = tune::run_session(&ctx, &mut best.resume, user, &samples).await;
+        add_usage(&mut total, usage);
+        if changed {
+            // Re-score so the stored score and report reflect the tuned draft.
+            // The user's edits stand regardless of the number — this refreshes
+            // it, it does not gate. The score-must-improve gate guards the
+            // autonomous loop, never the person's own deliberate change.
+            let retuned = evaluate(
+                &ctx,
+                &build.dir,
+                max_revisions + 2,
+                best.resume.clone(),
+                &requirements,
+                &dataset,
+                &gap,
+            )
+            .await?;
+            add_usage(&mut total, retuned.review_usage);
+            eprintln!("{}", iteration_line("after tuning", &retuned));
+            best = retuned;
         }
     }
 
