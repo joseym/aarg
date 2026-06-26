@@ -184,6 +184,13 @@ pub enum RenderError {
 
     #[error("could not serialize the resume payload")]
     Payload(#[from] serde_json::Error),
+
+    #[error("could not read the rendered preview {path}")]
+    PreviewRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Resolve the `typst` program to invoke. Prefer the one on `PATH`, so the
@@ -345,6 +352,143 @@ fn render_cover_with(
         "cover_letter.pdf",
         template,
     )
+}
+
+// ---------------------------------------------------------------------
+// Preview: a PNG of an already-built variant, for clients that render images
+// inline (where a PDF can only be handed over as a link)
+// ---------------------------------------------------------------------
+
+/// Render PNG preview pages of an already-built resume `variant` in
+/// `build_dir`, at `ppi` resolution: one PNG (as bytes) per page, in page
+/// order. Re-runs typst on the template and payload that [`render`] already
+/// staged for that variant, so the preview matches the PDF pixel for pixel.
+///
+/// Best-effort by contract: returns an empty vec — not an error — when the
+/// variant was not built here (its payload or a recognized template isn't
+/// staged), so a caller can attach previews opportunistically.
+pub fn preview_png(
+    build_dir: &Path,
+    variant: Variant,
+    ppi: u16,
+) -> Result<Vec<Vec<u8>>, RenderError> {
+    preview_png_with(&typst_program(), build_dir, variant, ppi)
+}
+
+/// The testable core of [`preview_png`]; the typst program is a parameter so
+/// tests can point it at a stub.
+fn preview_png_with(
+    typst: &str,
+    build_dir: &Path,
+    variant: Variant,
+    ppi: u16,
+) -> Result<Vec<Vec<u8>>, RenderError> {
+    let payload_name = variant.payload_name();
+    let Some(template_file) = staged_resume_template(build_dir, variant) else {
+        return Ok(Vec::new());
+    };
+    if !build_dir.join(payload_name).exists() {
+        return Ok(Vec::new());
+    }
+
+    // PNG export writes one file per page, so emit into a scratch subdir and
+    // read the bytes back. A fixed name is safe: the MCP server handles one
+    // request at a time, and the dir is removed before returning either way.
+    let out_dir = build_dir.join(".preview");
+    let _ = std::fs::remove_dir_all(&out_dir);
+    std::fs::create_dir_all(&out_dir).map_err(|source| RenderError::Write {
+        path: out_dir.clone(),
+        source,
+    })?;
+
+    let pages = compile_preview_pages(
+        typst,
+        build_dir,
+        payload_name,
+        &template_file,
+        ppi,
+        &out_dir,
+    );
+    let _ = std::fs::remove_dir_all(&out_dir);
+    pages
+}
+
+/// Run typst to PNG and collect the page files' bytes in page order. Split out
+/// so [`preview_png_with`] can always remove the scratch dir afterward,
+/// whatever happens here.
+fn compile_preview_pages(
+    typst: &str,
+    build_dir: &Path,
+    payload_name: &str,
+    template_file: &str,
+    ppi: u16,
+    out_dir: &Path,
+) -> Result<Vec<Vec<u8>>, RenderError> {
+    // `{0p}` zero-pads the page number so the files sort in page order.
+    let output = Command::new(typst)
+        .args([
+            "compile",
+            "--input",
+            &format!("data={payload_name}"),
+            "--format",
+            "png",
+            "--ppi",
+            &ppi.to_string(),
+            template_file,
+            ".preview/page-{0p}.png",
+        ])
+        .current_dir(build_dir)
+        .output();
+
+    match output {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(RenderError::TypstMissing);
+        }
+        Err(e) => return Err(RenderError::Spawn(e)),
+        Ok(out) if !out.status.success() => {
+            return Err(RenderError::TypstFailed {
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            });
+        }
+        Ok(_) => {}
+    }
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(out_dir)
+        .map_err(|source| RenderError::PreviewRead {
+            path: out_dir.to_path_buf(),
+            source,
+        })?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+        })
+        .collect();
+    files.sort();
+
+    let mut pages = Vec::with_capacity(files.len());
+    for path in files {
+        let bytes = std::fs::read(&path).map_err(|source| RenderError::PreviewRead {
+            path: path.clone(),
+            source,
+        })?;
+        pages.push(bytes);
+    }
+    Ok(pages)
+}
+
+/// The staged resume template filename for `variant` in `build_dir`: the
+/// built-in (`classic`/`minimal` for ATS, `modern`/… for human) whose `.typ`
+/// was staged next to the PDF. `None` when none is present (e.g. a future
+/// user-supplied template), in which case no preview is rendered.
+fn staged_resume_template(build_dir: &Path, variant: Variant) -> Option<String> {
+    BUILTINS
+        .iter()
+        .filter(|builtin| builtin.variant == variant)
+        .map(|builtin| builtin.filename)
+        .find(|filename| build_dir.join(filename).exists())
+        .map(|filename| filename.to_string())
 }
 
 /// Check that the `typst` binary is on PATH, so a command can fail fast with
@@ -653,5 +797,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, RenderError::TemplateRead { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_preview_renders_png_pages_and_cleans_up_the_scratch_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // Stage what the ATS preview looks for: a recognized template + payload.
+        std::fs::write(
+            dir.path().join("classic.typ"),
+            "#let d = json(sys.inputs.data)\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("ats_payload.json"), "{}").unwrap();
+        // A stub typst that emits one page into the scratch dir the caller made.
+        let stub = stub_typst(dir.path(), "printf 'PNG' > .preview/page-1.png; exit 0");
+
+        let pages = preview_png_with(&stub, dir.path(), Variant::Ats, 120).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0], b"PNG");
+        // The scratch dir is removed afterward, leftover from neither success
+        // nor a stale prior run.
+        assert!(!dir.path().join(".preview").exists());
+    }
+
+    #[test]
+    fn a_preview_is_empty_when_the_variant_was_not_built_here() {
+        let dir = tempfile::tempdir().unwrap();
+        // No staged template or payload → no preview, and not an error, so a
+        // caller can attach previews opportunistically.
+        let pages = preview_png_with("typst", dir.path(), Variant::Human, 120).unwrap();
+        assert!(pages.is_empty());
     }
 }

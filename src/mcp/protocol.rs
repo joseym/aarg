@@ -319,19 +319,39 @@ impl CallToolResult {
         self.content.extend(links);
         self
     }
+
+    /// Append image content blocks (e.g. PNG previews of a rendered resume) so a
+    /// client that renders images inline shows the page itself — which a PDF
+    /// resource/link does not surface.
+    pub fn with_images(mut self, images: impl IntoIterator<Item = Content>) -> Self {
+        self.content.extend(images);
+        self
+    }
 }
 
 /// A single content block. MCP defines several kinds (text, image, embedded
-/// resource, resource link); this server returns text plus `resource_link`s. A
-/// rendered PDF is handed over as a `resource_link` pointing at its
-/// `resources/read` uri, never as an embedded blob: a binary PDF inlined in the
-/// model-visible content makes the client try to read it as an image and reject
-/// the media type, whereas a link resolves to the PDF the client opens.
+/// resource, resource link); this server returns text, an inline `image`
+/// preview, and `resource_link`s. A rendered PDF is handed over as a
+/// `resource_link` pointing at its `resources/read` uri, never as an embedded
+/// blob: a binary PDF inlined in the model-visible content makes the client try
+/// to read it as an image and reject the media type, whereas a link resolves to
+/// the PDF the client opens. A PNG *preview* of that PDF, by contrast, is sent
+/// as an `image` block, which clients like Claude Desktop render inline so the
+/// user sees the page without opening anything.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Content {
     Text {
         text: String,
+    },
+    /// A base64-encoded image. Where a PDF must be a link (clients refuse to
+    /// inline its bytes), an image block is rendered inline by clients like
+    /// Claude Desktop — used here for a PNG preview of the rendered resume so
+    /// the user sees the page itself in the chat.
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
     },
     /// A reference to a resource the client can fetch via `resources/read`
     /// (here, a rendered PDF). It carries no bytes, so it surfaces as an
@@ -364,6 +384,15 @@ impl Content {
             name: name.into(),
             description: None,
             mime_type,
+        }
+    }
+
+    /// A base64-encoded PNG image block. Clients like Claude Desktop render
+    /// these inline, so a resume preview is visible without opening the PDF.
+    pub fn image_png(data: impl Into<String>) -> Self {
+        Content::Image {
+            data: data.into(),
+            mime_type: "image/png".to_string(),
         }
     }
 }
@@ -454,6 +483,19 @@ mod tests {
         assert_eq!(link["mimeType"], "application/pdf");
         // No description key when it is unset.
         assert!(link.get("description").is_none());
+    }
+
+    #[test]
+    fn an_image_block_serializes_as_type_image_with_a_camel_mime() {
+        let result = CallToolResult::json(json!({"build_id": "049"}))
+            .with_images([Content::image_png("QUJD")]);
+        let wire = serde_json::to_value(&result).unwrap();
+        // Text first; the inline image rides alongside it.
+        assert_eq!(wire["content"][0]["type"], "text");
+        let img = &wire["content"][1];
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["data"], "QUJD");
+        assert_eq!(img["mimeType"], "image/png");
     }
 
     #[test]

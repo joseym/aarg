@@ -62,8 +62,8 @@ pub fn descriptors() -> Vec<Tool> {
         tool(
             "get_build",
             "Fetch one past build by id: its tailored resume, the adversarial reviewer's \
-             report, ATS keyword coverage, and its rendered PDFs (available as MCP \
-             resources). Read-only.",
+             report, ATS keyword coverage, an inline image preview of the resume, and its \
+             rendered PDFs (available as MCP resources). Read-only.",
             object(
                 &[("build_id", "string", "The build id, e.g. \"041\".")],
                 &["build_id"],
@@ -104,8 +104,8 @@ pub fn descriptors() -> Vec<Tool> {
              pass build_id to re-tailor a past build using its stored job description (no \
              re-paste needed). Writes a new build. Never fabricates: every line traces to \
              recorded, evidence-backed material. Returns the build id, score, keyword \
-             coverage, the reviewer's report, and the rendered PDFs (available as MCP \
-             resources).",
+             coverage, the reviewer's report, an inline image preview of the tailored resume, \
+             and the rendered PDFs (available as MCP resources).",
             tailor_schema(),
         ),
         tool(
@@ -195,10 +195,12 @@ async fn get_build(arguments: Value) -> Result<CallToolResult, CliError> {
     insert_serialized(&mut obj, "adversarial_report", &report)?;
     insert_serialized(&mut obj, "ats_report", &ats)?;
     obj.insert("pdfs".into(), json!(build_pdf_paths(&args.build_id)));
-    // The PDFs ride along as resource links (the client fetches each via
-    // resources/read), never inlined: a binary PDF in a tool result makes the
-    // client try to read it as an image and reject the media type.
+    // A PNG preview rides along as an inline image (clients like Claude Desktop
+    // render it in the chat), and the PDFs as resource links the client fetches
+    // via resources/read — never an inlined binary PDF, which the client would
+    // try to read as an image and reject the media type.
     Ok(CallToolResult::json(Value::Object(obj))
+        .with_images(build_preview_images(&args.build_id))
         .with_resource_links(build_pdf_links(&args.build_id)))
 }
 
@@ -341,9 +343,12 @@ async fn tailor(arguments: Value, client: &McpClient) -> Result<CallToolResult, 
     {
         insert_serialized(&mut obj, "adversarial_report", &report)?;
     }
-    // The PDFs ride along as resource links (see get_build); the client fetches
-    // each via resources/read rather than receiving a binary blob inline.
-    Ok(CallToolResult::json(Value::Object(obj)).with_resource_links(build_pdf_links(&summary.id)))
+    // A PNG preview of the tailored resume rides along as an inline image, and
+    // the PDFs as resource links (see get_build); the client fetches each via
+    // resources/read rather than receiving a binary blob inline.
+    Ok(CallToolResult::json(Value::Object(obj))
+        .with_images(build_preview_images(&summary.id))
+        .with_resource_links(build_pdf_links(&summary.id)))
 }
 
 // ---------------------------------------------------------------------
@@ -526,6 +531,67 @@ fn build_pdf_links(id: &str) -> Vec<Content> {
                 Some("application/pdf".to_string()),
             ))
         })
+        .collect()
+}
+
+/// Inline PNG preview image blocks for a build's rendered resume, so a client
+/// that renders images (e.g. Claude Desktop) shows the page itself — which a PDF
+/// resource/link does not surface. Best-effort: any render failure yields no
+/// image rather than failing the tool. Prefers the designed human resume when it
+/// was built, else the ATS one.
+///
+/// Page byte-size scales with content density, and Claude Desktop rejects an
+/// image much over ~1 MB of base64 (so ~750 KB of raw PNG). A fixed resolution
+/// is therefore fragile: a dense page can blow the cap at high ppi. Instead, walk
+/// a descending ppi ladder and take the crispest resolution whose shown pages all
+/// fit — stepping down rather than silently dropping a page.
+fn build_preview_images(id: &str) -> Vec<Content> {
+    // Claude Desktop renders a small image inline but silently drops a large one:
+    // ~0.2 MB of base64 shows, ~0.8 MB does not, with the threshold somewhere
+    // between and undocumented. So the preview targets a legible-but-safe size —
+    // one page, a resolution ladder, a ceiling at roughly half the level that
+    // failed to render.
+    const MAX_PAGES: usize = 1;
+    // Raw-PNG ceiling; base64 inflates by 4/3, so 330 KB → ~440 KB on the wire,
+    // about half the ~0.8 MB Desktop refused to show.
+    const MAX_BYTES: usize = 330_000;
+    const PPI_LADDER: [u16; 3] = [56, 48, 40];
+
+    let Ok(root) = crate::builds::builds_root() else {
+        return Vec::new();
+    };
+    let dir = root.join(id);
+    // The nicest resume that was actually built here (a variant's payload is
+    // staged only if it was rendered).
+    let variant = if dir.join(Variant::Human.payload_name()).exists() {
+        Variant::Human
+    } else if dir.join(Variant::Ats.payload_name()).exists() {
+        Variant::Ats
+    } else {
+        return Vec::new();
+    };
+
+    // The crispest ppi whose shown pages all fit; if none do (a pathologically
+    // dense page), keep the lowest-ppi attempt and drop any page still over.
+    let mut shown: Vec<Vec<u8>> = Vec::new();
+    for ppi in PPI_LADDER {
+        let Ok(pages) = crate::render::preview_png(&dir, variant, ppi) else {
+            return Vec::new();
+        };
+        if pages.is_empty() {
+            return Vec::new();
+        }
+        shown = pages.into_iter().take(MAX_PAGES).collect();
+        if shown.iter().all(|page| page.len() <= MAX_BYTES) {
+            break;
+        }
+    }
+
+    use base64::Engine as _;
+    shown
+        .into_iter()
+        .filter(|page| page.len() <= MAX_BYTES)
+        .map(|page| Content::image_png(base64::engine::general_purpose::STANDARD.encode(page)))
         .collect()
 }
 

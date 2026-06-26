@@ -179,7 +179,10 @@ no secret ends up in the config file:
 - **Where your PDFs are.** They render on the machine running the server. AARG
   exposes every build's PDFs as MCP resources, so a client like Claude Desktop can
   list and open them; the `tailor` and `get_build` results also report the file
-  paths on the server.
+  paths on the server. Those two results also carry an inline PNG preview of the
+  résumé's first page, which a client that renders images shows in the chat, so you
+  see the page itself without opening a file. A client that can't fetch a binary
+  PDF blob inline still gets that preview; the PDFs themselves stay a link away.
 - **Re-tailoring is free of re-pasting.** A build stores the posting it was made
   for, so `tailor` with a `build_id` reuses it. No re-paste, no re-parse.
 - **`ingest` overwrites your dataset**, after copying the previous one to a
