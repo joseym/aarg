@@ -44,7 +44,7 @@
 
 // ----- global page + text defaults -----
 #set document(title: field(data.contact, "full_name", default: "resume") + " - resume")
-#set page(paper: "us-letter", margin: (x: 0.9in, y: 0.7in), fill: page_bg)
+#set page(paper: "us-letter", margin: (x: 0.6in, y: 0.5in), fill: page_bg)
 #set text(font: sans_face, size: body_size, fill: muted)
 #set par(justify: false, leading: leading)
 #set list(spacing: list_gap, marker: text(fill: ink)[#sym.bullet], indent: 0pt, body-indent: 6pt)
@@ -78,12 +78,18 @@
   } else {
     let first = tokens.first()
     let rest = tokens.slice(1).join(" ")
-    align(center, text(
-      font: serif_face, size: 22pt, weight: "regular", fill: ink, tracking: 0.3em,
-    )[#upper(first)])
-    align(center, text(
-      font: serif_face, size: 48pt, weight: "bold", fill: ink, tracking: 0.28em,
-    )[#upper(rest)])
+    // Both name lines in ONE centered paragraph so `par.leading` (set above)
+    // controls the gap between them. As two separate `align` blocks they ignored
+    // the leading and fell back to the much larger inter-block spacing.
+    align(center, {
+      text(
+        font: serif_face, size: 22pt, weight: "regular", fill: ink, tracking: 0.3em,
+      )[#upper(first)]
+      linebreak()
+      text(
+        font: serif_face, size: 48pt, weight: "bold", fill: ink, tracking: 0.28em,
+      )[#upper(rest)]
+    })
   }
   let tt = field(data, "target_title")
   if tt != none {
