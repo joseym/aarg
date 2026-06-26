@@ -133,7 +133,10 @@ no secret ends up in the config file:
 
 - **An environment variable.** Export `ANTHROPIC_API_KEY`, or
   `ANTHROPIC_AUTH_TOKEN` for a plan token from `claude setup-token`, in the
-  environment that launches the server.
+  environment that launches the server. If those standard names are already
+  taken by another tool (a coding agent reads `ANTHROPIC_API_KEY` to override
+  its own login), set `api_key_env` / `auth_token_env` under `[anthropic]` to a
+  private name and export that instead, leaving the standard vars free.
 - **A credential command.** Tag the active key as CLI-delegated and point it at
   any command that prints the token on stdout: read a `0600` file, call your
   password manager, or hit a vault. AARG runs it on each request.

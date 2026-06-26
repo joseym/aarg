@@ -120,17 +120,22 @@ pub async fn run() -> Result<(), CliError> {
         eprintln!("{}", style::kv("keys", labels.join(", "), 9));
     }
     // The headless path overrides everything above; say so if it's in effect.
-    if std::env::var_os("ANTHROPIC_AUTH_TOKEN").is_some() {
+    // The var names are configurable, so report the names actually checked.
+    let auth_token_env = config.anthropic.auth_token_env();
+    let api_key_env = config.anthropic.api_key_env();
+    if std::env::var_os(auth_token_env).is_some() {
         eprintln!(
             "{}",
-            style::info(
-                "ANTHROPIC_AUTH_TOKEN is set · requests use that OAuth token, not the keychain."
-            )
+            style::info(format!(
+                "{auth_token_env} is set · requests use that OAuth token, not the keychain."
+            ))
         );
-    } else if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
+    } else if std::env::var_os(api_key_env).is_some() {
         eprintln!(
             "{}",
-            style::info("ANTHROPIC_API_KEY is set · requests use that key, not the keychain.")
+            style::info(format!(
+                "{api_key_env} is set · requests use that key, not the keychain."
+            ))
         );
     }
 

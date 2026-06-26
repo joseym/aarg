@@ -65,11 +65,13 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
     // so CI and containers (no keychain daemon, no interactive setup) just set
     // a var. OAuth takes precedence over an API key when both are present —
     // the same resolution the Anthropic SDK/CLI use. A `claude setup-token`
-    // token goes in `ANTHROPIC_AUTH_TOKEN`.
-    if let Some(token) = env_credential("ANTHROPIC_AUTH_TOKEN") {
+    // token goes in `ANTHROPIC_AUTH_TOKEN`. The var *names* are configurable
+    // (`auth_token_env` / `api_key_env`): point AARG at a private name to leave
+    // the standard vars unset so they don't override Claude Code's own login.
+    if let Some(token) = env_credential(config.anthropic.auth_token_env()) {
         return Ok((AnthropicClient::with_auth(Auth::Oauth(token)), config));
     }
-    if let Some(key) = env_credential("ANTHROPIC_API_KEY") {
+    if let Some(key) = env_credential(config.anthropic.api_key_env()) {
         return Ok((AnthropicClient::with_auth(Auth::ApiKey(key)), config));
     }
 

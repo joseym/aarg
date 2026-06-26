@@ -109,6 +109,17 @@ pub enum AuthKind {
 pub const DEFAULT_CREDENTIAL_COMMAND: [&str; 4] =
     ["ant", "auth", "print-credentials", "--access-token"];
 
+/// The environment variable AARG reads an API key from when `api_key_env`
+/// isn't set. This is the same name the Anthropic SDK/CLI use; a config
+/// override points AARG at a private name instead, so this conventional one
+/// can be left unset (it otherwise overrides Claude Code's subscription login).
+pub const DEFAULT_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+
+/// The environment variable AARG reads an OAuth/subscription bearer token
+/// from when `auth_token_env` isn't set. A config override frees this
+/// conventional name for Claude Code (a `claude setup-token` token lives here).
+pub const DEFAULT_AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
+
 /// Settings specific to the Anthropic provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -144,6 +155,18 @@ pub struct AnthropicConfig {
     /// the secret stays wherever the command reads it from (a 0600 file,
     /// `pass`, a vault), never in this file.
     pub credential_commands: std::collections::BTreeMap<String, Vec<String>>,
+    /// The environment variable AARG reads an API key from in the headless
+    /// path. `None` (the default) uses the conventional `ANTHROPIC_API_KEY`;
+    /// set it to a private name (e.g. `AARG_ANTHROPIC_API_KEY`) so leaving
+    /// `ANTHROPIC_API_KEY` unset keeps Claude Code on its own subscription
+    /// login. When set, AARG reads *only* that name — it does not also fall
+    /// back to `ANTHROPIC_API_KEY`.
+    pub api_key_env: Option<String>,
+    /// The environment variable AARG reads an OAuth/subscription bearer token
+    /// from in the headless path. `None` (the default) uses the conventional
+    /// `ANTHROPIC_AUTH_TOKEN`; set a private name to free that var for Claude
+    /// Code. When set, only that name is read.
+    pub auth_token_env: Option<String>,
 }
 
 impl Default for AnthropicConfig {
@@ -156,6 +179,8 @@ impl Default for AnthropicConfig {
             active_key: None,
             key_kinds: std::collections::BTreeMap::new(),
             credential_commands: std::collections::BTreeMap::new(),
+            api_key_env: None,
+            auth_token_env: None,
         }
     }
 }
@@ -179,6 +204,21 @@ impl AnthropicConfig {
     /// so unknown and legacy labels behave like the API keys they are.
     pub fn kind_for(&self, label: &str) -> AuthKind {
         self.key_kinds.get(label).copied().unwrap_or_default()
+    }
+
+    /// The environment variable an API key is read from: the configured
+    /// `api_key_env` if set, else the conventional `ANTHROPIC_API_KEY`.
+    pub fn api_key_env(&self) -> &str {
+        self.api_key_env.as_deref().unwrap_or(DEFAULT_API_KEY_ENV)
+    }
+
+    /// The environment variable an OAuth/subscription bearer token is read
+    /// from: the configured `auth_token_env` if set, else the conventional
+    /// `ANTHROPIC_AUTH_TOKEN`.
+    pub fn auth_token_env(&self) -> &str {
+        self.auth_token_env
+            .as_deref()
+            .unwrap_or(DEFAULT_AUTH_TOKEN_ENV)
     }
 
     /// The command a `Cli`-delegated `label` runs to fetch its token: an
@@ -635,6 +675,36 @@ mod tests {
             loaded.anthropic.credential_command("subscription"),
             vec!["cat".to_string(), "/home/me/.config/aarg/token".to_string()]
         );
+    }
+
+    #[test]
+    fn auth_env_names_default_to_standard_then_honor_overrides() {
+        // Unset by default: the conventional Anthropic SDK/CLI names, so an
+        // existing config keeps reading the standard vars.
+        let defaults = AnthropicConfig::default();
+        assert_eq!(defaults.api_key_env(), "ANTHROPIC_API_KEY");
+        assert_eq!(defaults.auth_token_env(), "ANTHROPIC_AUTH_TOKEN");
+
+        // A private name decouples AARG from the standard vars, so they can be
+        // left unset for Claude Code's own subscription login.
+        let custom = AnthropicConfig {
+            api_key_env: Some("AARG_ANTHROPIC_API_KEY".to_string()),
+            auth_token_env: Some("AARG_ANTHROPIC_AUTH_TOKEN".to_string()),
+            ..AnthropicConfig::default()
+        };
+        assert_eq!(custom.api_key_env(), "AARG_ANTHROPIC_API_KEY");
+        assert_eq!(custom.auth_token_env(), "AARG_ANTHROPIC_AUTH_TOKEN");
+
+        // The override survives a TOML round trip.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let full = Config {
+            anthropic: custom.clone(),
+            ..Config::default()
+        };
+        full.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.anthropic, custom);
     }
 
     #[test]

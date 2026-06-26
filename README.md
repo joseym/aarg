@@ -158,7 +158,9 @@ pay-as-you-go billing, either by pasting a token from `claude setup-token` or by
 delegating to the official `ant` CLI so it refreshes for you. Subscription auth
 is **experimental**: Anthropic scopes plan credit to its own tools, so the
 API-key path is the supported one. For headless or CI use, set `ANTHROPIC_API_KEY`
-(or `ANTHROPIC_AUTH_TOKEN`) and skip the keychain entirely.
+(or `ANTHROPIC_AUTH_TOKEN`) and skip the keychain entirely. If those standard
+names conflict with another tool, point AARG at private ones with `api_key_env`
+/ `auth_token_env` under `[anthropic]` and leave the standard vars free.
 
 ## Commands
 
