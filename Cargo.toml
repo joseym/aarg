@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/aarg-core", "crates/aarg-domain"]
+members = ["crates/aarg-core", "crates/aarg-domain", "crates/aarg-wasm"]
 
 [package]
 name = "aarg"

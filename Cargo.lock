@@ -63,6 +63,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aarg-wasm"
+version = "0.1.0"
+dependencies = [
+ "aarg-domain",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
