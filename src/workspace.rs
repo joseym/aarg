@@ -82,11 +82,12 @@ impl Location {
     }
 }
 
-/// Resolve the active location from an explicit env override and a starting
-/// directory. Split out from [`locate`] so the precedence is unit-testable
-/// without touching the real environment or current directory.
-fn resolve(env_dir: Option<PathBuf>, start_dir: &Path) -> Location {
-    // 1. An explicit project directory wins outright.
+/// Resolve the active location from an explicit env override, a configured
+/// workspace, and a starting directory. Split out from [`locate`] so the
+/// precedence is unit-testable without touching the real environment, the
+/// current directory, or any config file.
+fn resolve(env_dir: Option<PathBuf>, configured: Option<PathBuf>, start_dir: &Path) -> Location {
+    // 1. An explicit project directory (`AARG_DIR`) wins outright.
     if let Some(project) = env_dir {
         return Location::Local(project.join(MARKER));
     }
@@ -99,12 +100,20 @@ fn resolve(env_dir: Option<PathBuf>, start_dir: &Path) -> Location {
         }
         here = dir.parent();
     }
-    // 3. Nothing local: fall back to the per-OS home directories.
+    // 3. A workspace named in the global config — the file-based equivalent of
+    //    `AARG_DIR`, used when no env var or discovered marker applies. Below
+    //    marker discovery, so a project's own `.aarg/` still wins when you're
+    //    inside it; this only redirects the otherwise-global fallback.
+    if let Some(project) = configured {
+        return Location::Local(project.join(MARKER));
+    }
+    // 4. Nothing local: fall back to the per-OS home directories.
     Location::Global
 }
 
 /// The active location for this invocation: `AARG_DIR`, else the nearest
-/// `.aarg/` above the current directory, else the home directories.
+/// `.aarg/` above the current directory, else a `workspace` set in the global
+/// config, else the home directories.
 pub fn locate() -> Location {
     let env_dir = std::env::var_os(DIR_ENV)
         .filter(|value| !value.is_empty())
@@ -112,7 +121,46 @@ pub fn locate() -> Location {
     // A missing current directory (deleted out from under us) just means no
     // local workspace can be discovered — fall back to global.
     let cwd = std::env::current_dir().unwrap_or_default();
-    resolve(env_dir, &cwd)
+    resolve(env_dir, configured_workspace(), &cwd)
+}
+
+/// The workspace directory named by the `workspace` key in the **global**
+/// config — the file-based equivalent of `AARG_DIR`. Read straight from the
+/// global `config.toml` rather than through [`crate::config::Config`], whose
+/// path resolves through *this* module and would recurse. Only the global file
+/// is consulted: a workspace config naming its own location would be circular.
+/// A leading `~/` is expanded; an empty or absent value yields `None`.
+pub(crate) fn configured_workspace() -> Option<PathBuf> {
+    let path = Location::Global.config_dir()?.join("config.toml");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let redirect: WorkspaceRedirect = toml::from_str(&text).ok()?;
+    redirect
+        .workspace
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| PathBuf::from(expand_tilde(&value)))
+}
+
+/// Just the `workspace` key, parsed out of the global config without pulling in
+/// the whole `Config` type (and the module cycle that would create). serde
+/// ignores every other key, so this reads the same file `Config` does.
+#[derive(serde::Deserialize)]
+struct WorkspaceRedirect {
+    workspace: Option<String>,
+}
+
+/// Expand a leading `~/` to `$HOME`, so a config value can use it. Duplicated
+/// from `render`'s private copy by this project's small-path-helper convention
+/// (duplicate a trivial pure helper rather than couple two modules; extract on
+/// the third consumer).
+fn expand_tilde(path: &str) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => format!("{}/{rest}", home.to_string_lossy()),
+            None => path.to_string(),
+        },
+        None => path.to_string(),
+    }
 }
 
 /// The config/dataset directory for the active location.
@@ -156,7 +204,11 @@ mod tests {
 
     #[test]
     fn env_override_points_at_its_marker_subdir() {
-        let location = resolve(Some(PathBuf::from("/tmp/proj")), Path::new("/anywhere"));
+        let location = resolve(
+            Some(PathBuf::from("/tmp/proj")),
+            None,
+            Path::new("/anywhere"),
+        );
         assert_eq!(location, Location::Local(PathBuf::from("/tmp/proj/.aarg")));
     }
 
@@ -170,7 +222,7 @@ mod tests {
 
         // From deep inside the project, discovery climbs to the marker.
         assert_eq!(
-            resolve(None, &deep),
+            resolve(None, None, &deep),
             Location::Local(root.join(MARKER)),
             "should find the .aarg above the start dir"
         );
@@ -182,7 +234,60 @@ mod tests {
         // A directory tree with no `.aarg/` anywhere above the start dir.
         let deep = temp.path().join("empty").join("tree");
         std::fs::create_dir_all(&deep).unwrap();
-        assert_eq!(resolve(None, &deep), Location::Global);
+        assert_eq!(resolve(None, None, &deep), Location::Global);
+    }
+
+    #[test]
+    fn a_configured_workspace_redirects_the_global_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        // No marker anywhere above the start dir, so without a configured
+        // workspace this would be `Global`.
+        let deep = temp.path().join("no").join("marker");
+        std::fs::create_dir_all(&deep).unwrap();
+        let configured = PathBuf::from("/configured/ws");
+        assert_eq!(
+            resolve(None, Some(configured.clone()), &deep),
+            Location::Local(configured.join(MARKER)),
+            "a configured workspace should replace the per-OS fallback"
+        );
+    }
+
+    #[test]
+    fn env_dir_beats_a_configured_workspace() {
+        // The env var is the most explicit signal and wins even when a
+        // workspace is configured in the global file.
+        let location = resolve(
+            Some(PathBuf::from("/env/proj")),
+            Some(PathBuf::from("/configured/ws")),
+            Path::new("/anywhere"),
+        );
+        assert_eq!(location, Location::Local(PathBuf::from("/env/proj/.aarg")));
+    }
+
+    #[test]
+    fn a_discovered_marker_beats_a_configured_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join(MARKER)).unwrap();
+        // Inside a project with its own `.aarg/`, that local workspace wins
+        // over the configured global default.
+        assert_eq!(
+            resolve(None, Some(PathBuf::from("/configured/ws")), root),
+            Location::Local(root.join(MARKER)),
+            "a discovered .aarg should win over the configured default"
+        );
+    }
+
+    #[test]
+    fn expand_tilde_only_touches_a_leading_home_shortcut() {
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        assert_eq!(expand_tilde("plain"), "plain");
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(
+                expand_tilde("~/aarg"),
+                format!("{}/aarg", home.to_string_lossy())
+            );
+        }
     }
 
     #[test]

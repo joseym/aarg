@@ -83,6 +83,24 @@ pub async fn run() -> Result<(), CliError> {
             12
         )
     );
+    // Surface what is steering resolution, so a surprising location is
+    // debuggable: the `AARG_DIR` env var and/or a `workspace` set in the
+    // global config (the file-based equivalent of the env var).
+    if let Some(env_dir) = std::env::var_os(crate::workspace::DIR_ENV)
+        && !env_dir.is_empty()
+    {
+        eprintln!("{}", style::kv("AARG_DIR", env_dir.to_string_lossy(), 12));
+    }
+    if let Some(configured) = crate::workspace::configured_workspace() {
+        eprintln!(
+            "{}",
+            style::kv(
+                "configured",
+                format!("{} (from global config)", configured.display()),
+                12
+            )
+        );
+    }
 
     eprintln!("{}", style::section("Provider"));
     eprintln!("{}", style::kv("provider", config.provider.name(), 9));

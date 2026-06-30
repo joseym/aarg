@@ -374,6 +374,17 @@ pub struct RenderConfig {
 #[serde(default)]
 pub struct Config {
     pub provider: Provider,
+    /// The directory aarg uses as its workspace — the file-based equivalent of
+    /// the `AARG_DIR` environment variable. Set this in the **global** config
+    /// (the per-OS default location) to point aarg at a project directory whose
+    /// `.aarg/` subfolder holds your config, dataset, and builds, so you don't
+    /// need the env var. A leading `~/` is expanded. `None` (the default)
+    /// leaves resolution to `AARG_DIR`, a discovered `.aarg/`, or the per-OS
+    /// defaults. It is read during workspace resolution straight from the
+    /// global file (see the `workspace` module, which can't depend on this type
+    /// without a cycle); it lives here too so it round-trips and shows in
+    /// `aarg config`.
+    pub workspace: Option<PathBuf>,
     pub anthropic: AnthropicConfig,
     pub limits: Limits,
     /// Which template each variant renders with.
@@ -727,6 +738,23 @@ mod tests {
             loaded.export.dir,
             Some(PathBuf::from("/home/me/applications"))
         );
+    }
+
+    #[test]
+    fn workspace_redirect_round_trips_and_defaults_to_none() {
+        // Unset by default — resolution falls to AARG_DIR / discovery / global.
+        assert_eq!(Config::default().workspace, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            workspace: Some(PathBuf::from("/home/me/aarg")),
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded, config);
+        assert_eq!(loaded.workspace, Some(PathBuf::from("/home/me/aarg")));
     }
 
     #[test]
