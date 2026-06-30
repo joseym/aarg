@@ -17,6 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+#[cfg(feature = "native")]
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
@@ -99,7 +100,9 @@ impl Tracer {
     pub const DISABLED: Tracer = Tracer { dir: None };
 
     /// Record into the standard per-OS location
-    /// (`~/.local/share/aarg/traces` on Linux).
+    /// (`~/.local/share/aarg/traces` on Linux). Native-only: a wasm build has
+    /// no per-OS data directory and uses [`Tracer::DISABLED`] or [`Tracer::to_dir`].
+    #[cfg(feature = "native")]
     pub fn to_default_dir() -> Result<Self, TraceError> {
         Ok(Self {
             dir: Some(default_dir()?),
@@ -139,7 +142,8 @@ pub fn trace_id(agent: &str, started_at: DateTime<Utc>) -> TraceId {
     ))
 }
 
-/// The standard traces directory.
+/// The standard traces directory. Native-only (resolves a per-OS data dir).
+#[cfg(feature = "native")]
 pub fn default_dir() -> Result<PathBuf, TraceError> {
     ProjectDirs::from("", "", "aarg")
         .map(|dirs| dirs.data_dir().join("traces"))

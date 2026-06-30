@@ -191,6 +191,33 @@ pub async fn analyze_gap(
     Ok(GapAnalyzerAgent.run(ctx, input).await?.output)
 }
 
+/// A deterministic, model-free view of how the dataset covers a job
+/// description: which JD skills the alias map / subset match already resolve,
+/// and which they can't. This is the no-LLM half of [`analyze_gap`], exposed
+/// for callers that want an instant coverage preview without a model call (a
+/// wasm UI, say). The uncovered list is exactly what the model's semantic pass
+/// would be handed; a portable build stops here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeterministicGap {
+    /// JD skill names the dataset already covers.
+    pub covered: Vec<String>,
+    /// JD skill names the deterministic pass could not resolve.
+    pub uncovered: Vec<String>,
+}
+
+/// Resolve a JD against a dataset using only code (no model call): the
+/// deterministic half of [`analyze_gap`].
+pub fn deterministic_gap(jd: &JobRequirements, dataset: &ResumeDataset) -> DeterministicGap {
+    let (resolved, unresolved) = deterministic_pass(jd, dataset);
+    DeterministicGap {
+        covered: resolved
+            .into_iter()
+            .map(|(skill, _, _)| skill.name)
+            .collect(),
+        uncovered: unresolved.into_iter().map(|skill| skill.name).collect(),
+    }
+}
+
 /// Pass 1: dedup the JD's asks (required side wins) and resolve what
 /// the alias map can. Pure, so the agent can recompute it freely.
 fn deterministic_pass(

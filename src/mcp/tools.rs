@@ -214,7 +214,7 @@ async fn parse_job(arguments: Value) -> Result<CallToolResult, CliError> {
         Err(failure) => return Ok(failure),
     };
     let pieces = AgentPieces::build().await?;
-    let requirements = crate::jd::parse_jd(&pieces.ctx(), &args.job_description).await?;
+    let requirements = crate::commands::parse_jd_cli(&pieces.ctx(), &args.job_description).await?;
 
     let mut obj = Map::new();
     insert_serialized(&mut obj, "requirements", &requirements)?;
@@ -229,7 +229,7 @@ async fn analyze_gap(arguments: Value) -> Result<CallToolResult, CliError> {
     let dataset = store::load()?;
     let pieces = AgentPieces::build().await?;
     let ctx = pieces.ctx();
-    let requirements = crate::jd::parse_jd(&ctx, &args.job_description).await?;
+    let requirements = crate::commands::parse_jd_cli(&ctx, &args.job_description).await?;
     let gap = crate::gap::analyze_gap(&ctx, &requirements, &dataset).await?;
 
     let mut obj = Map::new();

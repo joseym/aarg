@@ -1,12 +1,12 @@
-//! The user's career data: the types it is made of (`types`) and how it
-//! is persisted on disk (`store`).
+//! The user's career data. The data model (`types`) and its validation
+//! (`validate`) live in the portable `aarg-domain` crate; this module adds
+//! on-disk persistence (`store`) and re-exports the model so every
+//! `crate::dataset::...` path in the binary keeps working unchanged.
 //!
 //! Everything aarg produces is assembled from this dataset — it is the
 //! evidence base the never-fabricate invariant checks against.
 
 pub mod store;
-pub mod types;
-pub mod validate;
 
+pub use aarg_domain::dataset::{ResumeDataset, SCHEMA_VERSION, types, validate};
 pub use store::DatasetError;
-pub use types::{ResumeDataset, SCHEMA_VERSION};

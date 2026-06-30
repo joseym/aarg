@@ -185,8 +185,18 @@ pub enum LlmError {
     #[error("no API key stored for {provider}; run `aarg init` to set one")]
     MissingApiKey { provider: String },
 
+    /// The native reqwest client failed to reach the API. Native-only: the
+    /// `#[from] reqwest::Error` conversion exists only when the reqwest client
+    /// is compiled in.
+    #[cfg(feature = "native")]
     #[error("could not reach the LLM API")]
     Http(#[from] reqwest::Error),
+
+    /// A non-reqwest transport failed — e.g. a host-provided client in a wasm
+    /// build. Keeps the error type expressive when the native client is
+    /// compiled out.
+    #[error("the LLM transport failed: {0}")]
+    Transport(String),
 
     #[error("the API rejected the request (HTTP {status}, {kind}): {message}")]
     Api {

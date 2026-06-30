@@ -189,7 +189,7 @@ pub(crate) async fn load_requirements(
                 ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
             ))
         );
-        let mut requirements = crate::jd::parse_jd(ctx, &text).await?;
+        let mut requirements = parse_jd_cli(ctx, &text).await?;
         requirements.source_url = Some(arg_str.into_owned());
         requirements
     } else if arg
@@ -213,13 +213,24 @@ pub(crate) async fn load_requirements(
                 ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
             ))
         );
-        crate::jd::parse_jd(ctx, &text).await?
+        parse_jd_cli(ctx, &text).await?
     };
     // Remember every JD we resolve so the reuse picker can offer it later,
     // from any command — not just the ones that produced a build. Best-effort:
     // a cache write failure must not fail the command that's using the JD.
     let _ = crate::jdstore::remember(&requirements);
     Ok(requirements)
+}
+
+/// Parse a job description with the CLI's URL-fetching tool wired in, so a
+/// pasted link to a Greenhouse/Lever posting is fetched first. The portable
+/// `jd::parse_jd` is toolless by design (the fetch tool is reqwest-backed and
+/// stays in the binary); the CLI injects `FetchJdTool` here.
+pub(crate) async fn parse_jd_cli(
+    ctx: &AgentContext<'_>,
+    text: &str,
+) -> Result<JobRequirements, CliError> {
+    Ok(crate::jd::parse_jd_with(ctx, text, vec![Box::new(crate::fetch::FetchJdTool)]).await?)
 }
 
 /// A job description from a past build, ready to reuse: the parsed
@@ -320,7 +331,7 @@ async fn paste_jd(ctx: &AgentContext<'_>) -> Result<Option<JobRequirements>, Cli
             ctx.model.resolve("jd_parser_v1", ModelTier::Cheap)
         ))
     );
-    Ok(Some(crate::jd::parse_jd(ctx, &text).await?))
+    Ok(Some(parse_jd_cli(ctx, &text).await?))
 }
 
 /// The distinct JDs to offer for reuse, newest first. Two sources, in order:

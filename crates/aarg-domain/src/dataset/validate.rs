@@ -17,7 +17,7 @@ use crate::dataset::types::{EvidenceRef, ResumeDataset, SkillId};
 
 /// What validation found, split by gravity. An empty `problems` vec
 /// means the dataset is usable for tailoring.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ValidationReport {
     pub problems: Vec<Finding>,
     pub notes: Vec<Finding>,
@@ -31,13 +31,14 @@ impl ValidationReport {
 
 /// One observation, tagged with what category of issue it is so tests
 /// (and later, machine consumers) don't have to parse the message.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Finding {
     pub kind: FindingKind,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FindingKind {
     /// A skill claims no evidence at all — unsupported, excluded from
     /// tailoring until verified.

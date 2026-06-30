@@ -890,7 +890,7 @@ fn top_up(
 /// rewrite may drop or repeat numbers, but never introduce one. Shared
 /// with the voice rewriter, which applies the same no-invented-numbers
 /// check to its phrasing changes.
-pub(crate) fn digit_runs(text: &str) -> HashSet<String> {
+pub fn digit_runs(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_ascii_digit())
         .filter(|run| !run.is_empty())
         .map(str::to_string)
@@ -902,7 +902,7 @@ pub(crate) fn digit_runs(text: &str) -> HashSet<String> {
 /// a suggestion may rephrase the user's recorded facts, never mint a new figure
 /// (a percentage, a team size, a multiple). Shared by the bullet-strengthen
 /// guard, the summary-refine guard, and anywhere else recorded text is reworded.
-pub(crate) fn within_evidence(candidate: &str, allowed: &[&str]) -> bool {
+pub fn within_evidence(candidate: &str, allowed: &[&str]) -> bool {
     let permitted: HashSet<String> = allowed.iter().flat_map(|text| digit_runs(text)).collect();
     digit_runs(candidate).is_subset(&permitted)
 }
@@ -917,7 +917,7 @@ pub(crate) fn within_evidence(candidate: &str, allowed: &[&str]) -> bool {
 /// A dash between two digits becomes a hyphen (a numeric range, `2020–2023` →
 /// `2020-2023`); used as a clause separator it becomes a comma; at a string edge
 /// it's dropped. Surrounding spaces collapse.
-pub(crate) fn normalize_dashes(text: &str) -> String {
+pub fn normalize_dashes(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -961,7 +961,7 @@ pub(crate) fn normalize_dashes(text: &str) -> String {
 /// draft before it's saved and on the reworded human variant before it's rendered,
 /// so neither the stored JSON nor either PDF ships an em-dash. It only rewrites
 /// punctuation, so it can't change what the page claims.
-pub(crate) fn scrub_resume_text(resume: &mut TailoredResume) {
+pub fn scrub_resume_text(resume: &mut TailoredResume) {
     if let Some(title) = resume.target_title.as_mut() {
         *title = normalize_dashes(title);
     }

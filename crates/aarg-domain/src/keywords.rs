@@ -42,7 +42,7 @@ const KEYWORD_NOISE: &[&str] = &[
 /// dedupe down to two distinct concepts, not four. It's a heuristic, not
 /// a stemmer — good enough to thin an interview or gate a mirror, not a
 /// search index.
-pub(crate) fn keyword_key(name: &str) -> Vec<String> {
+pub fn keyword_key(name: &str) -> Vec<String> {
     let mut tokens: Vec<String> = name
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())

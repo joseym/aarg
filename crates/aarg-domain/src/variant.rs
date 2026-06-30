@@ -145,7 +145,7 @@ pub struct VariantPayload {
 /// human payload is reworded by the adapter LLM, which can re-introduce a dash —
 /// so the reworded payload is normalized before it renders. Punctuation only,
 /// never a claim (delegates to `tailor::normalize_dashes`).
-pub(crate) fn scrub_variant_text(payload: &mut VariantPayload) {
+pub fn scrub_variant_text(payload: &mut VariantPayload) {
     use crate::tailor::normalize_dashes;
     if let Some(title) = payload.target_title.as_mut() {
         *title = normalize_dashes(title);

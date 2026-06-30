@@ -122,18 +122,22 @@ pub enum Importance {
 
 /// The JD parser as an agent: the model classifies; assembly fills in
 /// what only code can know (the raw text, defaults for omitted fields).
-/// Carries the runtime's first tool: when the input only references a
-/// job-board URL instead of containing the posting, the model can
-/// fetch it.
+/// The tools the model may call are injected: the default is toolless (parse
+/// the text as given), and the CLI uses [`JdParserAgent::new`] to add a
+/// URL-fetching tool when the input may be only a job-board link.
+#[derive(Default)]
 pub struct JdParserAgent {
     tools: Vec<Box<dyn Tool>>,
 }
 
-impl Default for JdParserAgent {
-    fn default() -> Self {
-        Self {
-            tools: vec![Box::new(crate::fetch::FetchJdTool)],
-        }
+impl JdParserAgent {
+    /// Build the parser with whatever tools the model may call. The CLI
+    /// injects a URL-fetching tool here; a portable build that only parses
+    /// pasted text passes none. Keeping the tool injected rather than baked in
+    /// is what lets this agent live in the portable domain crate while the
+    /// reqwest-backed fetch tool stays in the binary.
+    pub fn new(tools: Vec<Box<dyn Tool>>) -> Self {
+        Self { tools }
     }
 }
 
@@ -172,10 +176,21 @@ impl Agent for JdParserAgent {
     }
 }
 
-/// Parse a job description.
+/// Parse a job description from text that already contains the posting.
 // EXERCISE(EX-009)
 pub async fn parse_jd(ctx: &AgentContext<'_>, jd_text: &str) -> Result<JobRequirements, JdError> {
-    Ok(JdParserAgent::default()
+    parse_jd_with(ctx, jd_text, Vec::new()).await
+}
+
+/// Parse a job description, giving the model the supplied tools (e.g. a
+/// URL-fetching tool when the input may be only a link). The toolless
+/// [`parse_jd`] is the portable path; the CLI calls this with its fetch tool.
+pub async fn parse_jd_with(
+    ctx: &AgentContext<'_>,
+    jd_text: &str,
+    tools: Vec<Box<dyn Tool>>,
+) -> Result<JobRequirements, JdError> {
+    Ok(JdParserAgent::new(tools)
         .run(ctx, jd_text.to_string())
         .await?
         .output)
@@ -369,32 +384,63 @@ mod tests {
         assert_eq!(jd.preferred_skills[0].importance, Importance::Preferred);
     }
 
+    /// A tool that always fails, so the round-trip-and-recover test exercises
+    /// the agent's generic tool handling without depending on any real
+    /// (network-backed) tool — those live in the binary, not here.
+    struct FailingTool;
+
+    #[async_trait]
+    impl crate::agent::Tool for FailingTool {
+        fn name(&self) -> &'static str {
+            "lookup"
+        }
+        fn description(&self) -> &'static str {
+            "A test tool that always fails"
+        }
+        fn input_schema(&self) -> &serde_json::Value {
+            static SCHEMA: std::sync::LazyLock<serde_json::Value> =
+                std::sync::LazyLock::new(|| serde_json::json!({"type": "object"}));
+            &SCHEMA
+        }
+        async fn call(
+            &self,
+            _args: serde_json::Value,
+        ) -> Result<serde_json::Value, crate::agent::ToolError> {
+            Err(crate::agent::ToolError::Failed {
+                message: "no lookup available in this test".into(),
+            })
+        }
+    }
+
     #[tokio::test]
     async fn the_parser_can_take_a_tool_round_and_recover() {
         use crate::llm::ToolCall;
         let mock = MockLlmClient::default();
-        // The "model" tries to fetch an unsupported URL; the real tool
-        // fails fast (no network), the error goes back as a result, and
-        // the model answers from the text it already had.
+        // The "model" calls a tool that fails; the error goes back as a
+        // result, and the model answers from the text it already had.
         mock.enqueue_tool_calls(vec![ToolCall {
             id: "tu_1".into(),
-            name: "fetch_jd".into(),
-            args: serde_json::json!({"url": "https://example.com/job"}),
+            name: "lookup".into(),
+            args: serde_json::json!({"q": "anything"}),
         }]);
         mock.enqueue(GOOD_REPLY);
 
-        let jd = parse_jd(&test_ctx(&mock), "see https://example.com/job")
-            .await
-            .unwrap();
+        let jd = parse_jd_with(
+            &test_ctx(&mock),
+            "some posting text",
+            vec![Box::new(FailingTool)],
+        )
+        .await
+        .unwrap();
 
         assert_eq!(jd.company, "Acme Corp");
         let requests = mock.requests();
         assert_eq!(requests.len(), 2);
         // The tool was offered, and its failure went back to the model.
-        assert_eq!(requests[0].tools[0].name, "fetch_jd");
+        assert_eq!(requests[0].tools[0].name, "lookup");
         let result = &requests[1].messages[2].tool_results[0];
         assert!(result.is_error);
-        assert!(result.content.contains("Greenhouse or Lever"));
+        assert!(result.content.contains("no lookup available"));
     }
 
     #[tokio::test]

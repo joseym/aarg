@@ -9,6 +9,12 @@
 // this crate working unchanged.
 pub use aarg_core::{agent, llm, trace, user};
 
+// The resume-tailoring domain lives in the portable `aarg-domain` crate (the
+// wasm split); re-exporting its modules keeps every `crate::tailor::...` /
+// `crate::gap::...` path in this crate working unchanged. `dataset` is a local
+// shim (it adds on-disk persistence to the re-exported model).
+pub use aarg_domain::{gap, jd, keywords, mirror, review, tailor, variant};
+
 pub mod ats;
 pub mod builds;
 pub mod cli;
@@ -19,31 +25,24 @@ pub mod dataset;
 pub mod enrich;
 pub mod evals;
 pub mod fetch;
-pub mod gap;
 pub mod guide;
 pub mod history;
 pub mod ingest;
-pub mod jd;
 pub mod jdchat;
 pub mod jdstore;
-pub mod keywords;
 pub mod mcp;
 pub mod metric;
-pub mod mirror;
 pub mod pricing;
 pub mod readability;
 pub mod render;
 pub mod repl;
-pub mod review;
 pub mod secrets;
 pub mod strengthen;
 pub mod style;
 pub mod summary;
-pub mod tailor;
 pub mod templates;
 pub mod terminal;
 pub mod tune;
-pub mod variant;
 pub mod verify;
 pub mod vision;
 pub mod voice;

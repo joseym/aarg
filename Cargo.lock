@@ -7,6 +7,7 @@ name = "aarg"
 version = "0.1.0"
 dependencies = [
  "aarg-core",
+ "aarg-domain",
  "async-trait",
  "base64",
  "chrono",
@@ -46,6 +47,19 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "aarg-domain"
+version = "0.1.0"
+dependencies = [
+ "aarg-core",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

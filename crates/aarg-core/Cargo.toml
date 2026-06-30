@@ -8,17 +8,25 @@ description = "The agent runtime behind aarg: typed agents, tools, validation-re
 authors = ["Josey Morton <me@joseymorton.com>"]
 repository = "https://github.com/joseymorton/aarg"
 
+[features]
+# The native runtime: the reqwest-backed Anthropic client, the file-backed
+# trace sink, and tokio's multi-threaded runtime. On by default. A wasm build
+# turns it off (`default-features = false`) to drop everything a browser can't
+# host; the domain logic then runs over a host-provided `LlmClient` instead.
+default = ["native"]
+native = ["dep:reqwest", "dep:directories", "dep:tokio-stream", "tokio/rt"]
+
 [dependencies]
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
-directories = "6.0.0"
+directories = { version = "6.0.0", optional = true }
 futures-util = "0.3.32"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+reqwest = { version = "0.13.4", optional = true, default-features = false, features = ["json", "stream", "rustls", "http2"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
-tokio = { version = "1.52.3", features = ["rt", "sync", "macros"] }
-tokio-stream = "0.1.18"
+tokio = { version = "1.52.3", default-features = false, features = ["sync", "macros"] }
+tokio-stream = { version = "0.1.18", optional = true }
 
 # Same discipline as the binary crate: production code may not unwrap,
 # expect, or panic; test modules opt out locally.

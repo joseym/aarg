@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/aarg-core"]
+members = ["crates/aarg-core", "crates/aarg-domain"]
 
 [package]
 name = "aarg"
@@ -14,6 +14,7 @@ repository = "https://github.com/joseymorton/aarg"
 
 [dependencies]
 aarg-core = { path = "crates/aarg-core" }
+aarg-domain = { path = "crates/aarg-domain" }
 async-trait = "0.1.89"
 # Encode image/PDF bytes for the vision content blocks sent to the model.
 base64 = "0.22"
