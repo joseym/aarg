@@ -22,6 +22,8 @@
   pre { background: color-mix(in srgb, currentColor 8%, transparent); padding: 0.7rem;
         border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
   .ok { color: #2e7d32; } .bad { color: #c62828; } .muted { opacity: 0.7; }
+  #initError { display: none; border: 1px solid #c62828; color: #c62828; border-radius: 8px;
+               padding: 0.8rem 1rem; margin: 1rem 0; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -31,6 +33,8 @@
     <span class="badge">no network, no server, no API key</span>.
     The point of the last one: AARG's never-fabricate check runs client-side.
   </p>
+
+  <div id="initError" role="alert"></div>
 
   <section>
     <h2>1. Validate a dataset</h2>
@@ -84,7 +88,21 @@
     // The bindings throw a JS error on bad input; surface it instead of crashing.
     const run = (el, fn) => { try { show(el, fn(), "ok"); } catch (e) { show(el, String(e), "bad"); } };
 
-    await init();
+    // A failed init() (e.g. the page opened via file:// instead of served over
+    // HTTP, so the wasm fetch is blocked) otherwise leaves every button wired
+    // to nothing — clicking them does nothing with no clue why. Surface it.
+    try {
+      await init();
+    } catch (e) {
+      const banner = $("initError");
+      banner.textContent = "failed to load the wasm module: " + e +
+        "\n\nThis page must be served over HTTP, not opened directly as a file " +
+        "(e.g. run `python3 -m http.server` from crates/aarg-wasm/www and visit " +
+        "http://localhost:8000/).";
+      banner.style.display = "block";
+      throw e;
+    }
+
     $("jd").value = JSON.stringify(SAMPLE_JD, null, 2);
 
     $("loadSample").onclick = () => { $("dataset").value = JSON.stringify(SAMPLE_DATASET, null, 2); };
@@ -101,26 +119,47 @@
       return `covered:   ${JSON.stringify(gap.covered)}\nuncovered: ${JSON.stringify(gap.uncovered)}`;
     });
 
+    // "Check claims" and "Tamper & check" must compare against the exact
+    // canonical text that produced `lastPayload` — not whatever's currently
+    // in the textarea, which may have been edited since. Snapshot it here
+    // alongside the payload, and require the two to still match before
+    // either button runs.
     let lastPayload = null;
+    let lastCanonicalText = null;
     $("projectBtn").onclick = () => run($("claimsOut"), () => {
-      lastPayload = JSON.parse(project_ats($("canonical").value));
+      // Read into a local and run the (possibly-throwing) projection first;
+      // only assign the two snapshot variables together, once it succeeds.
+      // Assigning `lastCanonicalText` before `project_ats` could still throw
+      // would leave an inconsistent pair on failure: the old `lastPayload`
+      // paired with a new `lastCanonicalText` it was never projected from.
+      const canonicalText = $("canonical").value;
+      const payload = JSON.parse(project_ats(canonicalText));
+      lastCanonicalText = canonicalText;
+      lastPayload = payload;
       return "projected ATS payload:\n\n" + JSON.stringify(lastPayload, null, 2);
     });
 
+    const requirePayload = () => {
+      if (!lastPayload) throw "Project an ATS payload first.";
+      if ($("canonical").value !== lastCanonicalText) {
+        throw "canonical changed since projecting — re-project first";
+      }
+    };
+
     const checkWith = (payload) => {
-      const res = JSON.parse(check_claims($("canonical").value, JSON.stringify(payload)));
+      const res = JSON.parse(check_claims(lastCanonicalText, JSON.stringify(payload)));
       return res.ok
         ? "✓ faithful — the variant makes no claim the draft doesn't"
         : "✗ divergence(s):\n  - " + res.divergences.join("\n  - ");
     };
 
     $("checkBtn").onclick = () => run($("claimsOut"), () => {
-      if (!lastPayload) throw "Project an ATS payload first.";
+      requirePayload();
       return checkWith(lastPayload);
     });
 
     $("tamperBtn").onclick = () => run($("claimsOut"), () => {
-      if (!lastPayload) throw "Project an ATS payload first.";
+      requirePayload();
       const tampered = JSON.parse(JSON.stringify(lastPayload));
       tampered.skills_section.skills.push("Kubernetes (fabricated)");
       const out = checkWith(tampered);
