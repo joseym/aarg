@@ -202,6 +202,15 @@ then restart your shell.")]
     },
     /// Run AARG as a Model Context Protocol server over stdio (for Claude Desktop, Claude Code, and other MCP clients)
     Mcp,
+    /// Run the HTTP companion server a browser UI calls for the four things wasm can't do (key, typst, workspace, cross-origin fetch)
+    Serve {
+        /// Port to bind on 127.0.0.1 (localhost only); defaults to 8787
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+        /// Serve static files (the browser app) from this directory at `/`; omit to expose the API alone
+        #[arg(long, value_name = "PATH")]
+        dir: Option<std::path::PathBuf>,
+    },
 }
 
 // EXERCISE(EX-004)
@@ -981,6 +990,35 @@ mod tests {
         // "some-model"] and assert the value reaches the Ping variant.
         let model_flag_implemented = false;
         assert!(model_flag_implemented);
+    }
+
+    #[test]
+    fn serve_parses_bare_and_with_port_and_dir() {
+        // Bare `serve`: both optional, so the defaults (port 8787, no static) apply.
+        match Cli::try_parse_from(["aarg", "serve"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Serve { port, dir } => {
+                assert_eq!(port, None);
+                assert_eq!(dir, None);
+            }
+            other => panic!("expected serve, got {other:?}"),
+        }
+        match Cli::try_parse_from(["aarg", "serve", "--port", "9000", "--dir", "web/dist"])
+            .unwrap()
+            .command
+            .unwrap()
+        {
+            Command::Serve { port, dir } => {
+                assert_eq!(port, Some(9000));
+                assert_eq!(dir, Some(std::path::PathBuf::from("web/dist")));
+            }
+            other => panic!("expected serve, got {other:?}"),
+        }
+        // A non-numeric port is rejected by clap.
+        assert!(Cli::try_parse_from(["aarg", "serve", "--port", "notaport"]).is_err());
     }
 
     #[test]

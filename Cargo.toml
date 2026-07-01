@@ -25,6 +25,13 @@ clap_complete = "4.6.1"
 # Already built as a transitive dep of indicatif, so this adds no compile cost.
 console = "0.16.3"
 directories = "6.0.0"
+# The `aarg serve` companion server is hand-rolled on hyper (no web framework),
+# the same portfolio move as the hand-written MCP server and reqwest clients.
+# hyper + hyper-util + http-body-util already compile as transitive deps of
+# reqwest at these versions, so promoting them to direct deps adds no new crates.
+http-body-util = "0.1"
+hyper = { version = "1.10", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 indicatif = "0.18.4"
 inquire = "0.9.4"
 keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "tokio", "crypto-rust"] }
