@@ -68,6 +68,43 @@ fn anchor_style() -> metric::AnchorStyle {
     metric::AnchorStyle { bold, dim, warn }
 }
 
+/// The terminal styling for the conversational `tune` session. Same seam as
+/// [`anchor_style`]: `tune` lives in the portable `aarg-domain` crate and can't
+/// reach the terminal styler, so it builds each notification's text and takes
+/// the glyph-and-color as an injected [`tune::SessionStyle`]. This hands it our
+/// semantic vocabulary — the `✓ done`, `ℹ info`, `→ suggest`, `⚠ warn` glyphs,
+/// plus `dim`/`bold` — so the CLI output stays byte-identical to before the
+/// extraction. (The tiny wrappers exist because `style`'s helpers are generic
+/// over `Display`, and the seam wants plain `fn(&str) -> String` pointers.)
+pub(crate) fn session_style() -> tune::SessionStyle {
+    fn dim(s: &str) -> String {
+        style::dim(s)
+    }
+    fn bold(s: &str) -> String {
+        style::bold(s)
+    }
+    fn warn(s: &str) -> String {
+        style::warn(s)
+    }
+    fn done(s: &str) -> String {
+        style::done(s)
+    }
+    fn info(s: &str) -> String {
+        style::info(s)
+    }
+    fn suggest(s: &str) -> String {
+        style::suggest(s)
+    }
+    tune::SessionStyle {
+        dim,
+        bold,
+        warn,
+        done,
+        info,
+        suggest,
+    }
+}
+
 // Each copilot guards on two distinct conditions: is there work to do (an
 // objection, a thin role, an unbacked keyword) and is a person here to answer.
 // They're kept as nested `if`s for readability; they only *read* as collapsible
@@ -727,7 +764,8 @@ pub async fn run(
             .iter()
             .map(|s| s.text.clone())
             .collect();
-        let (changed, usage) = tune::run_session(&ctx, &mut best.resume, user, &samples).await;
+        let (changed, usage) =
+            tune::run_session(&ctx, &mut best.resume, user, &samples, session_style()).await;
         add_usage(&mut total, usage);
         if changed {
             // Re-score so the stored score and report reflect the tuned draft.

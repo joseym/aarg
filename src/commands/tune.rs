@@ -60,7 +60,14 @@ pub async fn run(build: Option<String>) -> Result<(), CliError> {
         .iter()
         .map(|s| s.text.clone())
         .collect();
-    let (changed, _usage) = tune::run_session(&ctx, &mut canonical, user.as_ref(), &samples).await;
+    let (changed, _usage) = tune::run_session(
+        &ctx,
+        &mut canonical,
+        user.as_ref(),
+        &samples,
+        super::tailor::session_style(),
+    )
+    .await;
 
     if !changed {
         eprintln!("{}", style::dim("no changes made"));
