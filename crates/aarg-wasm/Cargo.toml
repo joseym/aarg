@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
-description = "WebAssembly bindings for AARG's deterministic, model-free domain logic: dataset validation, gap preview, ATS projection, and never-fabricate claim checks — callable from a web UI"
+description = "WebAssembly bindings for AARG's domain logic: offline dataset validation, gap preview, ATS projection, and never-fabricate claim checks, plus the model-driven JD parse/gap/tailor/review pipeline run over a host-provided JS LLM callback — callable from a web UI"
 authors = ["Josey Morton <me@joseymorton.com>"]
 repository = "https://github.com/joseymorton/aarg"
 
@@ -21,6 +21,27 @@ aarg-domain = { path = "../aarg-domain", default-features = false }
 wasm-bindgen = "0.2"
 serde = "1.0.228"
 serde_json = "1.0.150"
+# Routes a wasm panic's message and location to the browser console instead of
+# the default bare "RuntimeError: unreachable executed" with no information.
+console_error_panic_hook = "0.1.7"
+# The Send-preserving bridge: `BridgeClient` implements aarg-core's
+# `LlmClient` by forwarding requests over these channels to a pump that owns
+# the JS callback. Both channel halves are `Send`, which is what keeps the
+# `LlmClient` future `Send` without any `unsafe`.
+async-trait = "0.1.89"
+futures-channel = "0.3.32"
+futures-util = "0.3.32"
+
+# The pump — the only code that touches JS — is wasm-only, so its deps are too.
+# `BridgeClient` and the channels above stay cfg-free and compile on the host.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+# Drives the native bridge test: a real domain agent runs over `BridgeClient`
+# while a spawned task plays the pump, answering with canned model replies.
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints.clippy]
 unwrap_used = "deny"

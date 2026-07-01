@@ -49,3 +49,24 @@ panic = "deny"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# Cargo only reads profiles from the workspace root, so the wasm bundle's
+# release tuning lives here even though it applies to one package. Scoped to
+# aarg-wasm so it doesn't slow down (or shrink) the aarg CLI's own release
+# build. Workspace-wide `lto` was deliberately skipped for the same reason —
+# it would apply to the CLI too and cost it build time for no benefit there.
+#
+# Per-package profile overrides tune only that package's OWN code — Cargo
+# does not propagate them to dependencies. So this only shrinks aarg-wasm's
+# own few hundred lines; aarg-domain, aarg-core, serde_json, and the rest of
+# the dependency graph (the bulk of the compiled bundle) still build under
+# plain default `[profile.release]` settings. Reaching the dependencies too
+# would need a custom `[profile.wasm-release]` (with its own
+# `[profile.wasm-release.package."*"]` table), selected by building with
+# `--profile wasm-release` — but wasm-pack, which drives this build, only
+# knows the built-in dev/release/profiling profiles, not custom ones. That
+# fuller lever is deliberately not used here; this override is the one
+# wasm-pack can actually reach.
+[profile.release.package.aarg-wasm]
+opt-level = "z"
+codegen-units = 1
