@@ -25,6 +25,13 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+// std's Instant panics on browser wasm ("time not implemented"); web-time's
+// is a drop-in backed by the JS performance clock. Native keeps std.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_time::Instant;
+
 use crate::llm::{
     CompletionRequest, CompletionResponse, LlmClient, LlmError, Message, StreamEvent, TokenUsage,
 };
@@ -226,7 +233,7 @@ where
     A: Agent + ?Sized,
 {
     let started_at = chrono::Utc::now();
-    let timer = std::time::Instant::now();
+    let timer = Instant::now();
     // Resolve the concrete model once from the agent's declared tier.
     let model = ctx
         .model

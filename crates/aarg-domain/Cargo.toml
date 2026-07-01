@@ -30,5 +30,11 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 
+# On browser wasm, chrono needs `wasmbind` to read the clock via JS —
+# without it Utc::now() panics at runtime. Target-gated so native builds
+# don't pull wasm-bindgen.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde", "wasmbind"] }
+
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
