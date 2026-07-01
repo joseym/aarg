@@ -32,6 +32,7 @@ use aarg_domain::agent::{ModelResolver, ModelTier};
 use aarg_domain::llm::{
     CompletionRequest, CompletionResponse, LlmClient, LlmError, StreamEvent, TokenStream,
 };
+use aarg_domain::user::{Answer, AskError, Question, UserHandle};
 
 // The pump is the only part that touches JS, so its imports are wasm-only.
 #[cfg(target_arch = "wasm32")]
@@ -244,6 +245,304 @@ fn stringify(value: &JsValue) -> String {
     format!("{value:?}")
 }
 
+// ---------------------------------------------------------------------
+// The user bridge: the same Send-preserving split, applied to `UserHandle`
+// ---------------------------------------------------------------------
+//
+// `UserHandle` is `Send + Sync` exactly like `LlmClient`, and the browser's
+// only way to answer a question is an async JS callback that returns a
+// `Promise` — so the same problem, and the same fix. `BridgeUser` holds
+// nothing but a channel sender; every `ask`/`confirm` sends a plain-data
+// `UserJob` (all `Send`) and awaits a one-shot reply. The `!Send` JS work —
+// serializing the question to an envelope, calling the callback, awaiting its
+// promise, parsing the answer — lives entirely in the wasm-only user pump
+// (`spawn_user_pump`), a `spawn_local` task that owns the `js_sys::Function`.
+//
+// The mapping is done by hand in the pump because `Question`/`Answer` carry no
+// serde derives (they live in `aarg-core`, which this crate must not edit).
+// The wire vocabulary mirrors the MCP `ElicitationUser` (`src/mcp/client.rs`),
+// which already solved the same JS-boundary mapping: a question serializes to
+// `{kind, prompt, options?, default?}`, and the callback resolves to a JSON
+// object using the field names `choice` / `choices` / `text` / `confirm`. A
+// garbled or declined reply maps to the same skip/abort semantics
+// `ElicitationUser` uses — never to invented content.
+
+/// One unit of user work handed to the pump. Every variant carries only plain
+/// data or a `Send` one-shot half, so a `UserJob` crosses freely into the
+/// `Send`-bounded `UserHandle` future — the same discipline as [`Job`].
+pub enum UserJob {
+    /// A question to put to the person, answered on the one-shot.
+    Ask {
+        question: Question,
+        reply: oneshot::Sender<Result<Answer, AskError>>,
+    },
+    /// An optional detour to confirm; the one-shot carries the yes/no.
+    Confirm {
+        prompt: String,
+        default: bool,
+        reply: oneshot::Sender<Result<bool, AskError>>,
+    },
+    /// A one-way notice; no reply is expected, so there is no one-shot.
+    Notify(String),
+}
+
+/// A `UserHandle` that forwards every question to the pump over a channel. Like
+/// [`BridgeClient`] it holds nothing but the sender, so it (and every future it
+/// produces) is `Send` — the pump, not the handle, owns the `!Send` callback.
+pub struct BridgeUser {
+    tx: mpsc::UnboundedSender<UserJob>,
+}
+
+impl BridgeUser {
+    /// Build a handle and the receiving half the pump consumes, like
+    /// `channel()`. The caller keeps the handle for the copilots and hands the
+    /// receiver to [`spawn_user_pump`]. When the handle drops, the channel
+    /// closes and the pump's loop ends.
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<UserJob>) {
+        let (tx, rx) = mpsc::unbounded();
+        (Self { tx }, rx)
+    }
+}
+
+/// The typed error a closed bridge produces: the pump task went away before it
+/// could answer. Modeled as an `Io` error carrying what was being asked, so the
+/// message names the unanswered prompt the way a real terminal read failure
+/// would.
+fn bridge_closed(what: &str) -> AskError {
+    AskError::Io {
+        what: what.to_string(),
+        source: Box::new(std::io::Error::other("the user bridge is closed")),
+    }
+}
+
+#[async_trait]
+impl UserHandle for BridgeUser {
+    async fn ask(&self, question: Question) -> Result<Answer, AskError> {
+        // Capture the prompt before the question moves into the job, so a
+        // closed-bridge error can still name what went unanswered.
+        let prompt = question.prompt().to_string();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .unbounded_send(UserJob::Ask {
+                question,
+                reply: reply_tx,
+            })
+            .map_err(|_| bridge_closed(&prompt))?;
+        // A canceled one-shot means the pump was dropped before answering —
+        // the same closed-bridge failure. The inner `Result` is the pump's own
+        // answer/decline once it does reply.
+        reply_rx.await.map_err(|_| bridge_closed(&prompt))?
+    }
+
+    async fn confirm(&self, prompt: &str, default: bool) -> Result<bool, AskError> {
+        // An optional detour: a closed or silent bridge is never an error here
+        // (declining an offer isn't), so both the failed send and a canceled
+        // one-shot fall back to the caller's default — the non-interactive
+        // reading, matching `ElicitationUser::confirm`.
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .tx
+            .unbounded_send(UserJob::Confirm {
+                prompt: prompt.to_string(),
+                default,
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            return Ok(default);
+        }
+        match reply_rx.await {
+            Ok(answer) => answer,
+            Err(_) => Ok(default),
+        }
+    }
+
+    fn notify(&self, message: &str) {
+        // Fire-and-forget: a notice needs no reply and must never block. If the
+        // bridge is already closed, there's simply no one to tell.
+        let _ = self.tx.unbounded_send(UserJob::Notify(message.to_string()));
+    }
+
+    fn is_interactive(&self) -> bool {
+        // A `BridgeUser` is only ever built alongside a pump holding a real JS
+        // callback, so a person can always be reached — the gate the copilots
+        // check before offering an interactive step.
+        true
+    }
+}
+
+/// Spawn the user pump: the task that owns the JS callback and answers every
+/// `UserJob`. It reads each job off the channel, does the `!Send` JS work
+/// (serialize the question, call the callback, await its promise, parse the
+/// answer), and sends the result back on the job's one-shot. Like the LLM pump
+/// this is the only place a `JsValue`/`JsFuture` is held across an await, and it
+/// is a `spawn_local` task, so no `Send` bound applies. When the last
+/// [`BridgeUser`] drops, `rx.next()` yields `None` and the loop ends.
+#[cfg(target_arch = "wasm32")]
+pub fn spawn_user_pump(mut rx: mpsc::UnboundedReceiver<UserJob>, callback: js_sys::Function) {
+    use futures_util::StreamExt;
+    wasm_bindgen_futures::spawn_local(async move {
+        while let Some(job) = rx.next().await {
+            match job {
+                UserJob::Ask { question, reply } => {
+                    let answer = ask_over_js(&callback, question).await;
+                    let _ = reply.send(answer);
+                }
+                UserJob::Confirm {
+                    prompt,
+                    default,
+                    reply,
+                } => {
+                    let result = confirm_over_js(&callback, &prompt, default).await;
+                    let _ = reply.send(result);
+                }
+                UserJob::Notify(message) => notify_over_js(&callback, &message),
+            }
+        }
+    });
+}
+
+/// Put one question to the JS callback and map its reply back into an `Answer`.
+/// Serializes the question to the `{kind, prompt, options?}` envelope, calls the
+/// callback, and interprets the resolved JSON object by kind — matching
+/// `ElicitationUser`'s accept/decline reading exactly, so a declined or garbled
+/// reply skips or aborts the step rather than inventing an answer.
+#[cfg(target_arch = "wasm32")]
+async fn ask_over_js(callback: &js_sys::Function, question: Question) -> Result<Answer, AskError> {
+    match question {
+        Question::Select { prompt, options } => {
+            let envelope = serde_json::json!({
+                "kind": "select", "prompt": prompt, "options": options,
+            })
+            .to_string();
+            // Accept only a `choice` that names one of the options; anything
+            // else (decline, dismiss, or an unknown value) aborts the step,
+            // exactly as `ElicitationUser` treats a declined required choice.
+            match call_user_callback(callback, &envelope).await {
+                Some(value) => match choice_index(&value, &options) {
+                    Some(index) => Ok(Answer::Choice(index)),
+                    None => Err(AskError::NotInteractive { what: prompt }),
+                },
+                None => Err(AskError::NotInteractive { what: prompt }),
+            }
+        }
+        Question::MultiSelect { prompt, options } => {
+            let envelope = serde_json::json!({
+                "kind": "multi_select", "prompt": prompt, "options": options,
+            })
+            .to_string();
+            // A dismissed multi-select means "none of them" — a valid, empty
+            // answer, never an error (matching `ElicitationUser`).
+            match call_user_callback(callback, &envelope).await {
+                Some(value) => Ok(Answer::Choices(choices_indices(&value, &options))),
+                None => Ok(Answer::Choices(Vec::new())),
+            }
+        }
+        Question::Text { prompt } => {
+            let envelope = serde_json::json!({ "kind": "text", "prompt": prompt }).to_string();
+            // A resolved `text` (even empty, a valid "skip") is accepted; a
+            // decline or garbled reply aborts, as `ElicitationUser` does.
+            match call_user_callback(callback, &envelope).await {
+                Some(value) => match text_value(&value) {
+                    Some(text) => Ok(Answer::Text(text)),
+                    None => Err(AskError::NotInteractive { what: prompt }),
+                },
+                None => Err(AskError::NotInteractive { what: prompt }),
+            }
+        }
+    }
+}
+
+/// Confirm an optional detour over the JS callback. A resolved `confirm`
+/// boolean is the answer; a resolved value without one is a decline (`false`);
+/// a thrown/rejected callback means no channel, so the caller's `default`
+/// stands — the same trichotomy as `ElicitationUser::confirm`.
+#[cfg(target_arch = "wasm32")]
+async fn confirm_over_js(
+    callback: &js_sys::Function,
+    prompt: &str,
+    default: bool,
+) -> Result<bool, AskError> {
+    let envelope = serde_json::json!({
+        "kind": "confirm", "prompt": prompt, "default": default,
+    })
+    .to_string();
+    match call_user_callback(callback, &envelope).await {
+        Some(value) => Ok(value
+            .get("confirm")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)),
+        None => Ok(default),
+    }
+}
+
+/// Hand a one-way notice to the JS callback (`{kind: "notify", message}`) and
+/// return immediately — a notice has no reply and must never block the pump's
+/// queue, so its promise (if any) is deliberately not awaited.
+#[cfg(target_arch = "wasm32")]
+fn notify_over_js(callback: &js_sys::Function, message: &str) {
+    let envelope = serde_json::json!({ "kind": "notify", "message": message }).to_string();
+    let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&envelope));
+}
+
+/// Call the user callback with one envelope and return its resolved JSON value,
+/// or `None` if it threw, rejected, or didn't resolve to a JSON string. Mirrors
+/// [`call_callback`] but yields a lenient `serde_json::Value` (the answer shape
+/// varies by question kind) rather than a fixed type.
+#[cfg(target_arch = "wasm32")]
+async fn call_user_callback(
+    callback: &js_sys::Function,
+    envelope: &str,
+) -> Option<serde_json::Value> {
+    let returned = callback
+        .call1(&JsValue::NULL, &JsValue::from_str(envelope))
+        .ok()?;
+    let promise = js_sys::Promise::resolve(&returned);
+    let resolved = wasm_bindgen_futures::JsFuture::from(promise).await.ok()?;
+    let text = resolved.as_string()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Map a `select` reply to an option index: the reply's `choice` string is
+/// matched against the offered options (the same by-name mapping
+/// `ElicitationUser` uses). An unknown or absent choice yields `None`, so the
+/// caller aborts rather than guessing an index the user didn't pick.
+#[cfg(target_arch = "wasm32")]
+fn choice_index(value: &serde_json::Value, options: &[String]) -> Option<usize> {
+    let chosen = value.get("choice").and_then(serde_json::Value::as_str)?;
+    options.iter().position(|option| option == chosen)
+}
+
+/// Map a `multi_select` reply to option indices: each string in the reply's
+/// `choices` array that names an offered option becomes its index; unknown
+/// names are dropped. An absent array is simply no selections.
+#[cfg(target_arch = "wasm32")]
+fn choices_indices(value: &serde_json::Value, options: &[String]) -> Vec<usize> {
+    let picked: Vec<&str> = value
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| items.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    options
+        .iter()
+        .enumerate()
+        .filter(|(_, option)| picked.contains(&option.as_str()))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Read a `text` reply: the reply's `text` field, or a bare JSON string for
+/// convenience. An empty string is a valid answer (the user's "skip"); a reply
+/// with neither shape yields `None`, so the caller aborts rather than inventing
+/// text.
+#[cfg(target_arch = "wasm32")]
+fn text_value(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.get("text").and_then(serde_json::Value::as_str) {
+        return Some(text.to_string());
+    }
+    value.as_str().map(str::to_string)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -334,6 +633,124 @@ mod tests {
         drop(client);
         let answered = pump.await.expect("the pump task should not panic");
         assert_eq!(answered, 1, "the agent made exactly one model call");
+    }
+
+    /// The user bridge's reason to exist, proven without a browser: a real
+    /// domain copilot (`refine_summary`) runs over `BridgeUser` while a spawned
+    /// local task plays the pump, answering scripted questions with `Answer`s
+    /// directly (the JS envelope mapping is proven by the node smoke). The
+    /// user's own verbatim words land in the mutated dataset — nothing invents
+    /// content on their behalf.
+    #[tokio::test]
+    async fn a_copilot_runs_over_the_user_bridge() {
+        use aarg_domain::dataset::types::{
+            Bullet, BulletId, Contact, EmploymentType, ResumeDataset, Role, RoleId, Strength,
+            YearMonth,
+        };
+        use aarg_domain::llm::MockLlmClient;
+        use std::collections::VecDeque;
+
+        // A small history so the summary agent has something to ground on: one
+        // role with one bullet carrying a number (so the digit guard has an
+        // allowed figure), and a weak current summary to improve.
+        let mut dataset = ResumeDataset::new(Contact {
+            full_name: "Ada".into(),
+            email: "ada@example.com".into(),
+            phone: None,
+            location: None,
+            links: Vec::new(),
+        });
+        dataset.summary = Some("Generic opener.".into());
+        dataset.roles.push(Role {
+            id: RoleId("role-1".into()),
+            company: "Acme".into(),
+            title: "Director of Engineering".into(),
+            start: YearMonth {
+                year: 2020,
+                month: 1,
+            },
+            end: None,
+            location: None,
+            employment_type: EmploymentType::FullTime,
+            bullets: vec![Bullet {
+                id: BulletId("bullet-1".into()),
+                text: "Grew the team from 1 engineer to a 20 person org".into(),
+                skill_ids: Vec::new(),
+                metric: None,
+                theme: Vec::new(),
+                strength: Strength::High,
+                variants: Vec::new(),
+            }],
+            skill_ids: Vec::new(),
+            context: None,
+        });
+
+        // The model's grounded suggestion (no invented number, so it passes the
+        // guard and the "Use this wording" option is offered).
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"summary": "Engineering leader who built a team."}"#);
+
+        let (user, mut rx) = BridgeUser::new();
+
+        // The local stand-in for the JS pump: answer each question from a
+        // script (Select "Write my own", then the user's own summary text),
+        // confirms take their default, notices are dropped. Owns `rx` only, so
+        // it is `Send + 'static`.
+        let pump = tokio::spawn(async move {
+            let mut answers: VecDeque<Answer> = VecDeque::from(vec![
+                // Menu is [Use this wording, Tweak it, Write my own, Skip].
+                Answer::Choice(2),
+                Answer::Text("Engineering leader in Ada's own verbatim words.".into()),
+            ]);
+            let mut asked = 0;
+            while let Some(job) = rx.next().await {
+                match job {
+                    UserJob::Ask { reply, .. } => {
+                        asked += 1;
+                        let answer = answers
+                            .pop_front()
+                            .expect("the copilot asked more questions than were scripted");
+                        let _ = reply.send(Ok(answer));
+                    }
+                    UserJob::Confirm { default, reply, .. } => {
+                        let _ = reply.send(Ok(default));
+                    }
+                    UserJob::Notify(_) => {}
+                }
+            }
+            asked
+        });
+
+        let models = Models::from_json(r#"{"model": "test-model"}"#).unwrap();
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &models,
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        };
+
+        let changed = aarg_domain::summary::refine_summary(
+            &mut dataset,
+            "front-loads everything",
+            &user,
+            &ctx,
+            3,
+        )
+        .await
+        .expect("the copilot should run to completion over the bridge");
+
+        // The user's own words were recorded verbatim and marked authoritative
+        // — the copilot really ran, and the bridge really carried its questions.
+        assert!(changed);
+        assert!(dataset.summary_confirmed);
+        assert_eq!(
+            dataset.summary.as_deref(),
+            Some("Engineering leader in Ada's own verbatim words.")
+        );
+
+        drop(user);
+        let asked = pump.await.expect("the pump task should not panic");
+        assert_eq!(asked, 2, "the copilot asked exactly two questions");
     }
 
     #[test]

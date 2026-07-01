@@ -8,7 +8,9 @@
 //! draft into the ATS payload, check that a variant makes no claim the
 //! canonical draft doesn't (the never-fabricate backstop, running
 //! client-side), scrub AI-tell dashes from a draft or payload before it
-//! ships, and mirror JD phrasing a recorded skill already backs. Everything
+//! ships, mirror JD phrasing a recorded skill already backs, and classify
+//! every line of a canonical draft by whether it traces back to the
+//! dataset (the free-edit UI's provenance story). Everything
 //! crosses the JS boundary as JSON, the same shape the CLI reads and writes
 //! on disk. The logic lives in plain `*_impl` functions (`Result<String,
 //! String>`, or a plain `String` for the one infallible export) so it is
@@ -41,15 +43,24 @@ pub mod bridge;
 // types and the bridge. They are wasm-only (they take a `js_sys::Function`),
 // so their imports are gated too, keeping the native (test) build clean.
 #[cfg(target_arch = "wasm32")]
-use aarg_domain::agent::AgentContext;
+use aarg_domain::agent::{Agent, AgentContext};
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::gap::GapReport;
 #[cfg(target_arch = "wasm32")]
-use aarg_domain::tailor::{BuildId, JdId};
+use aarg_domain::metric::{AnchorStyle, MetricTarget};
+#[cfg(target_arch = "wasm32")]
+use aarg_domain::review::{
+    AdversarialReport, AdversarialReviewerAgent, Objection, ObjectionKind, ObjectionTarget,
+    ReviewError, ReviewInput,
+};
+#[cfg(target_arch = "wasm32")]
+use aarg_domain::strengthen::{self, StrengthenTarget};
+#[cfg(target_arch = "wasm32")]
+use aarg_domain::tailor::{BuildId, Evaluation, Evaluator, JdId, LoopLimits, LoopObserver};
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::trace::Tracer;
 #[cfg(target_arch = "wasm32")]
-use bridge::{BridgeClient, Models};
+use bridge::{BridgeClient, BridgeUser, Models};
 
 /// Route a wasm panic's message and source location to the browser's
 /// console (`console.error`), instead of the default: a bare
@@ -145,6 +156,12 @@ fn keyword_key_impl(name: &str) -> Result<String, String> {
     dump(&aarg_domain::keywords::keyword_key(name))
 }
 
+fn check_provenance_impl(canonical_json: &str, dataset_json: &str) -> Result<String, String> {
+    let draft: TailoredResume = parse(canonical_json, "canonical draft")?;
+    let dataset: ResumeDataset = parse(dataset_json, "dataset")?;
+    dump(&aarg_domain::provenance::check_provenance(&draft, &dataset))
+}
+
 /// Validate a dataset, returning a `ValidationReport` (problems + notes). The
 /// never-fabricate invariant starts here: a skill with no evidence is a
 /// problem the report flags.
@@ -222,6 +239,18 @@ pub fn backed_phrases(jd_json: &str, dataset_json: &str) -> Result<String, JsVal
 #[wasm_bindgen]
 pub fn keyword_key(name: &str) -> Result<String, JsValue> {
     keyword_key_impl(name).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Classify every line of a canonical `TailoredResume` (each role bullet, the
+/// summary, and each skill) by whether it traces back to the dataset:
+/// verbatim, grounded (a defensible rewrite of a specific recorded text), or
+/// unrecorded (no dataset text plausibly backs it — informational for the
+/// UI's free-edit story, not a fabrication verdict; the never-fabricate
+/// guards that actually gate a build live in the tailoring pipeline, not
+/// here). Returns the `ProvenanceReport` as JSON.
+#[wasm_bindgen]
+pub fn check_provenance(canonical_json: &str, dataset_json: &str) -> Result<String, JsValue> {
+    check_provenance_impl(canonical_json, dataset_json).map_err(|e| JsValue::from_str(&e))
 }
 
 // ---------------------------------------------------------------------
@@ -390,6 +419,478 @@ pub async fn review_draft(
         .await
         .map_err(|e| throw(e.to_string()))?;
     dump(&report).map_err(throw)
+}
+
+// ---------------------------------------------------------------------
+// Interactive exports (wasm-only): the copilots, run over TWO JS callbacks
+// ---------------------------------------------------------------------
+//
+// The copilots are the human-in-the-loop half of the pipeline: the model only
+// ever *asks* (a leading question, a suggested rewrite), and the person's own
+// words are what land. So each export needs both an `LlmClient` and a
+// `UserHandle`, and in a browser both are JS callbacks. Each export builds two
+// Send-preserving bridges — a `BridgeClient` over the `llm` callback and a
+// `BridgeUser` over the `user` callback — spawns a pump for each, and runs the
+// domain copilot with `AnchorStyle::PLAIN` (no terminal styling in a browser).
+//
+// The copilots MUTATE the dataset in place — that's exactly how the CLI
+// persists their work (it saves the dataset after each). A browser has no
+// filesystem the crate can reach, so every export that touches the dataset
+// returns the updated dataset alongside its result, and the host persists it.
+
+/// Interview the person for a real number on each bullet the reviewer flagged
+/// as missing one (FR-3.x). `report_json` is an `AdversarialReport`; the
+/// `NoMetric` objections targeting a bullet become the interview's targets
+/// (the reviewer's suggestion or message rides along as the question's hint).
+/// The model only phrases the question — the figure is the person's own, folded
+/// onto the bullet's `metric` field, so nothing here can fabricate a number.
+///
+/// Returns `{ "dataset": ResumeDataset, "added": <count> }`: the mutated
+/// dataset for the host to persist, and how many bullets gained a metric.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn capture_metrics_interactive(
+    dataset_json: String,
+    report_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let report: AdversarialReport = parse(&report_json, "adversarial report").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    // The reviewer's NoMetric objections, keyed to the bullet they target —
+    // the same target-building the CLI's tailor command does.
+    let targets: Vec<MetricTarget> = report
+        .objections
+        .iter()
+        .filter(|o| o.kind == ObjectionKind::NoMetric)
+        .filter_map(|o| match &o.target {
+            ObjectionTarget::Bullet(id) => Some(MetricTarget {
+                bullet_id: id.clone(),
+                hint: o.suggestion.clone().or_else(|| Some(o.message.clone())),
+            }),
+            _ => None,
+        })
+        .collect();
+
+    let added = aarg_domain::metric::capture_metrics(
+        &mut dataset,
+        &targets,
+        &user_handle,
+        &ctx,
+        AnchorStyle::PLAIN,
+    )
+    .await
+    .map_err(|e| throw(e.to_string()))?;
+
+    dump(&serde_json::json!({ "dataset": dataset, "added": added })).map_err(throw)
+}
+
+/// Interview the person to restate, in their own words, each bullet the
+/// reviewer flagged as weakly worded (FR-3.x) — vague verbs, unsupported or
+/// generic claims, missed JD emphasis. `report_json` is an `AdversarialReport`;
+/// its *strengthenable* objections targeting a bullet become the targets. A
+/// second agent formats the person's typed facts into a crisp line they approve,
+/// fenced by the shared digit guard so it can rephrase but never inflate.
+///
+/// Returns `{ "dataset": ResumeDataset, "changed": <count> }`: the mutated
+/// dataset for the host to persist, and how many bullets the person rewrote.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn strengthen_interactive(
+    dataset_json: String,
+    report_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let report: AdversarialReport = parse(&report_json, "adversarial report").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    let targets: Vec<StrengthenTarget> = report
+        .objections
+        .iter()
+        .filter(|o| strengthen::is_strengthenable(o.kind))
+        .filter_map(|o| match &o.target {
+            ObjectionTarget::Bullet(id) => Some(StrengthenTarget {
+                bullet_id: id.clone(),
+                kind: o.kind,
+                concern: o.message.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+
+    // The PRD's 3/3 interview caps (`InterviewLimits::default`) — a browser has
+    // no config file to override them from, so the tuned defaults stand.
+    let changed = strengthen::strengthen_bullets(
+        &mut dataset,
+        &targets,
+        &user_handle,
+        &ctx,
+        strengthen::InterviewLimits::default(),
+        AnchorStyle::PLAIN,
+    )
+    .await
+    .map_err(|e| throw(e.to_string()))?;
+
+    dump(&serde_json::json!({ "dataset": dataset, "changed": changed })).map_err(throw)
+}
+
+/// Refine the resume summary the reviewer flagged (FR-3.x): draft a stronger
+/// summary grounded only in the person's recorded history, let them use / tweak
+/// / write their own / skip, and on acceptance record it as their confirmed
+/// summary so tailoring and the human variant use it verbatim. `concern` is the
+/// reviewer's summary-objection message; the digit guard and no-new-facts prompt
+/// keep every draft honest.
+///
+/// Returns `{ "dataset": ResumeDataset, "changed": <bool> }`: the mutated
+/// dataset for the host to persist, and whether the summary changed.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn refine_summary_interactive(
+    dataset_json: String,
+    concern: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    // The PRD's default revision cap (`InterviewLimits::default().revises`),
+    // since a browser has no config file to tune it from.
+    let max_revises = strengthen::InterviewLimits::default().revises;
+    let changed = aarg_domain::summary::refine_summary(
+        &mut dataset,
+        &concern,
+        &user_handle,
+        &ctx,
+        max_revises,
+    )
+    .await
+    .map_err(|e| throw(e.to_string()))?;
+
+    dump(&serde_json::json!({ "dataset": dataset, "changed": changed })).map_err(throw)
+}
+
+/// Enrich the person's thin work-history roles (the history copilot): for each
+/// role with only a line or two recorded, a small agent asks a few leading
+/// questions and each answer the person types becomes a new bullet in their own
+/// words. JD-agnostic on purpose — this captures history as it was, not bent to
+/// a posting. The targets are the dataset's own thin roles (`enrich::thin_roles`).
+///
+/// Returns `{ "dataset": ResumeDataset, "bullets_added": <count>,
+/// "roles_touched": <count> }`: the mutated dataset for the host to persist, and
+/// what the session accomplished.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn enrich_roles_interactive(
+    dataset_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    let targets = aarg_domain::enrich::thin_roles(&dataset);
+    let outcome = aarg_domain::enrich::enrich_roles(&mut dataset, &targets, &user_handle, &ctx)
+        .await
+        .map_err(|e| throw(e.to_string()))?;
+
+    dump(&serde_json::json!({
+        "dataset": dataset,
+        "bullets_added": outcome.bullets_added,
+        "roles_touched": outcome.roles_touched,
+    }))
+    .map_err(throw)
+}
+
+// ---------------------------------------------------------------------
+// The adversarial revision loop (wasm-only): the Evaluator's 2nd consumer
+// ---------------------------------------------------------------------
+
+/// The headless evaluator for the browser loop: it scores a draft on the
+/// reviewer's verdict ALONE. The native binary's evaluator also renders the
+/// draft to a PDF with typst, reads its text back, and runs the deterministic
+/// ATS coverage check, then blends that into the score — none of which exists
+/// in wasm (no typst, no pdfium). So this is the honest half a browser can run:
+/// the returned score is the review score, and it will differ from the CLI's
+/// combined content+coverage score. `Extra = ()` (there's no `AtsReport` to
+/// carry back).
+#[cfg(target_arch = "wasm32")]
+struct ReviewOnlyEvaluator;
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl Evaluator for ReviewOnlyEvaluator {
+    type Extra = ();
+    type Error = ReviewError;
+
+    async fn evaluate(
+        &self,
+        ctx: &AgentContext<'_>,
+        _iteration: usize,
+        resume: TailoredResume,
+        jd: &JobRequirements,
+        dataset: &ResumeDataset,
+        _gap: &GapReport,
+    ) -> Result<Evaluation<()>, ReviewError> {
+        // Run the reviewer agent directly (not the `review_draft` wrapper) so
+        // its token usage travels back on the `Evaluation`.
+        let input = ReviewInput {
+            draft: resume.clone(),
+            jd: jd.clone(),
+            dataset: dataset.clone(),
+        };
+        let run = AdversarialReviewerAgent.run(ctx, input).await?;
+        let report = run.output;
+        let score = report.overall_score;
+        Ok(Evaluation {
+            resume,
+            report,
+            score,
+            review_usage: run.usage,
+            extra: (),
+        })
+    }
+}
+
+/// The loop's host for the browser: it formats each objection into one plain
+/// revision-prompt line, and counts revision passes so the export can report
+/// how many ran. The narration hooks the CLI uses to stream progress to the
+/// terminal are deliberately left as no-ops — forwarding them to JS would need
+/// its own Send-preserving bridge (a `LoopObserver` must be `Send + Sync`, so it
+/// can't hold a `js_sys::Function`), which isn't worth it for progress text.
+#[cfg(target_arch = "wasm32")]
+struct WasmLoopObserver {
+    passes: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl LoopObserver<()> for WasmLoopObserver {
+    fn objection_line(&self, objection: &Objection) -> String {
+        // The `target_label` prefix ("bullet-3", "summary", ...) is not
+        // decoration — the revision pass doesn't hand the model the prior
+        // draft, so it's the *only* way a revision prompt tells the model
+        // which line an objection is about. `review::format_objection`
+        // is the one place both hosts (this loop and the CLI's
+        // `CliLoopObserver`) build that line, so a revision prompt reads
+        // identically wherever the loop runs.
+        aarg_domain::review::format_objection(objection)
+    }
+
+    fn evaluated(&self, iteration: usize, _eval: &Evaluation<()>) {
+        // Record the highest pass number that produced a scored draft.
+        self.passes
+            .store(iteration, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The lenient wire shape for the loop's bounds: both keys optional, so a host
+/// can pass `{}` (or a subset) and take the CLI's defaults.
+#[cfg(target_arch = "wasm32")]
+#[derive(serde::Deserialize)]
+struct RawLoopParams {
+    #[serde(default)]
+    revisions: Option<usize>,
+    #[serde(default)]
+    acceptable_score: Option<f32>,
+}
+
+/// Run the full honest adversarial revision loop (PRD §6.4) end to end: tailor a
+/// first draft, score it, then up to `revisions` times ask the model to address
+/// the best draft's objections, re-score, and keep a revision only when it beat
+/// the best — returning the *best* draft seen, never merely the last.
+///
+/// `params_json` sets the loop's bounds `{ "revisions": 2, "acceptable_score":
+/// 0.85 }` (both optional; those are the CLI defaults, and `revisions = 2`
+/// matches it). The draft is scored by [`ReviewOnlyEvaluator`], so **the
+/// returned `score` is the reviewer's verdict alone** — the CLI blends in a
+/// typst-rendered ATS coverage term that a browser can't compute, so its
+/// combined score will differ.
+///
+/// Before returning, the best draft is scrubbed of AI-tell em/en dashes
+/// (`scrub_resume_text`, punctuation-only), the same finalize step
+/// [`tailor_draft`] applies, so nothing crosses the boundary unscrubbed.
+///
+/// Returns a JSON object:
+/// - `resume`: the scrubbed best `TailoredResume`.
+/// - `warnings`: the never-fabricate guard warnings from the *initial* draft
+///   (the loop's internal revisions don't surface their own through the domain
+///   API, so these reflect iteration 0).
+/// - `dropped_unrecorded`: cleaned skill names the model proposed on the initial
+///   draft that no recorded, evidence-backed skill could support.
+/// - `score`: the best draft's review-only score (see the caveat above).
+/// - `report`: the best draft's `AdversarialReport`.
+/// - `iterations`: how many revision passes were scored (0 if the first draft
+///   was already good enough or had nothing major to fix).
+/// - `usage`: the flow's total token cost as `{ "input_tokens", "output_tokens"
+///   }` (`TokenUsage`'s serde shape) — the initial tailor call, the initial
+///   review call, and every revision pass's tailor and review calls, summed.
+///   As accurate as the values in scope allow: it's a true total of every
+///   model call this export itself made, not an estimate.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn tailor_loop(
+    dataset_json: String,
+    jd_json: String,
+    gap_json: String,
+    params_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+) -> Result<String, JsValue> {
+    let dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
+    let gap: GapReport = parse(&gap_json, "gap report").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+
+    // Lenient params: a blank string is `{}`, taking every default.
+    let raw: RawLoopParams = if params_json.trim().is_empty() {
+        RawLoopParams {
+            revisions: None,
+            acceptable_score: None,
+        }
+    } else {
+        parse(&params_json, "loop params").map_err(throw)?
+    };
+    let limits = LoopLimits {
+        revisions: raw.revisions.unwrap_or(2),
+        acceptable_score: raw.acceptable_score.unwrap_or(0.85),
+    };
+
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    // Iteration 0: the first draft, and the guard warnings it produced.
+    let initial = aarg_domain::tailor::tailor_resume(
+        &ctx,
+        BuildId("wasm".to_string()),
+        JdId("wasm".to_string()),
+        &jd,
+        &dataset,
+        &gap,
+        None,
+    )
+    .await
+    .map_err(|e| throw(e.to_string()))?;
+    // Move each field out separately — the initial draft feeds the evaluator,
+    // its warnings and dropped skills are reported alongside the best draft.
+    // `usage` is `Copy`, so pulling it out here doesn't disturb the other
+    // moves; it's the initial tailor call's token cost, folded into the
+    // flow-wide total returned below.
+    let warnings = initial.warnings;
+    let dropped_unrecorded = initial.dropped_unrecorded;
+    let initial_resume = initial.resume;
+    let initial_tailor_usage = initial.usage;
+
+    let evaluator = ReviewOnlyEvaluator;
+    let observer = WasmLoopObserver {
+        passes: std::sync::atomic::AtomicUsize::new(0),
+    };
+
+    // Score the first draft, then drive the loop from it.
+    let initial_eval = evaluator
+        .evaluate(&ctx, 0, initial_resume, &jd, &dataset, &gap)
+        .await
+        .map_err(|e| throw(e.to_string()))?;
+    // Also `Copy`: the initial review call's token cost, taken before
+    // `initial_eval` moves into `run_loop` below.
+    let initial_review_usage = initial_eval.review_usage;
+    let outcome = aarg_domain::tailor::run_loop(
+        &ctx,
+        &evaluator,
+        &observer,
+        limits,
+        BuildId("wasm".to_string()),
+        JdId("wasm".to_string()),
+        &jd,
+        &dataset,
+        &gap,
+        initial_eval,
+    )
+    .await
+    .map_err(|e| throw(e.to_string()))?;
+
+    let mut best = outcome.best;
+    // Punctuation-only finalize, the same one `tailor_draft` applies.
+    aarg_domain::tailor::scrub_resume_text(&mut best.resume);
+    let iterations = observer.passes.load(std::sync::atomic::Ordering::Relaxed);
+
+    // The flow's total token cost: the initial tailor call, the initial
+    // review call, and every revision pass's tailor+review calls
+    // (`outcome.usage`, which `run_loop` already accumulates across
+    // iterations — see its own `add_usage` calls). Surfaced so a caller can
+    // show the flow's cost the way the CLI's `StreamReporter` does.
+    let usage = serde_json::json!({
+        "input_tokens": initial_tailor_usage.input_tokens
+            + initial_review_usage.input_tokens
+            + outcome.usage.input_tokens,
+        "output_tokens": initial_tailor_usage.output_tokens
+            + initial_review_usage.output_tokens
+            + outcome.usage.output_tokens,
+    });
+
+    dump(&serde_json::json!({
+        "resume": best.resume,
+        "warnings": warnings,
+        "dropped_unrecorded": dropped_unrecorded,
+        "score": best.score,
+        "report": best.report,
+        "iterations": iterations,
+        "usage": usage,
+    }))
+    .map_err(throw)
 }
 
 #[cfg(test)]
@@ -598,5 +1099,46 @@ mod tests {
         let without_prefix: Vec<String> =
             serde_json::from_str(&keyword_key_impl("engineering manager").unwrap()).unwrap();
         assert_eq!(with_prefix, without_prefix);
+    }
+
+    #[test]
+    fn check_provenance_classifies_a_verbatim_summary_line() {
+        // The dataset's own summary, echoed unchanged into the draft — the
+        // clearest possible `verbatim` case, round-tripped through JSON the
+        // same way a browser caller would.
+        let mut dataset = ResumeDataset::new(Contact {
+            full_name: "Test Person".into(),
+            email: "t@example.com".into(),
+            phone: None,
+            location: None,
+            links: Vec::new(),
+        });
+        dataset.summary = Some("Engineering leader with a delivery focus.".into());
+        let dataset_json = serde_json::to_string(&dataset).unwrap();
+
+        let out = check_provenance_impl(
+            &canonical_json_with_summary("Engineering leader with a delivery focus."),
+            &dataset_json,
+        )
+        .expect("check_provenance should accept well-formed input");
+        let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let lines = report["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 1); // only the summary line: no roles, no skills
+        assert_eq!(lines[0]["status"], "verbatim");
+        assert_eq!(lines[0]["best_match"]["source"]["type"], "summary");
+        assert_eq!(lines[0]["best_match"]["score"], 1.0);
+    }
+
+    #[test]
+    fn check_provenance_rejects_malformed_draft_json_without_panicking() {
+        let err = check_provenance_impl("{ not json", &empty_dataset_json()).unwrap_err();
+        assert!(err.contains("invalid canonical draft"), "got {err:?}");
+    }
+
+    #[test]
+    fn check_provenance_rejects_malformed_dataset_json_without_panicking() {
+        let err =
+            check_provenance_impl(&canonical_json_with_summary("s"), "{ not json").unwrap_err();
+        assert!(err.contains("invalid dataset"), "got {err:?}");
     }
 }
