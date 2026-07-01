@@ -18,11 +18,56 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext};
 use crate::dataset::types::{BulletId, Metric, ResumeDataset};
 use crate::llm::LlmError;
-use crate::style;
 use crate::user::{Answer, AskError, Question, UserHandle};
 
 /// A leading question is one sentence.
 const REPLY_BUDGET: u32 = 256;
+
+/// How to color an interview anchor's parts — the seam that keeps the
+/// terminal styler out of this portable crate.
+///
+/// The anchor block (the "which role / current line / reviewer concern"
+/// header shown before each question) is a deliberate three-tier contrast
+/// choice, but coloring it means reaching for `console`/`owo-colors`, which
+/// a crate that must compile to `wasm32` can't depend on. So the domain
+/// builds the anchor from plain strings and defers the coloring to the
+/// caller: the CLI passes its `style`-backed functions, tests and the wasm
+/// host pass [`AnchorStyle::PLAIN`] (identity). Same block, no terminal
+/// dependency crossing the crate line.
+///
+/// The three tiers are colorblind-safe: `bold` is the standard foreground at
+/// full weight (the role header and labels), `dim` recedes (the quoted
+/// current line), `warn` is yellow (the reviewer's concern). Each anchor
+/// line is also labelled, so the distinction never rests on color alone.
+///
+/// It's a set of `fn(&str) -> String` pointers rather than closures because
+/// nothing here captures state — a plain function per tier is all the caller
+/// needs to hand across the seam, and `Copy` lets it pass by value freely.
+#[derive(Clone, Copy)]
+pub struct AnchorStyle {
+    /// Full-weight standard foreground — the role header and the labels.
+    pub bold: fn(&str) -> String,
+    /// Dimmed — the quoted current line, which should recede.
+    pub dim: fn(&str) -> String,
+    /// Yellow warn — the reviewer's concern (used by the strengthen anchor).
+    pub warn: fn(&str) -> String,
+}
+
+/// Identity styling: return the text unchanged. The one function all three
+/// [`AnchorStyle::PLAIN`] tiers point at.
+fn plain(s: &str) -> String {
+    s.to_string()
+}
+
+impl AnchorStyle {
+    /// Every part passes through unchanged. The default for tests and for any
+    /// host without a terminal (the wasm build), where color would be noise.
+    pub const PLAIN: AnchorStyle = AnchorStyle {
+        bold: plain,
+        dim: plain,
+        warn: plain,
+    };
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetricError {
@@ -120,6 +165,7 @@ pub async fn capture_metrics(
     targets: &[MetricTarget],
     user: &dyn UserHandle,
     ctx: &AgentContext<'_>,
+    anchor: AnchorStyle,
 ) -> Result<usize, AskError> {
     let mut added = 0;
     let mut seen: Vec<BulletId> = Vec::new();
@@ -157,9 +203,9 @@ pub async fn capture_metrics(
         // the strengthen interview: a bold role header over the quoted line.
         user.notify(&format!(
             "\n{}\n  {} {}",
-            style::bold(&role_label),
-            style::bold("current:"),
-            style::dim(format!("\"{text}\"")),
+            (anchor.bold)(&role_label),
+            (anchor.bold)("current:"),
+            (anchor.dim)(&format!("\"{text}\"")),
         ));
         let answer = match user.ask(Question::Text { prompt: question }).await? {
             Answer::Text(t) if !t.trim().is_empty() => t.trim().to_string(),
@@ -281,9 +327,15 @@ mod tests {
             bullet_id: BulletId("bullet-1".into()),
             hint: Some("quantify the cost reduction".into()),
         }];
-        let added = capture_metrics(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let added = capture_metrics(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            AnchorStyle::PLAIN,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(added, 1);
         let bullet = &dataset.roles[0].bullets[0];
@@ -316,9 +368,15 @@ mod tests {
             bullet_id: BulletId("bullet-1".into()),
             hint: None,
         }];
-        let added = capture_metrics(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let added = capture_metrics(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            AnchorStyle::PLAIN,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(added, 0);
         assert_eq!(dataset, before);
@@ -334,9 +392,15 @@ mod tests {
             bullet_id: BulletId("bullet-99".into()), // not in the dataset
             hint: None,
         }];
-        let added = capture_metrics(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let added = capture_metrics(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            AnchorStyle::PLAIN,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(added, 0);
         // The agent was never even consulted for a bullet that isn't there.
@@ -355,9 +419,15 @@ mod tests {
             bullet_id: BulletId("bullet-1".into()),
             hint: None,
         }];
-        let added = capture_metrics(&mut dataset, &targets, &user, &ctx(&mock))
-            .await
-            .unwrap();
+        let added = capture_metrics(
+            &mut dataset,
+            &targets,
+            &user,
+            &ctx(&mock),
+            AnchorStyle::PLAIN,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(added, 0);
         assert_eq!(dataset, before);

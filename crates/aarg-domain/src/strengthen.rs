@@ -36,8 +36,8 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext};
 use crate::dataset::types::{BulletId, ResumeDataset};
 use crate::llm::LlmError;
+use crate::metric::AnchorStyle;
 use crate::review::ObjectionKind;
-use crate::style;
 use crate::tailor::within_evidence;
 use crate::user::{Answer, AskError, Question, UserHandle};
 
@@ -434,6 +434,7 @@ pub async fn strengthen_bullets(
     user: &dyn UserHandle,
     ctx: &AgentContext<'_>,
     limits: InterviewLimits,
+    anchor: AnchorStyle,
 ) -> Result<usize, AskError> {
     let mut changed = 0;
     let mut seen: Vec<BulletId> = Vec::new();
@@ -459,11 +460,11 @@ pub async fn strengthen_bullets(
         // labels, and the named colors follow the terminal's own theme.
         user.notify(&format!(
             "\n{}\n  {} {}\n  {} {}",
-            style::bold(&role_label),
-            style::bold("current:"),
-            style::dim(format!("\"{text}\"")),
-            style::bold("reviewer:"),
-            style::yellow(&target.concern),
+            (anchor.bold)(&role_label),
+            (anchor.bold)("current:"),
+            (anchor.dim)(&format!("\"{text}\"")),
+            (anchor.bold)("reviewer:"),
+            (anchor.warn)(&target.concern),
         ));
 
         // Offer an evidence-grounded suggestion as a starting point first, when
@@ -556,7 +557,7 @@ pub async fn strengthen_bullets(
 /// "phrase my plain words well, invent nothing" job, just with no
 /// `original` line to preserve (pass `""`). The digit-guard and the
 /// user-as-final-gate loop bind identically in both callers.
-pub(crate) async fn polish(
+pub async fn polish(
     ctx: &AgentContext<'_>,
     original: &str,
     answer: &str,
@@ -1007,6 +1008,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1043,6 +1045,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1073,6 +1076,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1105,6 +1109,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1131,6 +1136,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1158,6 +1164,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1185,6 +1192,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1217,6 +1225,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1260,6 +1269,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1295,6 +1305,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1336,6 +1347,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1377,6 +1389,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -1410,6 +1423,7 @@ mod tests {
             &user,
             &ctx(&mock),
             InterviewLimits::default(),
+            AnchorStyle::PLAIN,
         )
         .await
         .unwrap();

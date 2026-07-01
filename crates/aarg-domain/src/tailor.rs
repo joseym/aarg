@@ -32,6 +32,7 @@ use crate::gap::GapReport;
 use crate::jd::JobRequirements;
 use crate::keywords::keyword_key;
 use crate::mirror;
+use crate::review::{AdversarialReport, Objection};
 use async_trait::async_trait;
 
 use crate::agent::{Agent, AgentContext, ModelTier};
@@ -981,6 +982,208 @@ pub fn scrub_resume_text(resume: &mut TailoredResume) {
     for skill in &mut resume.skills_section.skills {
         *skill = normalize_dashes(skill);
     }
+}
+
+// ---------------------------------------------------------------------
+// The adversarial revision loop (PRD §6.4)
+// ---------------------------------------------------------------------
+//
+// The loop's *policy* — the hard cap, the score-must-improve gate, keeping
+// the best draft seen — is portable: it's arithmetic over scores and a few
+// model calls, nothing that touches a disk or a PDF. So it lives here in the
+// domain, where a browser can run it too. The half it can't own is *how* a
+// draft is scored: that renders a PDF with typst, reads its text back, and
+// runs the deterministic ATS check, none of which exists in wasm. That half
+// is injected as an [`Evaluator`]; the native binary implements it over typst
+// and its ATS service, and a test (later the wasm binding) supplies its own.
+
+/// One scored draft: the resume, the reviewer's report, the combined score
+/// the loop optimizes, the review's token cost, and whatever `extra` the
+/// evaluator wants handed back to its caller. Generic over that extra so the
+/// portable loop never has to name the binary-only `AtsReport` — the native
+/// evaluator stashes its coverage report there; a headless one uses `()`.
+#[derive(Debug)]
+pub struct Evaluation<E> {
+    pub resume: TailoredResume,
+    pub report: AdversarialReport,
+    /// The single number the loop compares: content quality blended with
+    /// keyword coverage. In `0.0..=1.0`.
+    pub score: f32,
+    pub review_usage: TokenUsage,
+    /// Evaluator-specific payload for the caller (the native one's
+    /// `AtsReport`); the loop itself never reads it.
+    pub extra: E,
+}
+
+/// Scores one draft. The revision loop owns the honest *policy*, but not the
+/// *scoring* — that half renders and inspects a PDF, which a browser can't do
+/// — so it's injected. `Extra` is whatever the evaluator wants returned
+/// alongside the score (the native one carries its `AtsReport`; `()`
+/// otherwise); `Error` is the evaluator's own failure (typst/render errors,
+/// natively). The one method mirrors the shape of the real native `evaluate`:
+/// the draft to score, its iteration number (for per-iteration artifacts),
+/// and the JD/dataset/gap it's judged against.
+#[async_trait]
+pub trait Evaluator: Send + Sync {
+    type Extra: Send;
+    type Error: std::error::Error + 'static;
+
+    async fn evaluate(
+        &self,
+        ctx: &AgentContext<'_>,
+        iteration: usize,
+        resume: TailoredResume,
+        jd: &JobRequirements,
+        dataset: &ResumeDataset,
+        gap: &GapReport,
+    ) -> Result<Evaluation<Self::Extra>, Self::Error>;
+}
+
+/// The loop's honest bounds (PRD §6.4): the hard cap on revision passes past
+/// the first draft, and the score at or above which a draft is good enough to
+/// stop early rather than spend tokens polishing it.
+#[derive(Debug, Clone, Copy)]
+pub struct LoopLimits {
+    pub revisions: usize,
+    pub acceptable_score: f32,
+}
+
+/// The loop's host: the presentation the portable loop can't do itself. The
+/// CLI implements it to narrate each pass live (the domain crate can't reach
+/// the terminal styler) and to format objections into the exact revision
+/// prompt lines the rest of the tool uses — so the loop stays ignorant of how
+/// an objection reads or where output goes. The narration hooks default to
+/// no-ops, so a headless caller (a test, later the wasm binding) implements
+/// only `objection_line`. Generic over the evaluator's `Extra` so `evaluated`
+/// can hand back the whole scored draft (the CLI reads coverage off it).
+#[allow(unused_variables)]
+pub trait LoopObserver<E>: Send + Sync {
+    /// One objection as a single revision-prompt line.
+    fn objection_line(&self, objection: &Objection) -> String;
+
+    /// A revision pass is about to address `objections` objection(s).
+    fn revising(&self, iteration: usize, objections: usize) {}
+    /// The revision's draft returned from the model.
+    fn revision_drafted(&self, iteration: usize) {}
+    /// The revision was scored.
+    fn evaluated(&self, iteration: usize, eval: &Evaluation<E>) {}
+    /// A revision failed the score-must-improve gate; the loop stops.
+    fn no_improvement(&self) {}
+}
+
+/// What the loop returns: the best draft it saw (never merely the last), and
+/// the token usage spent across every revision pass — kept or discarded — so
+/// the caller folds one number into its build total.
+#[derive(Debug)]
+pub struct LoopOutcome<E> {
+    pub best: Evaluation<E>,
+    pub usage: TokenUsage,
+}
+
+/// A revision loop failure: either a tailoring model call failed, or the
+/// injected evaluator did. Generic over the evaluator's error so the portable
+/// loop never names the binary's `CliError`; the caller unwraps both arms at
+/// its own error boundary.
+#[derive(Debug, thiserror::Error)]
+pub enum LoopError<E: std::error::Error + 'static> {
+    #[error(transparent)]
+    Tailor(#[from] TailorError),
+    #[error("the draft evaluator failed")]
+    Evaluate(#[source] E),
+}
+
+/// Drive the adversarial revision loop (PRD §6.4). Given a scored starting
+/// draft (`initial` — iteration 0's evaluation, produced by the caller) it
+/// will, up to `limits.revisions` times: ask the model for a revision that
+/// addresses the current best draft's objections, score it through the
+/// injected `evaluator`, and keep it only if it beat the best. The moment a
+/// revision doesn't improve, the loop stops and the best draft already in
+/// hand is returned.
+///
+/// The three honest properties, all unit-tested below with a scripted
+/// evaluator:
+/// - the hard cap bounds cost — at most `limits.revisions` passes;
+/// - a revision that scores no higher is discarded and ends the loop;
+/// - the *best* draft seen is returned, never merely the last.
+///
+/// It takes the same [`AgentContext`] the rest of the pipeline does, so the
+/// live-cost sink keeps streaming the (expensive) tailoring and review calls
+/// and the user can still interrupt.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_loop<V, O>(
+    ctx: &AgentContext<'_>,
+    evaluator: &V,
+    observer: &O,
+    limits: LoopLimits,
+    build_id: BuildId,
+    jd_id: JdId,
+    jd: &JobRequirements,
+    dataset: &ResumeDataset,
+    gap: &GapReport,
+    initial: Evaluation<V::Extra>,
+) -> Result<LoopOutcome<V::Extra>, LoopError<V::Error>>
+where
+    V: Evaluator,
+    O: LoopObserver<V::Extra>,
+{
+    let mut best = initial;
+    let mut usage = TokenUsage::default();
+
+    for iteration in 1..=limits.revisions {
+        // Stop early when the draft is good enough or has nothing major
+        // left to fix — no point spending tokens polishing a strong draft.
+        if best.score >= limits.acceptable_score || !best.report.has_blocking_or_major() {
+            break;
+        }
+        // The caller formats objections so the revision prompt matches the
+        // rest of the tool's wording exactly; only the *actionable* (content)
+        // ones — layout objections route elsewhere (Phase 5).
+        let objections: Vec<String> = best
+            .report
+            .actionable()
+            .map(|objection| observer.objection_line(objection))
+            .collect();
+        observer.revising(iteration, objections.len());
+
+        let revised = tailor_resume(
+            ctx,
+            build_id.clone(),
+            jd_id.clone(),
+            jd,
+            dataset,
+            gap,
+            Some(RevisionContext { objections }),
+        )
+        .await?;
+        observer.revision_drafted(iteration);
+        add_usage(&mut usage, revised.usage);
+
+        let candidate = evaluator
+            .evaluate(ctx, iteration, revised.resume, jd, dataset, gap)
+            .await
+            .map_err(LoopError::Evaluate)?;
+        add_usage(&mut usage, candidate.review_usage);
+        observer.evaluated(iteration, &candidate);
+
+        // Score-must-improve: a revision that scored no better is discarded,
+        // and the loop stops — the best draft is already in hand.
+        if candidate.score > best.score {
+            best = candidate;
+        } else {
+            observer.no_improvement();
+            break;
+        }
+    }
+
+    Ok(LoopOutcome { best, usage })
+}
+
+/// Fold one run's token usage into a running total. The loop reports a single
+/// figure for every revision pass it made; the caller adds it to the build's
+/// grand total once.
+fn add_usage(total: &mut TokenUsage, other: TokenUsage) {
+    total.input_tokens += other.input_tokens;
+    total.output_tokens += other.output_tokens;
 }
 
 #[cfg(test)]
@@ -1974,5 +2177,211 @@ mod tests {
         // sample_dataset() has no confirmed summary, so the model's wins.
         let outcome = run_tailor(VALID_REPLY).await.unwrap();
         assert_eq!(outcome.resume.summary, "A model-generated summary.");
+    }
+
+    // -----------------------------------------------------------------
+    // The revision loop's three honest properties (PRD §6.4)
+    // -----------------------------------------------------------------
+
+    use crate::review::{ObjectionKind, ObjectionScope, ObjectionTarget, Severity};
+    use async_trait::async_trait;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// A report carrying one Major, canonical objection — enough to keep the
+    /// loop from stopping early on "nothing left to fix", so the cap and the
+    /// gate are what actually govern it.
+    fn report_with_major() -> AdversarialReport {
+        AdversarialReport {
+            objections: vec![Objection {
+                target: ObjectionTarget::Bullet(BulletId("bullet-1".into())),
+                severity: Severity::Major,
+                kind: ObjectionKind::VagueVerb,
+                scope: ObjectionScope::Canonical,
+                message: "weak verb".into(),
+                suggestion: None,
+            }],
+            overall_score: 0.5,
+            persona_notes: String::new(),
+        }
+    }
+
+    /// An evaluator that hands back scripted scores in order, ignoring the
+    /// draft entirely — so a test dictates the score curve and watches the
+    /// policy react.
+    struct ScriptedEvaluator {
+        scores: Mutex<VecDeque<f32>>,
+    }
+
+    impl ScriptedEvaluator {
+        fn new(scores: impl IntoIterator<Item = f32>) -> Self {
+            ScriptedEvaluator {
+                scores: Mutex::new(scores.into_iter().collect()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Evaluator for ScriptedEvaluator {
+        type Extra = ();
+        // The scripted evaluator never fails; `Infallible` proves it at the
+        // type level (and satisfies the loop's `Error` bound).
+        type Error = std::convert::Infallible;
+
+        async fn evaluate(
+            &self,
+            _ctx: &AgentContext<'_>,
+            _iteration: usize,
+            resume: TailoredResume,
+            _jd: &JobRequirements,
+            _dataset: &ResumeDataset,
+            _gap: &GapReport,
+        ) -> Result<Evaluation<()>, Self::Error> {
+            let score = self.scores.lock().unwrap().pop_front().unwrap_or(0.0);
+            Ok(Evaluation {
+                resume,
+                report: report_with_major(),
+                score,
+                review_usage: TokenUsage::default(),
+                extra: (),
+            })
+        }
+    }
+
+    /// A headless host: it formats objections (the one required method) and
+    /// ignores every narration hook.
+    struct TestObserver;
+    impl LoopObserver<()> for TestObserver {
+        fn objection_line(&self, objection: &Objection) -> String {
+            objection.message.clone()
+        }
+    }
+
+    /// Tailor a first draft from `VALID_REPLY`, to stand in as the loop's
+    /// starting (iteration 0) resume. Consumes one enqueued mock reply.
+    async fn initial_resume(mock: &MockLlmClient) -> TailoredResume {
+        mock.enqueue(VALID_REPLY);
+        tailor_resume(
+            &test_ctx(mock),
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &sample_dataset(),
+            &sample_gap(),
+            None,
+        )
+        .await
+        .unwrap()
+        .resume
+    }
+
+    fn eval_with(score: f32, resume: TailoredResume) -> Evaluation<()> {
+        Evaluation {
+            resume,
+            report: report_with_major(),
+            score,
+            review_usage: TokenUsage::default(),
+            extra: (),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_loop_respects_the_hard_revision_cap() {
+        let mock = MockLlmClient::default();
+        let resume = initial_resume(&mock).await;
+        // Two revision drafts for the two allowed passes.
+        mock.enqueue(VALID_REPLY);
+        mock.enqueue(VALID_REPLY);
+        // Scores keep improving well past the cap; only the cap can stop it.
+        let evaluator = ScriptedEvaluator::new([0.5, 0.6, 0.7, 0.8]);
+
+        let out = run_loop(
+            &test_ctx(&mock),
+            &evaluator,
+            &TestObserver,
+            LoopLimits {
+                revisions: 2,
+                acceptable_score: 0.99,
+            },
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &sample_dataset(),
+            &sample_gap(),
+            eval_with(0.4, resume),
+        )
+        .await
+        .unwrap();
+
+        // Exactly two revision passes ran (the initial tailor + two revisions
+        // = three model calls), not one more — the cap held.
+        assert_eq!(mock.requests().len(), 3);
+        // ...and with an ever-improving curve, the last (second) revision won.
+        assert!((out.best.score - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn a_worse_revision_falls_back_to_the_prior_best_and_stops() {
+        let mock = MockLlmClient::default();
+        let resume = initial_resume(&mock).await;
+        mock.enqueue(VALID_REPLY); // one revision draft is all it should ask for
+        // The first revision scores *below* the starting draft.
+        let evaluator = ScriptedEvaluator::new([0.5]);
+
+        let out = run_loop(
+            &test_ctx(&mock),
+            &evaluator,
+            &TestObserver,
+            LoopLimits {
+                revisions: 3,
+                acceptable_score: 0.99,
+            },
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &sample_dataset(),
+            &sample_gap(),
+            eval_with(0.7, resume.clone()),
+        )
+        .await
+        .unwrap();
+
+        // The worse revision was discarded and the loop stopped after one
+        // pass, though the cap allowed three (initial + one revision = two).
+        assert_eq!(mock.requests().len(), 2);
+        // The prior best was retained, draft and score alike.
+        assert!((out.best.score - 0.7).abs() < f32::EPSILON);
+        assert_eq!(out.best.resume, resume);
+    }
+
+    #[tokio::test]
+    async fn the_loop_returns_the_best_draft_seen_not_the_last() {
+        let mock = MockLlmClient::default();
+        let resume = initial_resume(&mock).await;
+        mock.enqueue(VALID_REPLY);
+        mock.enqueue(VALID_REPLY);
+        // A strong revision, then a weaker one: the best is the first.
+        let evaluator = ScriptedEvaluator::new([0.8, 0.5]);
+
+        let out = run_loop(
+            &test_ctx(&mock),
+            &evaluator,
+            &TestObserver,
+            LoopLimits {
+                revisions: 2,
+                acceptable_score: 0.99,
+            },
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &sample_dataset(),
+            &sample_gap(),
+            eval_with(0.4, resume),
+        )
+        .await
+        .unwrap();
+
+        // The 0.8 draft is kept even though the last one scored 0.5.
+        assert!((out.best.score - 0.8).abs() < f32::EPSILON);
     }
 }

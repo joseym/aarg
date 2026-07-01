@@ -23,10 +23,14 @@
 pub use aarg_core::{agent, llm, trace, user};
 
 pub mod dataset;
+pub mod enrich;
 pub mod gap;
 pub mod jd;
 pub mod keywords;
+pub mod metric;
 pub mod mirror;
 pub mod review;
+pub mod strengthen;
+pub mod summary;
 pub mod tailor;
 pub mod variant;

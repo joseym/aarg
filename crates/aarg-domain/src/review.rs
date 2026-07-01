@@ -212,6 +212,73 @@ pub enum Variant {
 }
 
 // ---------------------------------------------------------------------
+// Objection formatting: plain-text string builders, shared by every host
+// that drives the adversarial loop.
+// ---------------------------------------------------------------------
+//
+// These used to live in the CLI (`src/commands/tailor.rs`) because that was
+// the only host. The wasm loop needed the exact same text — its revision
+// pass doesn't hand the model the prior draft, so `target_label`'s
+// "bullet-3" prefix is the *only* way a revision prompt tells the model
+// which line an objection is about — so the functions moved here, to the
+// crate every host depends on, instead of being copied. Two hosts, one
+// format.
+
+/// The short label for an objection's target ("bullet-3", "summary", ...).
+pub fn target_label(target: &ObjectionTarget) -> String {
+    match target {
+        ObjectionTarget::Bullet(id) => id.0.clone(),
+        ObjectionTarget::Summary => "summary".to_string(),
+        ObjectionTarget::SkillsSection => "skills".to_string(),
+        ObjectionTarget::Layout => "layout".to_string(),
+        ObjectionTarget::Overall => "overall".to_string(),
+    }
+}
+
+/// The plain-English name of an objection kind ("vague verb", ...).
+pub fn kind_str(kind: ObjectionKind) -> &'static str {
+    match kind {
+        ObjectionKind::NoMetric => "no metric",
+        ObjectionKind::VagueVerb => "vague verb",
+        ObjectionKind::UnsupportedClaim => "unsupported claim",
+        ObjectionKind::GenericPhrasing => "generic phrasing",
+        ObjectionKind::JdMismatch => "jd mismatch",
+        ObjectionKind::LayoutDense => "dense layout",
+        ObjectionKind::Other => "issue",
+    }
+}
+
+/// The plain-English name of a severity ("blocking", "major", "minor").
+pub fn severity_str(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Blocking => "blocking",
+        Severity::Major => "major",
+        Severity::Minor => "minor",
+    }
+}
+
+/// One objection as a single revision-prompt line: `target (kind,
+/// severity): message · try: suggestion`. Every host that drives the
+/// adversarial loop (the CLI's `CliLoopObserver`, the wasm
+/// `WasmLoopObserver`) feeds this exact line back to the model when asking
+/// for a revision, so a "fix this" instruction always names the line it's
+/// about — plain text, no styling, so it's identical whether it ends up on
+/// a terminal or in a browser's revision prompt.
+pub fn format_objection(objection: &Objection) -> String {
+    let mut line = format!(
+        "{} ({}, {}): {}",
+        target_label(&objection.target),
+        kind_str(objection.kind),
+        severity_str(objection.severity),
+        objection.message
+    );
+    if let Some(suggestion) = &objection.suggestion {
+        line.push_str(&format!(" · try: {suggestion}"));
+    }
+    line
+}
+
+// ---------------------------------------------------------------------
 // The agent
 // ---------------------------------------------------------------------
 
@@ -751,5 +818,25 @@ mod tests {
         // Accepting a concern doesn't inflate the honest score.
         assert_eq!(visible.overall_score, 0.74);
         assert_eq!(visible.persona_notes, "would interview");
+    }
+
+    #[test]
+    fn format_objection_leads_with_the_target_so_a_revision_prompt_can_attribute_it() {
+        // The revision pass doesn't include the prior draft, so this
+        // "bullet-3 (...)" prefix is the model's only way to know which
+        // line an objection is about — every host's revision prompt must
+        // carry it.
+        let o = Objection {
+            target: ObjectionTarget::Bullet(BulletId("bullet-3".into())),
+            severity: Severity::Major,
+            kind: ObjectionKind::VagueVerb,
+            scope: ObjectionScope::Canonical,
+            message: "\"Helped\" hides what you did".into(),
+            suggestion: Some("lead with the action".into()),
+        };
+        assert_eq!(
+            format_objection(&o),
+            "bullet-3 (vague verb, major): \"Helped\" hides what you did · try: lead with the action"
+        );
     }
 }

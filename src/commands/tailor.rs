@@ -31,18 +31,42 @@ use crate::readability::{self, ReadabilityReport};
 use crate::render;
 use crate::review::{
     AdversarialReport, AdversarialReviewerAgent, Objection, ObjectionKind, ObjectionTarget,
-    ReviewInput, Severity,
+    ReviewInput, Severity, kind_str, severity_str, target_label,
 };
 use crate::strengthen::{self, InterviewLimits, StrengthenTarget};
 use crate::style::{self, Spinner, StreamReporter};
 use crate::summary;
-use crate::tailor::{JdId, RevisionContext, TailorOutcome, TailoredResume, tailor_resume};
+use crate::tailor::{
+    Evaluation, Evaluator, JdId, LoopError, LoopLimits, LoopObserver, TailorOutcome,
+    TailoredResume, run_loop, tailor_resume,
+};
 use crate::templates;
 use crate::tune;
 use crate::user::{Answer, Question, UserHandle};
 use crate::variant::{self, TemplateId, Variant, VariantAdapterAgent, VariantInput};
 use crate::verify::{add_one_skill, unbacked_keywords, verify_keywords};
 use crate::voice;
+
+/// The terminal styling for an interview anchor. `metric`/`strengthen` live
+/// in the portable `aarg-domain` crate, which can't reach the terminal
+/// styler, so they build the anchor block from plain strings and take the
+/// coloring as an injected [`metric::AnchorStyle`]. This hands them our three
+/// contrast tiers — `bold` labels, `dim` reference line, `yellow` concern —
+/// so the CLI output stays byte-identical to before the extraction. (The
+/// tiny wrappers exist because `style`'s helpers are generic over `Display`,
+/// and the seam wants plain `fn(&str) -> String` pointers.)
+fn anchor_style() -> metric::AnchorStyle {
+    fn bold(s: &str) -> String {
+        style::bold(s)
+    }
+    fn dim(s: &str) -> String {
+        style::dim(s)
+    }
+    fn warn(s: &str) -> String {
+        style::yellow(s)
+    }
+    metric::AnchorStyle { bold, dim, warn }
+}
 
 // Each copilot guards on two distinct conditions: is there work to do (an
 // objection, a thin role, an unbacked keyword) and is a person here to answer.
@@ -319,8 +343,14 @@ pub async fn run(
                 .await
                 .unwrap_or(false);
             if wants {
-                let added =
-                    metric::capture_metrics(&mut dataset, &metric_targets, user, &ctx).await?;
+                let added = metric::capture_metrics(
+                    &mut dataset,
+                    &metric_targets,
+                    user,
+                    &ctx,
+                    anchor_style(),
+                )
+                .await?;
                 if added > 0 {
                     dataset.metadata.updated_at = Utc::now();
                     store::save(&dataset)?;
@@ -398,6 +428,7 @@ pub async fn run(
                     user,
                     &ctx,
                     interview_limits,
+                    anchor_style(),
                 )
                 .await?;
                 if changed > 0 {
@@ -500,6 +531,7 @@ pub async fn run(
                                         user,
                                         &ctx,
                                         interview_limits,
+                                        anchor_style(),
                                     )
                                     .await?
                                 }
@@ -584,62 +616,41 @@ pub async fn run(
         }
     }
 
-    for iteration in 1..=max_revisions {
-        // Stop early when the draft is good enough or has nothing major
-        // left to fix — no point spending tokens to polish a strong draft.
-        if best.score >= acceptable_score || !best.report.has_blocking_or_major() {
-            break;
-        }
-        let objections: Vec<String> = best.report.actionable().map(format_objection).collect();
-        let count = objections.len();
-        eprintln!(
-            "{}",
-            style::dim(format!(
-                "revising (pass {iteration}): addressing {count} objection(s)"
-            ))
-        );
-        let revised = tailor_resume(
-            &ctx,
-            build.id.clone(),
-            jd_id.clone(),
-            &requirements,
-            &dataset,
-            &gap,
-            Some(RevisionContext { objections }),
-        )
-        .await?;
-        eprintln!("{}", style::dim(format!("revision {iteration} drafted")));
-        add_usage(&mut total, revised.usage);
-
-        let candidate = evaluate(
-            &ctx,
-            &build.dir,
-            iteration,
-            revised.resume,
-            &requirements,
-            &dataset,
-            &gap,
-        )
-        .await?;
-        add_usage(&mut total, candidate.review_usage);
-        eprintln!(
-            "{}",
-            iteration_line(&format!("iteration {iteration}"), &candidate)
-        );
-
-        // Score-must-improve: a revision that scored no better is
-        // discarded, and the loop stops — the best draft is already in
-        // hand.
-        if candidate.score > best.score {
-            best = candidate;
-        } else {
-            eprintln!(
-                "{}",
-                style::dim("that revision didn't improve the draft; keeping the best one")
-            );
-            break;
-        }
-    }
+    // The bounded review loop's *policy* — the hard cap, the
+    // score-must-improve gate, keeping the best draft seen — now lives in the
+    // portable `aarg-domain` crate (PRD §6.4). We hand it the injected
+    // evaluator (typst + the ATS service, the half a browser can't run), a
+    // host to narrate each pass, the config'd limits, and iteration 0's
+    // evaluation as the starting best. It returns the best draft and the
+    // tokens every revision pass spent. The same `ctx` flows through, so the
+    // live-cost sink keeps streaming and the run stays interruptible.
+    let loop_out = run_loop(
+        &ctx,
+        &NativeEvaluator {
+            build_dir: &build.dir,
+        },
+        &CliLoopObserver,
+        LoopLimits {
+            revisions: max_revisions,
+            acceptable_score,
+        },
+        build.id.clone(),
+        jd_id.clone(),
+        &requirements,
+        &dataset,
+        &gap,
+        best,
+    )
+    .await
+    // Unwrap the loop's two failure arms at our error boundary: a tailoring
+    // error routes through its `CliError` conversion, an evaluator error is
+    // already a `CliError`.
+    .map_err(|err| match err {
+        LoopError::Tailor(source) => CliError::from(source),
+        LoopError::Evaluate(source) => source,
+    })?;
+    add_usage(&mut total, loop_out.usage);
+    let mut best = loop_out.best;
 
     // Voice pass: rewrite the AI-sounding lines of the best draft toward
     // the user's own writing samples, then re-score. Voice only changes
@@ -746,7 +757,7 @@ pub async fn run(
     crate::tailor::scrub_resume_text(&mut best.resume);
     builds::write_json(&build.dir, "canonical.json", &best.resume)?;
     builds::write_json(&build.dir, "adversarial_report.json", &best.report)?;
-    builds::write_json(&build.dir, "ats_report.json", &best.ats_report)?;
+    builds::write_json(&build.dir, "ats_report.json", &best.extra)?;
     // Render the requested variant(s). The ATS payload is a deterministic
     // projection of the canonical draft; the human variant is reworded by the
     // adapter and then checked against the canonical, so the two PDFs can
@@ -867,7 +878,7 @@ pub async fn run(
         );
         eprintln!("  {}", best.report.persona_notes);
     }
-    print_coverage(&best.ats_report);
+    print_coverage(&best.extra);
 
     let score = if best.score > starting_score {
         style::grade(
@@ -957,14 +968,78 @@ pub async fn run(
     Ok(())
 }
 
-/// One draft's score and the artifacts that produced it. Each lands in
-/// its own `iterations/<n>/` directory so the whole loop is inspectable.
-struct Evaluation {
-    resume: TailoredResume,
-    report: AdversarialReport,
-    ats_report: AtsReport,
-    score: f32,
-    review_usage: TokenUsage,
+/// The loop's evaluation is the portable [`Evaluation`], specialized so its
+/// `extra` payload carries the native [`AtsReport`] — the render/coverage half
+/// a browser can't produce. Each draft's artifacts land in its own
+/// `iterations/<n>/` directory so the whole loop is inspectable.
+type NativeEvaluation = Evaluation<AtsReport>;
+
+/// Scores a draft the way only the native binary can: render it to a PDF with
+/// typst, read the text back, run the deterministic ATS coverage check, and
+/// run the adversarial reviewer over it. This is the concrete [`Evaluator`]
+/// the portable [`run_loop`] drives — the injected half of the loop that
+/// stays in the binary because it shells out to `typst` and reads the disk.
+/// It's a thin adapter: the real work lives in the [`evaluate`] free function,
+/// which the iteration-0 copilots also call directly.
+struct NativeEvaluator<'a> {
+    build_dir: &'a Path,
+}
+
+#[async_trait::async_trait]
+impl Evaluator for NativeEvaluator<'_> {
+    type Extra = AtsReport;
+    type Error = CliError;
+
+    async fn evaluate(
+        &self,
+        ctx: &AgentContext<'_>,
+        iteration: usize,
+        resume: TailoredResume,
+        jd: &JobRequirements,
+        dataset: &ResumeDataset,
+        gap: &GapReport,
+    ) -> Result<NativeEvaluation, CliError> {
+        evaluate(ctx, self.build_dir, iteration, resume, jd, dataset, gap).await
+    }
+}
+
+/// The loop's host on the terminal: it formats objections into the same
+/// revision-prompt lines `attack` uses, and narrates each pass live so the
+/// long streamed calls read as progress rather than a silent wait. The domain
+/// loop can't reach the styler, so this is where that output lives.
+struct CliLoopObserver;
+
+impl LoopObserver<AtsReport> for CliLoopObserver {
+    fn objection_line(&self, objection: &Objection) -> String {
+        format_objection(objection)
+    }
+
+    fn revising(&self, iteration: usize, objections: usize) {
+        eprintln!(
+            "{}",
+            style::dim(format!(
+                "revising (pass {iteration}): addressing {objections} objection(s)"
+            ))
+        );
+    }
+
+    fn revision_drafted(&self, iteration: usize) {
+        eprintln!("{}", style::dim(format!("revision {iteration} drafted")));
+    }
+
+    fn evaluated(&self, iteration: usize, eval: &NativeEvaluation) {
+        eprintln!(
+            "{}",
+            iteration_line(&format!("iteration {iteration}"), eval)
+        );
+    }
+
+    fn no_improvement(&self) {
+        eprintln!(
+            "{}",
+            style::dim("that revision didn't improve the draft; keeping the best one")
+        );
+    }
 }
 
 /// Review, render, and score one draft, writing its artifacts under
@@ -1027,7 +1102,7 @@ async fn evaluate(
     jd: &JobRequirements,
     dataset: &ResumeDataset,
     gap: &GapReport,
-) -> Result<Evaluation, CliError> {
+) -> Result<NativeEvaluation, CliError> {
     let iter_dir = build_dir.join("iterations").join(iteration.to_string());
     std::fs::create_dir_all(&iter_dir).map_err(|source| BuildError::Io {
         path: iter_dir.clone(),
@@ -1073,12 +1148,14 @@ async fn evaluate(
     // accepted objections filtered out, so they're not re-litigated.
     let report = report.without_dismissed(&dataset.metadata.dismissed_objections);
 
-    Ok(Evaluation {
+    Ok(NativeEvaluation {
         resume,
         report,
-        ats_report,
         score,
         review_usage: run.usage,
+        // The render/coverage half a browser can't produce rides along as the
+        // portable evaluation's `extra`, for the caller to persist and print.
+        extra: ats_report,
     })
 }
 
@@ -1172,43 +1249,25 @@ async fn offer_inline_skill_add(
 
 /// A one-line iteration summary: the label, the score color-graded by quality,
 /// and the objection count and coverage as dim context.
-fn iteration_line(label: &str, eval: &Evaluation) -> String {
+fn iteration_line(label: &str, eval: &NativeEvaluation) -> String {
     format!(
         "{label}  {}  {}",
         style::grade(eval.score, format!("score {:.2}", eval.score)),
         style::dim(format!(
             "{} objection(s), {:.0}% coverage",
             eval.report.objections.len(),
-            eval.ats_report.coverage * 100.0
+            eval.extra.coverage * 100.0
         ))
     )
 }
 
-/// One objection as a single revision-prompt line. Shared with `attack`.
-pub(crate) fn format_objection(objection: &Objection) -> String {
-    let mut line = format!(
-        "{} ({}, {}): {}",
-        target_label(&objection.target),
-        kind_str(objection.kind),
-        severity_str(objection.severity),
-        objection.message
-    );
-    if let Some(suggestion) = &objection.suggestion {
-        line.push_str(&format!(" · try: {suggestion}"));
-    }
-    line
-}
-
-/// The short label for an objection's target ("bullet-3", "summary", ...).
-fn target_label(target: &ObjectionTarget) -> String {
-    match target {
-        ObjectionTarget::Bullet(id) => id.0.clone(),
-        ObjectionTarget::Summary => "summary".to_string(),
-        ObjectionTarget::SkillsSection => "skills".to_string(),
-        ObjectionTarget::Layout => "layout".to_string(),
-        ObjectionTarget::Overall => "overall".to_string(),
-    }
-}
+/// One objection as a single revision-prompt line. Lives in
+/// `aarg_domain::review` so every host (this CLI and the wasm loop) builds
+/// the exact same text — the `target_label` prefix is the model's only way
+/// to attribute an objection to a specific bullet, since the revision pass
+/// doesn't get the prior draft. Re-exported here so `attack.rs`'s existing
+/// `crate::commands::tailor::format_objection` path keeps working.
+pub(crate) use crate::review::format_objection;
 
 /// Color an objection's severity so urgency reads at a glance: a blocking flaw
 /// red, a major one yellow, a minor one dim. The word is always shown, so the
@@ -1254,26 +1313,6 @@ fn refine_eligible(objection: &Objection) -> bool {
         objection.target,
         ObjectionTarget::Bullet(_) | ObjectionTarget::Summary
     )
-}
-
-fn kind_str(kind: ObjectionKind) -> &'static str {
-    match kind {
-        ObjectionKind::NoMetric => "no metric",
-        ObjectionKind::VagueVerb => "vague verb",
-        ObjectionKind::UnsupportedClaim => "unsupported claim",
-        ObjectionKind::GenericPhrasing => "generic phrasing",
-        ObjectionKind::JdMismatch => "jd mismatch",
-        ObjectionKind::LayoutDense => "dense layout",
-        ObjectionKind::Other => "issue",
-    }
-}
-
-fn severity_str(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Blocking => "blocking",
-        Severity::Major => "major",
-        Severity::Minor => "minor",
-    }
 }
 
 fn print_coverage(report: &AtsReport) {
@@ -1385,21 +1424,9 @@ mod tests {
         assert_eq!(slug("", ""), "");
     }
 
-    #[test]
-    fn objections_format_as_actionable_revision_lines() {
-        let objection = Objection {
-            target: ObjectionTarget::Bullet(BulletId("bullet-3".into())),
-            severity: Severity::Major,
-            kind: ObjectionKind::VagueVerb,
-            scope: ObjectionScope::Canonical,
-            message: "\"Helped\" hides what you did".into(),
-            suggestion: Some("lead with the action".into()),
-        };
-        assert_eq!(
-            format_objection(&objection),
-            "bullet-3 (vague verb, major): \"Helped\" hides what you did · try: lead with the action"
-        );
-    }
+    // `format_objection`'s own test lives with it in
+    // `aarg_domain::review` — it's a pure string builder with no
+    // CLI-specific behavior left to test here.
 
     fn objection(
         target: ObjectionTarget,
