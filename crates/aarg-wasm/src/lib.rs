@@ -437,6 +437,12 @@ pub async fn review_draft(
 // persists their work (it saves the dataset after each). A browser has no
 // filesystem the crate can reach, so every export that touches the dataset
 // returns the updated dataset alongside its result, and the host persists it.
+//
+// Two exceptions further down this section, both because the underlying
+// domain call doesn't touch the dataset: `tune_interactive` (still needs
+// both callbacks — a person drives it turn by turn — but only edits the
+// canonical draft) and `voice_rewrite` (an LLM-only autonomous rewrite,
+// so it takes just the `llm` callback and no `UserHandle` at all).
 
 /// Interview the person for a real number on each bullet the reviewer flagged
 /// as missing one (FR-3.x). `report_json` is an `AdversarialReport`; the
@@ -646,6 +652,228 @@ pub async fn enrich_roles_interactive(
         "dataset": dataset,
         "bullets_added": outcome.bullets_added,
         "roles_touched": outcome.roles_touched,
+    }))
+    .map_err(throw)
+}
+
+/// Run the conversational "tune" session over a finished canonical draft —
+/// the plain-language counterpart to the objection menu (FR-3.6's tone half,
+/// plus pure bullet removal): "drop the intern bullet", "make the summary
+/// read more conversational". Mirrors what the CLI's `aarg tune` does over
+/// its terminal `UserHandle` (`src/commands/tune.rs`), minus the filesystem
+/// load/save and the re-render, which stay host-side.
+///
+/// `aarg_domain::tune::run_session` drives the whole back-and-forth itself:
+/// it asks the opening "want to change anything?" confirm, then loops
+/// asking `Question::Text` for the next free-text request until a blank
+/// line or a declined offer ends it. So this export takes **no separate
+/// per-request argument** — the JS side answers that same loop by resolving
+/// the `user` callback once per turn (one scripted request, or whatever a
+/// person types into a chat box next), exactly the way `InteractiveUser`
+/// answers it in a terminal. Every request is routed (`tune::classify`)
+/// onto one of three grounded operations — pure bullet removal, or the
+/// digit-guarded voice rewrite for a tone change; a request outside those
+/// (a new fact, number, or skill) is reported unsupported and changes
+/// nothing — so nothing here can introduce a claim. What happened is
+/// reported back through `user.notify` in the same "✓ removed…" / "ℹ
+/// nothing to change" vocabulary the CLI prints (`SessionStyle::PLAIN`,
+/// since a browser has no terminal to style for).
+///
+/// `dataset_json` supplies the person's voice samples
+/// (`dataset.voice_samples[].text`) for the tone operation to anchor to.
+/// The session never mutates the dataset (it only edits the draft in
+/// memory), so — unlike the other interactive exports — the dataset is not
+/// part of the return.
+///
+/// Before returning, the draft is scrubbed of AI-tell em/en dashes
+/// (`scrub_resume_text`), the same finalize step every other draft-returning
+/// export applies.
+///
+/// Returns `{ "resume": TailoredResume, "changed": <bool>, "usage":
+/// {"input_tokens","output_tokens"} }`: the (possibly edited) scrubbed
+/// canonical draft, whether it actually changed (so the host knows to
+/// re-render and re-score, matching `TuneOutcome::changed_draft`), and the
+/// session's total token cost across every request it handled.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn tune_interactive(
+    canonical_json: String,
+    dataset_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let mut canonical: TailoredResume = parse(&canonical_json, "canonical draft").map_err(throw)?;
+    let dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    let samples: Vec<String> = dataset
+        .voice_samples
+        .iter()
+        .map(|s| s.text.clone())
+        .collect();
+    let (changed, usage) = aarg_domain::tune::run_session(
+        &ctx,
+        &mut canonical,
+        &user_handle,
+        &samples,
+        aarg_domain::tune::SessionStyle::PLAIN,
+    )
+    .await;
+
+    aarg_domain::tailor::scrub_resume_text(&mut canonical);
+    dump(&serde_json::json!({
+        "resume": canonical,
+        "changed": changed,
+        "usage": usage,
+    }))
+    .map_err(throw)
+}
+
+/// Triage the JD keywords the dataset can't yet back — the evidence half of
+/// FR-3.1's `verify` flows, the flow `aarg tailor`'s inline pivot runs
+/// (`src/commands/tailor.rs`, `unbacked_keywords` + `verify_keywords`): the
+/// person checks the job keywords they genuinely have off a multi-select
+/// checklist, each checked keyword gets the role-plus-evidence interview
+/// (which role shows it, roughly how many years, an optional one-sentence
+/// description) and becomes a recorded, verified skill backed by that role;
+/// anything left unchecked is remembered in
+/// `dataset.metadata.declined_skills` so it isn't offered again next run. A
+/// `guide` clarification conversation ("I'm not sure what this is — explain
+/// it") is always offered mid-interview, since this binding always has an
+/// LLM to run it against — matching the CLI's interactive path, which does
+/// the same whenever a client is configured.
+///
+/// `jd_json`/`gap_json` are the already-parsed `JobRequirements` and
+/// `GapReport` (run `parse_jd_llm` and `analyze_gap_llm` first, the way the
+/// CLI's tailor command does before offering the checklist); the candidate
+/// list itself (`verify::unbacked_keywords`) is computed here from them plus
+/// the dataset — the same deterministic gather, so it excludes JD phrases a
+/// recorded skill already covers and keywords already declined.
+///
+/// Adds no content path: every recorded skill traces to a role the user
+/// picked, and any typed evidence sentence is either the user's verbatim
+/// words or a guide-polished rewrite of them, fact-guarded the same way
+/// every other evidence flow is (`strengthen::polish`'s digit guard) —
+/// nothing here pre-fills a claim.
+///
+/// Returns `{ "dataset": ResumeDataset, "verified": <count>, "removed":
+/// <count>, "skipped": <count>, "bullets_added": <count>, "declined":
+/// <count> }`: the mutated dataset for the host to persist (both the newly
+/// recorded skills and the declined-keyword list live in it), and
+/// `VerifyOutcome`'s tallies of what the session accomplished.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn verify_skills_interactive(
+    dataset_json: String,
+    jd_json: String,
+    gap_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
+    let gap: GapReport = parse(&gap_json, "gap report").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    let candidates = aarg_domain::verify::unbacked_keywords(&dataset, &jd, &gap);
+    let outcome =
+        aarg_domain::verify::verify_keywords(&mut dataset, &candidates, &user_handle, Some(&ctx))
+            .await
+            .map_err(|e| throw(e.to_string()))?;
+
+    dump(&serde_json::json!({
+        "dataset": dataset,
+        "verified": outcome.verified,
+        "removed": outcome.removed,
+        "skipped": outcome.skipped,
+        "bullets_added": outcome.bullets_added,
+        "declined": outcome.declined,
+    }))
+    .map_err(throw)
+}
+
+/// Voice-anchored rewrite of a canonical draft (FR-3.6's autonomous half,
+/// `aarg_domain::voice::rewrite_to_voice`): flag every line that reads like
+/// generic AI prose (a cliché-deny-list hit, or a raw un-bullet-like line —
+/// see `voice::flagged_lines`) and rewrite it toward the person's own
+/// writing samples. LLM-only — unlike every other export in this section,
+/// nothing here asks the person anything, so it takes just the `llm`
+/// callback and no `UserHandle` at all.
+///
+/// Every rewrite runs through the same digit-guard tailoring uses (`
+/// digit_runs`): a candidate rewrite that gains a number the source line
+/// didn't have is reverted rather than kept, so voice can change phrasing
+/// but never invent a figure. The guard runs inside `rewrite_to_voice`
+/// itself — this binding doesn't add or relax it.
+///
+/// `samples_json` is a plain JSON array of strings (`dataset.voice_samples[
+/// ].text`), matching `rewrite_to_voice`'s own `samples: &[String]`
+/// parameter directly — the host already holds the dataset and can project
+/// that one field out of it, so this binding doesn't need (and doesn't
+/// take) the whole dataset just to read it.
+///
+/// Before returning, the draft is scrubbed of AI-tell em/en dashes
+/// (`scrub_resume_text`), the same finalize step every other draft-returning
+/// export applies.
+///
+/// Returns `{ "resume": TailoredResume, "rewritten": <count>, "reverted":
+/// <count>, "usage": {"input_tokens","output_tokens"} }`: the scrubbed
+/// draft, how many lines actually changed, how many candidate rewrites the
+/// digit guard discarded, and the call's token cost. A draft with nothing
+/// flagged costs no model call and returns unchanged (`rewritten` and
+/// `reverted` both 0).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn voice_rewrite(
+    canonical_json: String,
+    samples_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+) -> Result<String, JsValue> {
+    let draft: TailoredResume = parse(&canonical_json, "canonical draft").map_err(throw)?;
+    let samples: Vec<String> = parse(&samples_json, "voice samples").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    let (mut voiced, stats) = aarg_domain::voice::rewrite_to_voice(&ctx, &draft, &samples)
+        .await
+        .map_err(|e| throw(e.to_string()))?;
+    aarg_domain::tailor::scrub_resume_text(&mut voiced);
+
+    dump(&serde_json::json!({
+        "resume": voiced,
+        "rewritten": stats.rewritten,
+        "reverted": stats.reverted,
+        "usage": stats.usage,
     }))
     .map_err(throw)
 }
@@ -894,7 +1122,7 @@ pub async fn tailor_loop(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use aarg_domain::dataset::types::{
@@ -1140,5 +1368,145 @@ mod tests {
         let err =
             check_provenance_impl(&canonical_json_with_summary("s"), "{ not json").unwrap_err();
         assert!(err.contains("invalid dataset"), "got {err:?}");
+    }
+
+    // `tune_interactive` itself is wasm32-only (it's a `#[wasm_bindgen]` export
+    // taking `js_sys::Function`s), so it can't run natively. This proves the
+    // flow it drives — `tune::run_session` over BOTH bridges, with local
+    // `tokio::spawn` pumps standing in for the JS callbacks — the same
+    // structure as `bridge.rs`'s `a_copilot_runs_over_the_user_bridge`, applied
+    // to the newly-bound copilot. A missing/garbled JS envelope is covered by
+    // the node smoke script instead, since that mapping lives in the wasm-only
+    // half of `bridge.rs`.
+    #[tokio::test]
+    async fn tune_interactive_flow_removes_a_bullet_over_both_bridges() {
+        use aarg_domain::agent::AgentContext;
+        use aarg_domain::llm::{CompletionResponse, TokenUsage};
+        use aarg_domain::trace::Tracer;
+        use aarg_domain::user::{Answer, Question};
+        use bridge::{BridgeClient, BridgeUser, Models, UserJob};
+        use futures_util::StreamExt;
+        use std::collections::VecDeque;
+
+        // A minimal draft with one bullet to remove — the same shape
+        // `canonical_json_with_summary` builds, with one populated role.
+        let canonical_json = serde_json::json!({
+            "build_id": "b1",
+            "jd_id": "jd1",
+            "generated_at": "2024-01-01T00:00:00Z",
+            "contact": {
+                "full_name": "Test Person",
+                "email": "t@example.com",
+                "phone": null,
+                "location": null,
+                "links": []
+            },
+            "target_title": null,
+            "summary": "Engineering leader.",
+            "roles": [{
+                "id": "role-1",
+                "company": "Globex",
+                "title": "Intern",
+                "start": "2018-06",
+                "end": "2019-08",
+                "location": null,
+                "bullets": [
+                    { "source_id": "bullet-9", "text": "Ran the intern mentoring program" }
+                ]
+            }],
+            "education": [],
+            "skills_section": { "skills": [] },
+            "projects": [],
+            "achievements": [],
+            "certifications": []
+        })
+        .to_string();
+        let mut canonical: TailoredResume =
+            parse(&canonical_json, "canonical draft").expect("well-formed fixture");
+
+        // The LLM bridge: the tune router's one call, answered with a removal
+        // naming the fixture's only bullet.
+        let (client, mut llm_rx) = BridgeClient::new();
+        let llm_pump = tokio::spawn(async move {
+            let mut answered = 0;
+            while let Some((request, reply)) = llm_rx.next().await {
+                let response = CompletionResponse {
+                    text: r#"{"action": "remove", "bullet_id": "bullet-9"}"#.to_string(),
+                    tool_calls: Vec::new(),
+                    model: request.model.clone(),
+                    stop_reason: Some("end_turn".to_string()),
+                    usage: TokenUsage {
+                        input_tokens: 5,
+                        output_tokens: 5,
+                    },
+                };
+                let _ = reply.send(Ok(response));
+                answered += 1;
+            }
+            answered
+        });
+
+        // The user bridge: yes to the opening offer, one removal request, yes
+        // to the removal confirm, then a blank line to finish — the same
+        // per-turn script a JS host would drive by resolving the `user`
+        // callback once per question.
+        let (user, mut user_rx) = BridgeUser::new();
+        let user_pump = tokio::spawn(async move {
+            let mut texts: VecDeque<String> =
+                VecDeque::from(vec!["drop the intern bullet".to_string(), String::new()]);
+            let mut asked = 0;
+            while let Some(job) = user_rx.next().await {
+                match job {
+                    UserJob::Ask { question, reply } => {
+                        asked += 1;
+                        let answer = match question {
+                            Question::Text { .. } => {
+                                Answer::Text(texts.pop_front().unwrap_or_default())
+                            }
+                            other => panic!("unexpected question in this flow: {other:?}"),
+                        };
+                        let _ = reply.send(Ok(answer));
+                    }
+                    UserJob::Confirm { reply, .. } => {
+                        // Answers both the opening offer and the removal confirm.
+                        let _ = reply.send(Ok(true));
+                    }
+                    UserJob::Notify(_) => {}
+                }
+            }
+            asked
+        });
+
+        let models = Models::from_json(r#"{"model": "test-model"}"#).expect("valid models json");
+        let ctx = AgentContext {
+            llm: &client,
+            model: &models,
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        };
+
+        // Exactly what `tune_interactive` runs, minus the JSON (de)serialization
+        // at the wasm boundary: this is the flow the export drives.
+        let (changed, _usage) = aarg_domain::tune::run_session(
+            &ctx,
+            &mut canonical,
+            &user,
+            &[],
+            aarg_domain::tune::SessionStyle::PLAIN,
+        )
+        .await;
+
+        assert!(changed);
+        assert!(canonical.roles[0].bullets.is_empty());
+
+        drop(client);
+        drop(user);
+        let answered = llm_pump.await.expect("the llm pump should not panic");
+        assert_eq!(answered, 1, "the router made exactly one model call");
+        let asked = user_pump.await.expect("the user pump should not panic");
+        assert_eq!(
+            asked, 2,
+            "two free-text turns: the request, then the blank line that ends the loop"
+        );
     }
 }
