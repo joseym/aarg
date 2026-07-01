@@ -29,6 +29,7 @@ pub mod jd;
 pub mod keywords;
 pub mod metric;
 pub mod mirror;
+pub mod provenance;
 pub mod review;
 pub mod strengthen;
 pub mod summary;
