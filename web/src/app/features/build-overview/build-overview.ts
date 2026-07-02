@@ -150,12 +150,13 @@ export class BuildOverview {
       : 'Nothing matches this filter.',
   );
 
-  /** The human variant payload (or canonical draft) to project into the preview,
-   *  when the API returned one. `human_payload` isn't on the `BuildDetail` model
-   *  yet (see report), so we read it through a widened view. */
+  /** The variant payload to project into the preview. Prefer the human variant,
+   *  but most builds are rendered ATS-only, so fall back to the ATS payload —
+   *  it's the same `VariantPayload` shape (unlike `canonical`, a TailoredResume,
+   *  which would not render correctly here). */
   protected readonly previewDoc = computed<VariantPayload | null>(() => {
-    const d = this.detail() as (BuildDetail & { human_payload?: VariantPayload }) | null;
-    const doc = (d?.human_payload ?? d?.canonical) as VariantPayload | undefined;
+    const d = this.detail();
+    const doc = d?.human_payload ?? d?.ats_payload ?? null;
     if (!doc || !Array.isArray(doc.roles)) return null;
     return doc;
   });

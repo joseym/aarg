@@ -272,10 +272,16 @@ export class TailoringWorkspace {
   );
   protected readonly jobCompany = computed(() => this.jd()?.company ?? '');
 
-  private readonly humanPayload = computed<VariantPayload | null>(() => this.bundle()?.human_payload ?? null);
+  // The preview renders a VariantPayload. Prefer the human variant, but most
+  // builds are rendered ATS-only (no human_payload.json), so fall back to the
+  // ATS payload — it's the same shape, so the preview builder works on either.
+  // Only when neither exists is there nothing to show.
+  private readonly previewPayload = computed<VariantPayload | null>(
+    () => this.bundle()?.human_payload ?? this.bundle()?.ats_payload ?? null,
+  );
 
   protected readonly previewModel = computed<PreviewModel | null>(() => {
-    const payload = this.humanPayload();
+    const payload = this.previewPayload();
     if (!payload) return null;
     return buildPreviewModel(payload, provenanceIndex(this.provReport()), this.edits(), this.dataset());
   });
@@ -285,7 +291,7 @@ export class TailoringWorkspace {
   );
 
   protected readonly objectionVMs = computed<ObjectionVM[]>(() =>
-    buildObjectionVMs(this.report()?.objections ?? [], this.humanPayload(), this.dataset()),
+    buildObjectionVMs(this.report()?.objections ?? [], this.previewPayload(), this.dataset()),
   );
 
   protected readonly claimState = computed<ClaimState>(() => {
@@ -393,7 +399,7 @@ export class TailoringWorkspace {
       }
     }
 
-    const payload = this.humanPayload();
+    const payload = this.previewPayload();
     if (canonical && payload) {
       try {
         const claims = (await this.wasm.checkClaims(canonical, payload)) as {
@@ -484,13 +490,16 @@ export class TailoringWorkspace {
   protected downloadPdf(): void {
     const b = this.bundle();
     if (!b) return;
-    const payload = this.humanPayload();
+    const payload = this.previewPayload();
     this.downloading.set(true);
     const done = () => this.downloading.set(false);
     if (payload) {
-      this.api.render('human', payload, b.meta?.template).subscribe({
+      // Render the variant actually being previewed (human when present, else
+      // the ATS payload), not a hardcoded "human" — otherwise an ATS-only build
+      // would ask the server to render ATS content with the human template.
+      this.api.render(payload.variant, payload, b.meta?.template).subscribe({
         next: (blob) => {
-          triggerDownload(blob, `${this.id()}-human.pdf`);
+          triggerDownload(blob, `${this.id()}-${payload.variant}.pdf`);
           done();
         },
         error: (err: unknown) => {
