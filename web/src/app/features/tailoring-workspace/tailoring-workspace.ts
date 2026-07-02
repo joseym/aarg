@@ -248,7 +248,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     .status-pill[data-status='Exported'] { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); background: color-mix(in oklch, var(--success) 8%, transparent); }
     .bh-prov { font-family: var(--font-mono); font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }
     .spacer { flex: 1; }
-    .ctx-score { display: block; width: 100%; max-width: 720px; margin: 12px 0 26px; }
+    .ctx-score { display: block; width: 100%; margin: 12px 0 26px; }
 
     .btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 14px; font-weight: 500; color: inherit; cursor: pointer; text-decoration: none; }
     .btn:hover:not(:disabled) { border-color: var(--fg); }

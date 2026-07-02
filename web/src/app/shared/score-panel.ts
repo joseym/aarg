@@ -65,8 +65,27 @@ interface ScoreRow {
       color: var(--faint);
       margin-bottom: 16px;
     }
-    .rows { display: flex; flex-direction: column; gap: 18px; }
-    .row { display: flex; flex-direction: column; gap: 7px; }
+    /* A stat band: the four metrics sit side by side across the full content
+       width (hairline-divided), so the top of the page reads as one dashboard
+       row instead of a narrow card floating in whitespace. Collapses 2×2 on
+       middle widths and to a single column on phones. */
+    .rows { display: grid; grid-template-columns: repeat(4, 1fr); }
+    .row { display: flex; flex-direction: column; gap: 7px; padding: 2px 22px; min-width: 0; }
+    .row:first-child { padding-left: 0; }
+    .row:last-child { padding-right: 0; }
+    .row + .row { border-left: 1px solid color-mix(in oklch, var(--border) 70%, transparent); }
+
+    @media (max-width: 1080px) {
+      .rows { grid-template-columns: repeat(2, 1fr); row-gap: 18px; }
+      .row:nth-child(odd) { padding-left: 0; border-left: 0; }
+      .row:nth-child(even) { padding-right: 0; }
+      .row:nth-child(n + 3) { border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent); padding-top: 16px; }
+    }
+    @media (max-width: 640px) {
+      .rows { grid-template-columns: 1fr; row-gap: 16px; }
+      .row { padding: 0; border-left: 0 !important; }
+      .row + .row { border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent); padding-top: 14px; }
+    }
 
     .r-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
     .r-label {
