@@ -5,13 +5,14 @@ import { Topbar } from './shell/topbar/topbar';
 import { Sidebar } from './shell/sidebar/sidebar';
 import { BuildsStore } from './services/builds-store';
 import { WasmService } from './services/wasm.service';
+import { CopilotOverlay } from './shared/copilot-host';
 
 /** App shell: the sticky topbar over a two-column grid of the recent-builds
  *  sidebar and the routed main panel. At ≤1080px the sidebar becomes a drawer
  *  toggled from the topbar hamburger, with a dismiss scrim. */
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, Topbar, Sidebar],
+  imports: [RouterOutlet, Topbar, Sidebar, CopilotOverlay],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
