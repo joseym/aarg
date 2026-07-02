@@ -3,10 +3,9 @@
 AARG tailors your résumé to a specific job posting and then argues with itself
 about the result. A skeptical reviewer agent reads each draft the way a hiring
 manager looking for reasons to pass would, files specific objections, and a
-tailoring agent revises against them under tight bounds, keeping the best draft
-it finds along the way. It renders the winner with
-[Typst](https://typst.app) into two PDFs, one formatted to survive applicant
-tracking systems and one designed for a person to read.
+tailoring agent revises against them under tight bounds. The winner renders
+with [Typst](https://typst.app) into two PDFs, one formatted to survive
+applicant tracking systems and one designed for a person to read.
 
 It runs on your machine, against your own career data, and it will not invent
 experience you don't have. Three separate layers enforce that: the validation
@@ -42,7 +41,7 @@ review loop to the exported PDFs.
    objections: no metric, vague verb, unsupported claim, and so on. The loop's
    evaluator blends that verdict with deterministic keyword coverage computed
    by pure code.
-4. The tailoring agent **revises** against those objections and re-scores. A
+4. The tailoring agent revises against those objections and re-scores. A
    revision that doesn't improve the score is discarded and the loop stops; the
    build keeps the best draft it ever saw.
 5. The winner renders to an **ATS** PDF and a **human** PDF (same facts,
@@ -225,7 +224,7 @@ You don't have to keep job postings in files. `tailor` and `gap` also accept a
 Greenhouse/Lever URL or `-` for stdin, and with no argument at all they let you
 paste a posting in or reuse one you've already entered.
 
-Prefer a UI? Once you have a dataset, `aarg serve --dir web/dist/aarg/browser`
+If you'd rather work in a browser: once you have a dataset, `aarg serve --dir web/dist/aarg/browser`
 starts the companion server on `http://127.0.0.1:8787`, and everything in
 [The browser workspace](#the-browser-workspace) runs from the page, the loop
 included. It stays on loopback unless you ask otherwise. Building that app and
@@ -287,7 +286,7 @@ aarg key add work          # an Anthropic API key, filed under a label
 aarg key use work
 ```
 
-You can also authenticate against a Claude **subscription** rather than
+You can also authenticate against a Claude subscription rather than
 pay-as-you-go billing, either by pasting a token from `claude setup-token` or by
 delegating to the official `ant` CLI so it refreshes for you. Subscription auth
 is **experimental**: Anthropic scopes plan credit to its own tools, so the
@@ -416,7 +415,7 @@ diff, templates, résumé ingestion from text-layer PDFs, an interactive Q&A abo
 posting (`aarg chat`), exporting finished PDFs under friendly company names
 (`aarg export`), the REPL, experimental subscription auth, an MCP server
 (`aarg mcp`) that lets Claude Desktop and other MCP clients drive AARG by chat
-([docs/mcp.md](docs/mcp.md)), and the **browser workspace** (`aarg serve`).
+([docs/mcp.md](docs/mcp.md)), and the browser workspace (`aarg serve`).
 
 **Not there yet**: a fully-local model provider (the client trait and per-agent
 model tiers are already in place for it to slot into); an experimental vision pass
