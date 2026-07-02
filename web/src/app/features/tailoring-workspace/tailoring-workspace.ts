@@ -759,9 +759,13 @@ export class TailoringWorkspace {
   }
 
   /** The picker changed the template: re-project the pixel-perfect iframe and
-   *  the next Download PDF against the newly-chosen (bare) name. */
+   *  the next Download PDF against the newly-chosen (bare) name — and jump to
+   *  Pixel-perfect so the choice is immediately visible (picking a template is
+   *  a request to SEE it; staying in the HTML editor would render the change
+   *  invisibly in the background). */
   protected onTemplateChange(e: Event): void {
     this.chosenTemplate.set((e.target as HTMLSelectElement).value);
+    this.previewMode.set('pixel');
   }
 
   /** A pixel-perfect render failed — surface it the same way every other
