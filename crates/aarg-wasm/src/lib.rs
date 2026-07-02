@@ -1210,6 +1210,34 @@ pub async fn voice_rewrite(
 // The adversarial revision loop (wasm-only): the Evaluator's 2nd consumer
 // ---------------------------------------------------------------------
 
+/// Cooperative cancel flag for the (single) in-flight tailor loop. wasm is
+/// single-threaded and the browser runs at most one loop at a time, so one
+/// static is sound. Its lifecycle is **JS-owned**: the host arms a fresh run
+/// by calling `reset_tailor_loop_cancel` when the run *begins* (before gap
+/// analysis), not when `tailor_loop` starts. That is what lets a Stop pressed
+/// at any point of the run — even during the pre-loop gap analysis, before
+/// `tailor_loop` is even called — survive to the loop's first check instead of
+/// being wiped by an entry reset.
+#[cfg(target_arch = "wasm32")]
+static LOOP_CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the in-flight `tailor_loop` to stop after its current pass.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn cancel_tailor_loop() {
+    LOOP_CANCELLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Arm a fresh cancellable run: clear any stale stop request. The JS host
+/// calls this when the run *begins* (before gap analysis), so a Stop pressed
+/// at any point of the run — even before `tailor_loop` starts — survives to
+/// the loop's first check instead of being wiped by an entry reset.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn reset_tailor_loop_cancel() {
+    LOOP_CANCELLED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The headless evaluator for the browser loop: it scores a draft on the
 /// reviewer's verdict ALONE. The native binary's evaluator also renders the
 /// draft to a PDF with typst, reads its text back, and runs the deterministic
@@ -1342,6 +1370,13 @@ impl LoopObserver<()> for WasmProgressObserver {
             "message": "the revision didn't improve; keeping the best draft",
         }));
     }
+
+    fn should_continue(&self) -> bool {
+        // The loop checks this at the top of each pass; a Stop button that set
+        // the cancel flag ends the loop between passes (the in-flight pass, if
+        // any, still finishes and its best draft is returned).
+        !LOOP_CANCELLED.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Spawn the progress pump: the task that owns the JS `on_progress` callback and
@@ -1415,15 +1450,22 @@ struct RawLoopParams {
 /// result. Events are best-effort narration: a throwing callback never affects
 /// the loop's outcome.
 ///
-/// **Cancellation is not wired here.** A clean Stop button (stop *before* the
-/// next revision spends tokens, and still return the best draft in hand) needs
-/// a per-iteration "should I continue?" seam in the loop's policy — and that
-/// policy lives in `run_loop`/`LoopObserver`, in the domain crate, which this
-/// binding must not restructure. The observer's hooks return `()`, so they
-/// can't signal a stop, and the export awaits `run_loop` as a single call, so
-/// it can't check between iterations either. The minimal additive seam that
-/// would enable it is documented alongside this export; until it lands, this is
-/// progress-only.
+/// **Cancellation stops between passes.** [`cancel_tailor_loop`] sets a module
+/// cancel flag that `WasmProgressObserver::should_continue` reads; the domain
+/// loop checks it at the top of each iteration, so a Stop button ends the loop
+/// *before* the next revision spends tokens and still returns the best draft in
+/// hand. It cannot interrupt an in-flight model call — the current pass always
+/// completes — so the stop takes effect at the next pass boundary.
+///
+/// The flag's lifecycle is **JS-owned**: the host arms a run by calling
+/// [`reset_tailor_loop_cancel`] when the run *begins* (before gap analysis),
+/// **not** here on entry. That is deliberate — a Stop pressed during the
+/// pre-loop phase (gap analysis, before `tailor_loop` is even called) must
+/// survive to the loop's first check rather than be wiped by an entry reset.
+/// A stop already latched before the loop begins therefore skips every
+/// revision after the initial draft+review: the early-skip check below (after
+/// iteration 0, before `run_loop`) handles that path. This export reports the
+/// flag's final state as `"cancelled"` in its result.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn tailor_loop(
@@ -1435,6 +1477,10 @@ pub async fn tailor_loop(
     llm: js_sys::Function,
     on_progress: js_sys::Function,
 ) -> Result<String, JsValue> {
+    // The cancel flag is NOT reset here. The JS host arms the run via
+    // `reset_tailor_loop_cancel` when it *begins* (before gap analysis), so a
+    // Stop pressed during the pre-loop phase survives to the checks below
+    // instead of being wiped by an entry reset. See this export's doc comment.
     let dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
     let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
     let gap: GapReport = parse(&gap_json, "gap report").map_err(throw)?;
@@ -1523,20 +1569,30 @@ pub async fn tailor_loop(
         },
         "message": format!("scored {:.2}", initial_eval.score),
     }));
-    let outcome = aarg_domain::tailor::run_loop(
-        &ctx,
-        &evaluator,
-        &observer,
-        limits,
-        BuildId("wasm".to_string()),
-        JdId("wasm".to_string()),
-        &jd,
-        &dataset,
-        &gap,
-        initial_eval,
-    )
-    .await
-    .map_err(|e| throw(e.to_string()))?;
+    // A Stop pressed during the initial draft+review is honored here, before
+    // the loop spends a token: skip revisions and take the first draft as the
+    // best. (`run_loop` also checks between passes, so a later Stop lands there.)
+    let outcome = if LOOP_CANCELLED.load(std::sync::atomic::Ordering::Relaxed) {
+        aarg_domain::tailor::LoopOutcome {
+            best: initial_eval,
+            usage: aarg_domain::llm::TokenUsage::default(),
+        }
+    } else {
+        aarg_domain::tailor::run_loop(
+            &ctx,
+            &evaluator,
+            &observer,
+            limits,
+            BuildId("wasm".to_string()),
+            JdId("wasm".to_string()),
+            &jd,
+            &dataset,
+            &gap,
+            initial_eval,
+        )
+        .await
+        .map_err(|e| throw(e.to_string()))?
+    };
 
     let mut best = outcome.best;
     // Punctuation-only finalize, the same one `tailor_draft` applies.
@@ -1563,6 +1619,13 @@ pub async fn tailor_loop(
             + outcome.usage.output_tokens,
     });
 
+    // The flag's final state: `true` if the user hit Stop at any point during
+    // this run. It means a stop was *requested*, not that work was necessarily
+    // skipped — a Stop pressed after the loop had already settled on its best
+    // draft changes nothing about the result. The best draft is still returned;
+    // a caller can note that a stop was requested.
+    let cancelled = LOOP_CANCELLED.load(std::sync::atomic::Ordering::Relaxed);
+
     dump(&serde_json::json!({
         "resume": best.resume,
         "warnings": warnings,
@@ -1571,6 +1634,7 @@ pub async fn tailor_loop(
         "report": best.report,
         "iterations": iterations,
         "usage": usage,
+        "cancelled": cancelled,
     }))
     .map_err(throw)
 }

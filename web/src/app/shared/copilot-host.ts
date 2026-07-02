@@ -94,6 +94,11 @@ export class CopilotHost {
   readonly progress = signal<ProgressEvent[]>([]);
   /** A label for the in-flight operation, or null when nothing is running. */
   readonly running = signal<string | null>(null);
+  /** Whether the in-flight run can be stopped (the overlay shows a Stop button
+   *  only when true — set per-run via `runWithUi`'s options). */
+  readonly cancellable = signal(false);
+  /** Whether a Stop has been requested and we're waiting out the current pass. */
+  readonly stopping = signal(false);
   /** Running token totals across the current run. */
   readonly usage = signal<{ input: number; output: number }>({ input: 0, output: 0 });
   /** A display cost — a dollar figure, a subscription note, or empty. */
@@ -125,9 +130,7 @@ export class CopilotHost {
     }
 
     if (env.kind === 'notify') {
-      this.notice.set(env.message);
-      if (this.noticeTimer) clearTimeout(this.noticeTimer);
-      this.noticeTimer = setTimeout(() => this.notice.set(null), 2500);
+      this.showNotice(env.message, 2500);
       // One-way: the return is ignored, so don't block.
       return Promise.resolve('{}');
     }
@@ -141,6 +144,24 @@ export class CopilotHost {
     }
 
     return new Promise<string>((resolve) => this.question.set({ env, resolve }));
+  }
+
+  /**
+   * Fire an app-global transient notice. Unlike a component-local toast, this
+   * renders in {@link CopilotOverlay} at the app root, so it survives a
+   * navigation that unmounts the caller (e.g. New Build → tailoring workspace).
+   * Held ~4s — a touch longer than a copilot's own `notify` envelopes.
+   */
+  notify(message: string): void {
+    this.showNotice(message, 4000);
+  }
+
+  /** Set the notice signal and (re)arm its auto-clear. Shared by the public
+   *  {@link notify} and the `ask` path's `{kind:"notify"}` envelopes. */
+  private showNotice(message: string, ms: number): void {
+    this.notice.set(message);
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => this.notice.set(null), ms);
   }
 
   /** `select` answer → the chosen option's exact text. */
@@ -208,23 +229,64 @@ export class CopilotHost {
   /**
    * Run `fn` with the progress overlay showing `label`, resetting the run's
    * progress/usage/cost first and always tearing the UI down afterwards.
+   *
+   * `opts.cancellable` marks the run as stoppable, so the overlay offers a Stop
+   * button wired to {@link requestStop} (only the tailor loop honors it today).
    */
-  async runWithUi<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  async runWithUi<T>(
+    label: string,
+    fn: () => Promise<T>,
+    opts?: { cancellable?: boolean },
+  ): Promise<T> {
     // Refuse a concurrent run: two copilots sharing one modal would race for the
     // single pending-question slot (see `ask`). Callers catch and toast this.
     if (this.running()) {
       throw new Error('A copilot is already running — finish or dismiss it first.');
     }
     this.running.set(label);
+    this.cancellable.set(opts?.cancellable ?? false);
+    this.stopping.set(false);
     this.progress.set([]);
     this.usage.set({ input: 0, output: 0 });
     this.costLabel.set('');
     try {
+      // Arm the run's cancel flag here — the single reset point. Clearing it now
+      // (before `fn`, which for a build begins with gap analysis) means a Stop
+      // pressed anywhere in the run, even before the tailor loop starts, survives
+      // to the loop's first check instead of being wiped by a wasm-side reset.
+      // Inside the try: this awaits the wasm load, and a load failure must tear
+      // the run state down via the finally, not strand a permanent overlay.
+      if (opts?.cancellable) await this.wasm.resetTailorLoopCancel();
       return await fn();
     } finally {
       this.running.set(null);
+      this.cancellable.set(false);
+      this.stopping.set(false);
       this.question.set(null);
     }
+  }
+
+  /**
+   * Ask the in-flight loop to stop after its current pass. Flips `stopping` (so
+   * the overlay swaps the Stop button for a "stopping…" note) and signals the
+   * wasm loop's cancel flag; the loop finishes the pass in flight and returns
+   * the best draft seen, which the caller saves as usual.
+   */
+  requestStop(): void {
+    if (!this.cancellable() || this.stopping()) return;
+    this.stopping.set(true);
+    void this.wasm.cancelTailorLoop();
+  }
+
+  /**
+   * Retire the Stop affordance once the cancellable phase is over — the loop
+   * has returned and nothing left in the run (projectHuman, save) can honor a
+   * stop. The caller invokes this the moment the loop resolves, so the overlay
+   * doesn't keep offering a Stop that can no longer do anything.
+   */
+  endCancellable(): void {
+    this.cancellable.set(false);
+    this.stopping.set(false);
   }
 }
 
@@ -359,6 +421,13 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
         }
         @if (host.costLabel()) {
           <div class="cost">· {{ host.costLabel() }}</div>
+        }
+        @if (host.cancellable()) {
+          @if (host.stopping()) {
+            <div class="stopping">Stopping after the current pass…</div>
+          } @else {
+            <button class="btn stop" type="button" (click)="host.requestStop()">Stop</button>
+          }
         }
       </div>
     }
@@ -563,6 +632,18 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
       font-family: var(--font-mono);
       font-size: 12px;
       color: var(--muted);
+    }
+    .stop {
+      align-self: flex-start;
+      height: 28px;
+      margin-top: 2px;
+      padding: 0 12px;
+      font-size: 13px;
+    }
+    .stopping {
+      font-size: 12px;
+      color: var(--muted);
+      font-style: italic;
     }
     @keyframes cp-spin {
       to {

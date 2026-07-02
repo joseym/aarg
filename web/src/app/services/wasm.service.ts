@@ -83,6 +83,8 @@ interface WasmExports {
     llm: StringCallback,
     onProgress: ProgressCallback,
   ): Promise<string>;
+  cancel_tailor_loop(): void;
+  reset_tailor_loop_cancel(): void;
   voice_rewrite(
     canonicalJson: string,
     samplesJson: string,
@@ -151,6 +153,10 @@ export interface TailorOutcome {
 }
 export interface TailorLoopResult {
   resume: unknown;
+  /** True when a stop was *requested* during the run — not necessarily that
+   *  work was skipped (the request may land on the final pass). The best draft
+   *  is in `resume` either way. */
+  cancelled?: boolean;
   [key: string]: unknown;
 }
 
@@ -416,6 +422,18 @@ export class WasmService {
         (json) => this.progressHandler(json),
       ),
     );
+  }
+
+  /** Ask an in-flight tailor loop to stop after its current pass. */
+  async cancelTailorLoop(): Promise<void> {
+    (await this.load()).cancel_tailor_loop();
+  }
+
+  /** Arm a fresh cancellable run: clear any stale stop request. The host calls
+   *  this when a run *begins* (before gap analysis), so a Stop pressed at any
+   *  point of the run survives to the loop's first check. */
+  async resetTailorLoopCancel(): Promise<void> {
+    (await this.load()).reset_tailor_loop_cancel();
   }
 
   // ── interactive copilots (llm + user) ─────────────────────────────────

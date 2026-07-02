@@ -25,9 +25,10 @@ type JdSource = 'paste' | 'url' | 'reuse';
  *  current (possibly copilot-enriched) dataset — the one code path New Build and
  *  the per-build Retailor button both share.
  *
- *  This is the same loop `aarg tailor` runs, live. It can't be cancelled mid-run
- *  yet — the loop exposes no stop seam — so the UI says so plainly and simply
- *  keeps the form disabled until the run settles (success or error). */
+ *  This is the same loop `aarg tailor` runs, live. It can be stopped between
+ *  passes via the Stop button in the progress overlay (an in-flight model call
+ *  still completes); the form stays disabled until the run settles (success,
+ *  stop, or error). */
 @Component({
   selector: 'app-new-build',
   standalone: true,
@@ -153,8 +154,8 @@ type JdSource = 'paste' | 'url' | 'reuse';
           {{ running() ? 'Running…' : source() === 'reuse' ? 'Retailor' : 'Run build' }}
         </button>
         <p class="note">
-          Runs live and can’t be cancelled mid-run yet — the loop has no stop
-          seam. Give it a minute.
+          Runs live — you can Stop it between passes from the progress overlay
+          (an in-flight model call still finishes). Give it a minute.
         </p>
       </div>
     </div>
@@ -292,6 +293,9 @@ export class NewBuild {
           this.showToast('That build has no parsed job description to reuse.');
           return;
         }
+        // A cancelled run is confirmed by the app-global notice BuildRunner
+        // fires after navigation (survives this component unmounting) — no
+        // local toast, which would be lost on the route change anyway.
         await this.buildRunner.runAndSave(jd, dataset, 'Retailor');
       } else {
         const jd: JobRequirements = await this.wasm.parseJd(this.jdText().trim());
