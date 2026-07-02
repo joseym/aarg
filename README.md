@@ -202,6 +202,9 @@ Beyond the core loop:
   out to it. A missing binary fails with install instructions, not a panic.
 - An **Anthropic API key**, or a Claude Pro/Max subscription (see
   [Authentication](#authentication)).
+- **[wasm-pack](https://rustwasm.github.io/wasm-pack/) and Node.js with npm**,
+  only for the browser workspace; they build its WebAssembly bundle and the
+  Angular app. Skip them if you only use the CLI.
 
 ### Install
 
@@ -228,10 +231,57 @@ You don't have to keep job postings in files. `tailor` and `gap` also accept a
 Greenhouse/Lever URL or `-` for stdin, and with no argument at all they let you
 paste a posting in or reuse one you've already entered.
 
-Prefer a UI? Once you have a dataset, `aarg serve --dir <the built web app>`
+Prefer a UI? Once you have a dataset, `aarg serve --dir web/dist/aarg/browser`
 starts the companion server on `http://127.0.0.1:8787`, and everything in
 [The browser workspace](#the-browser-workspace) runs from the page, the loop
-included. It stays on loopback unless you ask otherwise.
+included. It stays on loopback unless you ask otherwise. Building that app and
+reaching it from a phone are covered next in
+[Running the browser workspace](#running-the-browser-workspace).
+
+### Running the browser workspace
+
+The browser app is built from source; its WebAssembly bundle and compiled output
+are not checked in, so build both once from a fresh clone:
+
+```sh
+# Compile the domain pipeline to the WebAssembly bundle the page runs on.
+wasm-pack build crates/aarg-wasm --target web --out-dir ../../web/src/wasm/pkg --out-name aarg_wasm
+
+# Install the web app's dependencies (first build only) and compile it.
+cd web && npm install && npm run build && cd ..
+```
+
+The Angular build lands in `web/dist/aarg/browser`. Point the server at it and
+open the URL it prints:
+
+```sh
+aarg serve --dir web/dist/aarg/browser   # http://127.0.0.1:8787
+```
+
+Flags:
+
+- `--port <PORT>` (default `8787`): the port to bind.
+- `--dir <PATH>`: serve the built web app at `/`; omit it to expose the JSON API alone.
+- `--bind <ADDR>` (default `127.0.0.1`): loopback only by default; `0.0.0.0` reaches the server from another device on your network.
+- `--allow-host <HOST>` (repeatable): extra `Host` header values to accept once bound past loopback; this machine's own hostname is allowed automatically.
+
+To open the workspace from a phone on a network you trust, bind past loopback and
+name your host:
+
+```sh
+aarg serve --dir web/dist/aarg/browser --bind 0.0.0.0 --allow-host <your-hostname>
+```
+
+Then browse to `http://<your-hostname>.local:8787` from the phone. Binding past
+loopback also exposes your dataset and the key-spending model proxy to that
+network, so use only one you trust. On loopback the `Host` allowlist and a JSON
+content-type gate defend the server against DNS-rebinding and drive-by
+cross-origin `POST`s, and it sends no CORS headers, so only the page it serves
+can talk to it.
+
+`aarg serve` is a long-running process, so a newly installed binary does not take
+effect until you stop and restart it. Rebuild the web app the same way after
+changing it.
 
 ## Authentication
 
@@ -281,14 +331,9 @@ Two ATS templates (`classic`, `minimal`) and three human ones (`modern`,
 `technical`, `editorial`) ship built-in; point `tailor --template <file.typ>` at
 your own to render the human variant however you like.
 
-`aarg serve` takes `--port` (default `8787`) and `--dir` (the built web app to
-serve at `/`; omit it to expose the JSON API alone). It binds `127.0.0.1` by
-default; `--bind 0.0.0.0` reaches it from another device on a trusted network,
-which also exposes your dataset and the key-spending model proxy to that network,
-so `--allow-host` lets you name the hostnames it should answer to. On loopback the
-`Host` allowlist and a JSON content-type gate defend it against DNS-rebinding and
-drive-by cross-origin `POST`s; it sends no CORS headers, so only the page it
-serves can talk to it.
+`aarg serve` runs the companion server for the browser workspace; its build
+steps, flags, and the phone-on-your-network recipe are in
+[Running the browser workspace](#running-the-browser-workspace).
 
 ## How it's built
 
