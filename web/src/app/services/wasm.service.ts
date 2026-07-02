@@ -220,7 +220,11 @@ export class WasmService {
       body: requestJson,
     });
     if (!res.ok) {
-      throw new Error(`/api/llm returned ${res.status}`);
+      // Include the server's body so an actionable message (a missing
+      // credential, a Typst failure, …) survives to the caller's toast instead
+      // of being flattened to a bare status code.
+      const body = await res.text().catch(() => '');
+      throw new Error(body || `/api/llm returned ${res.status}`);
     }
     return res.text();
   };

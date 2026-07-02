@@ -211,7 +211,9 @@ export class NewBuild {
    *  spinner. */
   protected async runBuild(): Promise<void> {
     const jdText = this.jdText().trim();
-    if (!jdText || this.running()) return;
+    // Don't start a build while any copilot (here or in the tailoring workspace)
+    // holds the shared modal — a concurrent run would hang it (CopilotHost.ask).
+    if (!jdText || this.running() || this.copilot.running()) return;
 
     this.running.set(true);
     try {
@@ -274,16 +276,17 @@ export class NewBuild {
   }
 }
 
-/** A user-facing message from any thrown error (HTTP, Error, or unknown). */
+/** A user-facing message from any thrown error (HTTP, Error, string, unknown).
+ *  The server envelope is `{ error: { kind, message } }`; some paths send a bare
+ *  string or `{ message }`; the wasm core rejects with plain strings (e.g. a
+ *  missing LLM credential surfaced from `/api/llm`). Surface the real message. */
 function errMessage(err: unknown): string {
   if (err instanceof HttpErrorResponse) {
-    // An `/api/llm` failure (e.g. no credential configured) arrives here; the
-    // server's message is the actionable part.
-    if (typeof err.error === 'string' && err.error) return err.error;
-    const body = err.error as { message?: unknown } | null;
-    if (body && typeof body.message === 'string') return body.message;
-    return err.message;
+    const b = err.error as { error?: { message?: string }; message?: string } | string | null;
+    if (typeof b === 'string') return b || err.message;
+    return b?.error?.message ?? b?.message ?? err.message;
   }
   if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
   return 'Something went wrong — the run didn’t complete.';
 }

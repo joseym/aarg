@@ -477,7 +477,9 @@ export class TailoringWorkspace {
   private seedAccepted(ds: ResumeDataset): void {
     const dismissed = dismissedList(ds);
     if (dismissed.length === 0) return;
-    const keys = new Set(dismissed.map((d) => `${targetKey(d.target)}::${d.kind}`));
+    // `d.target` is already the domain string (`bullet:<id>`, `skills`, …), the
+    // same value `objectionId` derives via `targetKey` — compare directly.
+    const keys = new Set(dismissed.map((d) => `${d.target}::${d.kind}`));
     const ids = new Set<string>();
     for (const o of this.report()?.objections ?? []) {
       if (keys.has(objectionId(o))) ids.add(objectionId(o));
@@ -651,6 +653,12 @@ export class TailoringWorkspace {
    *  projected human payload we preview in-session only. Everything is guarded so
    *  a thrown export or a cancelled interview surfaces a toast, never wedges. */
   protected async runCopilot(o: ObjectionVM): Promise<void> {
+    // Only one copilot at a time — a second would race the first for the shared
+    // Q&A modal and hang it (see CopilotHost.ask). Refuse before we start.
+    if (this.copilot.running()) {
+      this.showToast('A copilot is already running — finish or dismiss it first.');
+      return;
+    }
     const ds = this.dataset();
     if (!ds) {
       this.showToast('Dataset unavailable — cannot run a copilot.');
@@ -697,7 +705,11 @@ export class TailoringWorkspace {
         // Layout is presentation-only: preview the refined variant, never touch
         // the canonical claims or the saved build.
         this.refinedHuman.set(result as VariantPayload);
-        this.showToast('Layout refined — preview updated (not saved to this build).');
+        // `edits` is keyed by the OLD payload's positional `bullet:role:index`;
+        // the new payload re-projects those positions, so a stale key could write
+        // an edit onto the wrong dataset bullet. Drop pending edits on the swap.
+        this.edits.set({});
+        this.showToast('Layout refined — preview updated (not saved to this build). Unsaved edits were cleared by the layout change.');
         return;
       }
 
@@ -761,7 +773,10 @@ export class TailoringWorkspace {
       this.showToast('Dataset unavailable — cannot persist this dismissal.');
       return;
     }
-    const next = withDismissal(ds, { target: o.objection.target, kind: o.objection.kind });
+    // Persist the DOMAIN target string (`bullet:<id>`, `skills`, `summary`, …),
+    // not the raw wire `ObjectionTarget` — that's what Rust's `DismissedObjection`
+    // deserializes, and it keeps the dismissal id-consistent with `objectionId`.
+    const next = withDismissal(ds, { target: targetKey(o.objection.target), kind: o.objection.kind });
     this.busy.set(o.id);
     this.api.putDataset(next).subscribe({
       next: (saved) => {
@@ -829,7 +844,9 @@ export class TailoringWorkspace {
 // ── module-local helpers ───────────────────────────────────────────────
 
 interface DismissedObjection {
-  target: ObjectionVM['objection']['target'];
+  /** The domain target string (`bullet:<id>`, `skills`, `summary`, `layout`,
+   *  `overall`) — matches Rust's `DismissedObjection.target: String`. */
+  target: string;
   kind: ObjectionVM['objection']['kind'];
 }
 
@@ -922,7 +939,8 @@ function dismissedList(ds: ResumeDataset): DismissedObjection[] {
 
 function withDismissal(ds: ResumeDataset, d: DismissedObjection): ResumeDataset {
   const list = dismissedList(ds);
-  const exists = list.some((x) => targetKey(x.target) === targetKey(d.target) && x.kind === d.kind);
+  // Both targets are already normalized domain strings — compare directly.
+  const exists = list.some((x) => x.target === d.target && x.kind === d.kind);
   const dismissed_objections = exists ? list : [...list, d];
   return { ...ds, metadata: { ...ds.metadata, dismissed_objections } };
 }
@@ -950,8 +968,15 @@ function triggerDownload(blob: Blob, filename: string): void {
 }
 
 function errMessage(err: unknown): string {
-  if (err instanceof HttpErrorResponse) return err.message;
+  if (err instanceof HttpErrorResponse) {
+    // Server envelope is `{ error: { kind, message } }`; some paths send a bare
+    // string or `{ message }`. Read the real message, not the generic HTTP one.
+    const b = err.error as { error?: { message?: string }; message?: string } | string | null;
+    if (typeof b === 'string') return b || err.message;
+    return b?.error?.message ?? b?.message ?? err.message;
+  }
   if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err; // wasm rejects with plain strings
   return 'request failed';
 }
 
@@ -971,12 +996,12 @@ function formatStamp(iso: string): string {
 }
 
 function findings(err: HttpErrorResponse): string {
-  const body = err.error;
-  if (typeof body === 'string') return body;
-  if (body && typeof body === 'object') {
-    const f = (body as { findings?: unknown; message?: unknown }).findings ?? (body as { message?: unknown }).message;
-    if (Array.isArray(f)) return f.map(String).join('; ');
-    if (typeof f === 'string') return f;
+  // The 422 validation body carries the failures under `problems` (an array of
+  // strings), alongside the `{ error }` envelope. Join them; otherwise fall back
+  // to the envelope's message via errMessage.
+  const problems = (err.error as { problems?: unknown } | null)?.problems;
+  if (Array.isArray(problems) && problems.length > 0) {
+    return problems.map(String).join('; ');
   }
-  return 'the edited dataset failed validation';
+  return errMessage(err);
 }

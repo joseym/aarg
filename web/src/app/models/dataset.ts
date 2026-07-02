@@ -6,14 +6,19 @@
  *  `transparent` so they are plain strings over the wire. */
 
 import type { Contact } from './variant';
-import type { ObjectionTarget, ObjectionKind } from './review';
+import type { ObjectionKind } from './review';
 
 /** An objection the user has accepted as intentional, so the reviewer stops
  *  re-flagging it. Keyed by `(target, kind)` — the same signature the backend
  *  dismissal uses. The objection-triage "Accept as intentional" action appends
- *  one of these and `PUT`s the dataset. */
+ *  one of these and `PUT`s the dataset.
+ *
+ *  `target` is the DOMAIN string Rust's `DismissedObjection.target: String`
+ *  serialises — `"bullet:<id>"`, `"summary"`, `"skills"`, `"layout"`, `"overall"`
+ *  — NOT the wire `ObjectionTarget` (which is `{bullet}` / `"skills_section"`).
+ *  Use `targetKey()` to derive it from an objection's wire target. */
 export interface DismissedObjection {
-  target: ObjectionTarget;
+  target: string;
   kind: ObjectionKind;
 }
 

@@ -132,6 +132,14 @@ export class CopilotHost {
       return Promise.resolve('{}');
     }
 
+    // Never overwrite a live resolver. If a question is already pending (e.g. a
+    // second copilot leaked past the run guard), settling this new envelope with
+    // `question.set` would drop the first copilot's resolver and hang its wasm
+    // pump forever. Answer the newcomer with a safe per-kind skip instead.
+    if (this.question()) {
+      return Promise.resolve(skipAnswer(env.kind));
+    }
+
     return new Promise<string>((resolve) => this.question.set({ env, resolve }));
   }
 
@@ -162,21 +170,7 @@ export class CopilotHost {
   cancel(): void {
     const q = this.question();
     if (!q) return;
-    let answer: string;
-    switch (q.env.kind) {
-      case 'confirm':
-        answer = JSON.stringify({ confirm: false });
-        break;
-      case 'multi_select':
-        answer = JSON.stringify({ choices: [] });
-        break;
-      case 'select':
-        answer = JSON.stringify({ choice: '' });
-        break;
-      default:
-        answer = JSON.stringify({ text: '' });
-    }
-    this.settle(answer);
+    this.settle(skipAnswer(q.env.kind));
   }
 
   /** Resolve the pending resolver and close the modal. */
@@ -216,6 +210,11 @@ export class CopilotHost {
    * progress/usage/cost first and always tearing the UI down afterwards.
    */
   async runWithUi<T>(label: string, fn: () => Promise<T>): Promise<T> {
+    // Refuse a concurrent run: two copilots sharing one modal would race for the
+    // single pending-question slot (see `ask`). Callers catch and toast this.
+    if (this.running()) {
+      throw new Error('A copilot is already running — finish or dismiss it first.');
+    }
     this.running.set(label);
     this.progress.set([]);
     this.usage.set({ input: 0, output: 0 });
@@ -226,6 +225,23 @@ export class CopilotHost {
       this.running.set(null);
       this.question.set(null);
     }
+  }
+}
+
+/** The safe "skip" answer for a pending question, by kind — the shape the core
+ *  expects so a dismissed/superseded prompt resolves instead of hanging. Shared
+ *  by `cancel()` (user closed the modal) and `ask()` (a second question arrived
+ *  while one was live). */
+function skipAnswer(kind: QuestionEnvelope['kind']): string {
+  switch (kind) {
+    case 'confirm':
+      return JSON.stringify({ confirm: false });
+    case 'multi_select':
+      return JSON.stringify({ choices: [] });
+    case 'select':
+      return JSON.stringify({ choice: '' });
+    default:
+      return JSON.stringify({ text: '' });
   }
 }
 

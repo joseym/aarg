@@ -208,8 +208,15 @@ function classifyKind(kind: ObjectionKind): { type: ObjectionType; copilot: Copi
   }
 }
 
+/** The DOMAIN target string the Rust `DismissedObjection.target` uses (a plain
+ *  `String`), derived from the wire `ObjectionTarget`. A bullet target is the
+ *  object `{bullet:"<id>"}` → `"bullet:<id>"`; the wire string `"skills_section"`
+ *  maps to the domain `"skills"`; every other string (`"summary"`, `"layout"`,
+ *  `"overall"`) passes through. This is the single source of truth that keeps
+ *  `objectionId`, dismissals, and `seedAccepted` all on the domain format. */
 export function targetKey(target: ObjectionTarget): string {
-  return typeof target === 'string' ? target : `bullet:${target.bullet}`;
+  if (typeof target === 'object') return `bullet:${target.bullet}`;
+  return target === 'skills_section' ? 'skills' : target;
 }
 
 export function objectionId(o: Objection): string {
