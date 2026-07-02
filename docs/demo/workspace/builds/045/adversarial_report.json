@@ -1,0 +1,128 @@
+{
+  "objections": [
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "'equally comfortable shaping technical strategy with C-suite leadership' and 'delivery excellence are priorities' are boilerplate phrases that appear on every director resume.",
+      "suggestion": "Cut the closing aspirational clause and let the regulatory-first achievement carry the weight."
+    },
+    {
+      "target": {
+        "bullet": "bullet-1"
+      },
+      "severity": "minor",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "'full hiring authority and ownership of every career-level and cultural decision' asserts scope without any retention, hiring-throughput, or pipeline metric. For a JD that emphasizes talent acquisition and building a leadership pipeline, this is where numbers would land hardest.",
+      "suggestion": "If you have retention or hire-count data, this is the place; if not, tighten the phrasing rather than leaning on the unquantified authority claim."
+    },
+    {
+      "target": {
+        "bullet": "bullet-1"
+      },
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The JD explicitly requires 'managing through managers' and building a leadership pipeline. A 20-person team is solid, but nothing here shows you managed engineering managers/tech leads vs. ICs directly.",
+      "suggestion": "If any of those 20 reported through team leads/EMs, say so explicitly; 'managing through managers' is a stated requirement and you currently don't demonstrate it."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This bullet is overstuffed and repeats the 'grew from a single engineer to 20+' line already covered in bullet-1 and the summary. The repetition dilutes your strongest infra content.",
+      "suggestion": "Split or trim: keep the microservices/PostgreSQL/Docker/GitHub Actions architecture substance, drop the redundant team-growth clause."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "This is your closest infra bullet, but it stops at Docker + GitHub Actions. The JD demands Kubernetes/orchestration, infrastructure-as-code, and distributed systems at scale. Containerizing with Docker is not the same as running orchestrated cloud-native infra, and that gap is the central risk in this application.",
+      "suggestion": "Do not invent K8s/IaC experience you don't have. If your deployments touched any orchestration or declarative infra config, name it precisely; otherwise be honest that this is a stretch and lean on transferable architecture judgment."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'ran 3x faster than the prior process' compares against an 'ad hoc' baseline, which is a soft denominator. Going from ad hoc to bi-weekly is real, but '3x faster' implies a measured prior cadence that 'ad hoc' contradicts.",
+      "suggestion": "Either define the prior cadence concretely or drop the 3x and let 'ad hoc to bi-weekly across 4 teams' stand on its own."
+    },
+    {
+      "target": {
+        "bullet": "bullet-41"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This bullet substantially duplicates bullet-4: same 4 teams, same bi-weekly cadence, same 5+ regulated milestones, same 'predictable shipping' language. Two bullets restating one accomplishment reads as padding.",
+      "suggestion": "Merge with bullet-4 into a single stronger bullet, or repurpose this slot for a distinct cross-functional/stakeholder-alignment story the JD values."
+    },
+    {
+      "target": {
+        "bullet": "bullet-38"
+      },
+      "severity": "minor",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "'establishing the working patterns the team adopted going forward' is vague and unmeasured. AI tooling adoption is a current trend, but without a productivity outcome this reads as buzzword alignment.",
+      "suggestion": "If adoption changed throughput or cycle time, state it; otherwise tighten to the concrete action (piloted Claude/Cursor across the team) and drop the soft trailing clause."
+    },
+    {
+      "target": {
+        "bullet": "bullet-12"
+      },
+      "severity": "major",
+      "kind": "vague_verb",
+      "scope": "canonical",
+      "message": "'Led automation initiatives and built internal tooling to streamline developer onboarding' is fully redundant with bullets 13 and 14 and adds no metric or new detail. Three onboarding bullets at one job is repetition.",
+      "suggestion": "Cut this bullet entirely; bullet-14 (two weeks to three days) already covers it with a number."
+    },
+    {
+      "target": {
+        "bullet": "bullet-18"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Largely duplicates bullet-34's 'custom client applications, including accounting and reservation software.' Two bullets describing the same Beacon Labs work.",
+      "suggestion": "Consolidate the delivery-management bullet (34) and the tech-stack bullet (18) into one."
+    },
+    {
+      "target": "skills_section",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The skills list omits Kubernetes, infrastructure-as-code, Cloudflare/edge, and distributed systems — the exact terms this JD emphasizes and screens on. It instead repeats leadership phrasings ('engineering leadership experience', 'technical leadership', 'managing teams') redundantly.",
+      "suggestion": "Do not list tools you haven't used. Trim the duplicated leadership phrases and surface any genuine distributed-systems / orchestration / cloud terms you actually have so the skills section isn't all management synonyms."
+    },
+    {
+      "target": "skills_section",
+      "severity": "minor",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "'engineering leadership experience', 'Engineering management', 'technical leadership', 'Team leadership and mentorship', 'managing teams' are five overlapping ways of saying the same thing.",
+      "suggestion": "Collapse the leadership synonyms into one or two entries and reclaim the space for concrete technical skills."
+    },
+    {
+      "target": "overall",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "Strong director profile but the experience is regulatory fintech platform platform, not e-commerce/SaaS at global multi-region scale (AU/NA/EU). Combined with the Kubernetes/edge gap, this candidate is a credible leader applying slightly outside their depth on the infra axis the role is built around.",
+      "suggestion": "Be upfront in positioning: emphasize transferable compliance-grade architecture rigor and team scaling, and prepare a direct answer for the cloud-native/edge gap rather than hoping it goes unnoticed."
+    }
+  ],
+  "overall_score": 0.62,
+  "persona_notes": "Genuine director-level scope with real team-building and a standout regulatory milestone, but the resume is product/team-leadership flavored and runs thin exactly where this job is deep: Kubernetes, IaC, edge/Cloudflare, and large-scale distributed systems. The repetition across bullets also signals padding rather than range."
+}

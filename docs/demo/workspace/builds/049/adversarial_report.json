@@ -1,0 +1,130 @@
+{
+  "objections": [
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "This is your strongest technical bullet, but it cites Docker and GitHub Actions, not Kubernetes/Operators/Helm, and 'microservice backend framework' is not the same as the distributed-systems-at-scale the JD demands. The gap to this role's core requirement is visible and unaddressed; I'm not asking you to fabricate Kubernetes, but as written this confirms the mismatch.",
+      "suggestion": "If you have any orchestration or distributed-systems exposure not yet captured, surface it here; if you don't, accept that this is the honest ceiling and don't oversell 'microservice' as distributed systems."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This bullet is a run-on cramming architecture, containerization, CI/CD, standards, and team-scaling into one sentence, and it repeats the 'single engineer to 20+' growth claim already made in bullet-1.",
+      "suggestion": "Split into a tight architecture bullet and remove the redundant team-scaling tail since bullet-1 already owns that."
+    },
+    {
+      "target": {
+        "bullet": "bullet-1"
+      },
+      "severity": "minor",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "'20+ person team' and 'full hiring authority' are good, but 'every career-level and cultural decision' is an unquantified blanket claim. Over a 7-year tenure, retention or promotion numbers would land harder.",
+      "suggestion": "If you have retention or internal-promotion figures from your work history, state them; otherwise tighten the phrasing rather than leaning on the vague 'every... decision' assertion."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'ran 3x faster than the prior process' compares a bi-weekly cadence to 'ad hoc deployments' — ad hoc has no baseline frequency, so '3x faster' is a soft number that a skeptical reader will question.",
+      "suggestion": "Reframe around the concrete shift (ad hoc to predictable bi-weekly across 4 teams) and drop or substantiate the 3x claim if the baseline can't support it."
+    },
+    {
+      "target": {
+        "bullet": "bullet-41"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This bullet substantially duplicates bullet-4: both claim 'bi-weekly delivery cadence across 4 engineering teams' and '5+ regulated product milestones.' Listing the same accomplishment twice signals padding to a skeptical reader.",
+      "suggestion": "Merge bullet-4 and bullet-41 into one delivery bullet covering both the release-cadence change and the product-partnership angle."
+    },
+    {
+      "target": {
+        "bullet": "bullet-8"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Overlong sentence packing dual IC/product role, architecture decisions, QA standards, CI/CD, and PR annotation — three of which get their own dedicated bullets below (9 and 10). The summary bullet is redundant with its own detail bullets.",
+      "suggestion": "Trim bullet-8 to the role framing and let bullets 9 and 10 carry the specifics."
+    },
+    {
+      "target": {
+        "bullet": "bullet-13"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Bullets 12, 13, and 14 all claim the same accomplishment: cutting onboarding from ~2 weeks to ~3 days. Three near-identical bullets for one result is obvious filler and undercuts credibility.",
+      "suggestion": "Collapse into a single bullet (the Docker/tooling one is most concrete) and delete the other two."
+    },
+    {
+      "target": {
+        "bullet": "bullet-9"
+      },
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'reducing bugs and tech debt' is asserted with no measure, while only the 'speeding up peer reviews by 20%' half is quantified. The bug/tech-debt claim rides on the review metric without its own support.",
+      "suggestion": "Keep the 20% review figure and either drop the unquantified bug/tech-debt claim or state it more modestly."
+    },
+    {
+      "target": {
+        "bullet": "bullet-32"
+      },
+      "severity": "minor",
+      "kind": "vague_verb",
+      "scope": "canonical",
+      "message": "'Migrated from a PHP backend to a Node.js/MEAN stack' is a bare one-liner with no scale, motivation, or outcome — it reads as an orphaned fragment.",
+      "suggestion": "Fold into bullet-16 as part of the platform work, or add the why/result if your history supports it; as a standalone line it adds little."
+    },
+    {
+      "target": {
+        "bullet": "bullet-17"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Bullets 17 and 34 overlap heavily — both describe running weekly stakeholder check-ins, defining requirements, and tracking velocity in Pivotal Tracker for custom client apps.",
+      "suggestion": "Merge into one Beacon Labs delivery bullet."
+    },
+    {
+      "target": "skills_section",
+      "severity": "major",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "The skills list is bloated with near-duplicate leadership phrases ('Engineering team leadership and management' + 'Team leadership and mentorship' + 'technical leadership'; 'team recruitment and development' + 'Talent acquisition and development'; 'Software architecture design' + 'System architecture principles'). The padding makes a screener suspect the keyword stuffing is masking thin technical breadth.",
+      "suggestion": "Deduplicate to a tight list and lead with the JD's hard technical terms you can honestly claim; do not add Kubernetes/Go/Rust if they aren't in your background."
+    },
+    {
+      "target": "skills_section",
+      "severity": "blocking",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The JD's required technical core — Kubernetes, distributed systems, and Python/Go/Rust depth — is almost entirely absent. Skills lists only 'Typescript/Python, Node.js, JavaScript' with no Kubernetes, no Go, no Rust, no distributed systems. For a role gated on backend systems depth in those exact technologies, this is the gap most likely to get the resume cut, and I won't tell you to invent it.",
+      "suggestion": "Be honest about what you have; if your real depth is Node/TypeScript/Python without K8s or distributed systems at scale, this role may not be a fit, and no rephrasing fixes a missing required skill."
+    },
+    {
+      "target": "overall",
+      "severity": "major",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "The resume positions strongly for a people-leadership Director role, but this posting is a hands-on Engineering Manager on an AI-inference/hardware-adjacent platform requiring deep distributed-systems and K8s contribution. The candidate's leadership credentials are real; the hands-on production-scale infrastructure depth this role centers on is not demonstrated anywhere in the work history.",
+      "suggestion": "Either pursue roles weighted toward leadership/delivery where this candidate dominates, or, if pursuing this one, lead hard with the genuine hands-on backend architecture and AI-tooling experience and accept the technical-stack gap will be the deciding question."
+    }
+  ],
+  "overall_score": 0.55,
+  "persona_notes": "Strong people-leadership and delivery story from a credible founding-engineer-to-Director arc, but this candidate is a regulated-fintech generalist applying to a hardware-adjacent AI inference platform that wants deep Kubernetes, distributed systems, and Python/Go/Rust depth at production scale. The leadership half fits; the technical half is a notable stretch and the resume doesn't close that gap."
+}

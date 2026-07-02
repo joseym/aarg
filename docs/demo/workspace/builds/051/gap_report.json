@@ -1,0 +1,205 @@
+{
+  "matched": [
+    {
+      "jd_skill": {
+        "name": "engineering management",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "1-3 years as an engineering manager with people-lead responsibilities",
+          "Hire, onboard, mentor, and develop engineers with clear expectations, feedback, and career growth paths"
+        ]
+      },
+      "skill_id": "skill-1",
+      "dataset_name": "Engineering management",
+      "semantic": false
+    },
+    {
+      "jd_skill": {
+        "name": "API design",
+        "category": "hard",
+        "importance": "required",
+        "context_phrases": [
+          "Experience designing APIs and data contracts consumed by downstream product surfaces and internal teams"
+        ]
+      },
+      "skill_id": "skill-15",
+      "dataset_name": "GraphQL API design",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "software engineering",
+        "category": "hard",
+        "importance": "required",
+        "context_phrases": [
+          "4+ years of professional software engineering experience"
+        ]
+      },
+      "skill_id": "skill-64",
+      "dataset_name": "software engineering",
+      "semantic": false
+    },
+    {
+      "jd_skill": {
+        "name": "data correctness and auditability",
+        "category": "hard",
+        "importance": "critical",
+        "context_phrases": [
+          "Strong grasp of correctness, idempotency, and auditability as first-order design constraints"
+        ]
+      },
+      "skill_id": "skill-58",
+      "dataset_name": "data correctness",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "production systems operations",
+        "category": "hard",
+        "importance": "required",
+        "context_phrases": [
+          "Experience owning end-to-end delivery for production services, including planning, execution, quality, and operational health"
+        ]
+      },
+      "skill_id": "skill-35",
+      "dataset_name": "operational excellence",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "cross-functional stakeholder alignment",
+        "category": "soft",
+        "importance": "required",
+        "context_phrases": [
+          "Strong written and verbal communication skills; able to align engineering, product, finance, and compliance stakeholders around priorities and tradeoffs"
+        ]
+      },
+      "skill_id": "skill-9",
+      "dataset_name": "Cross-functional collaboration",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "cloud providers",
+        "category": "tool",
+        "importance": "required",
+        "context_phrases": [
+          "Familiarity with the major cloud providers (Northwind Labs, AWS, GCP, Azure)"
+        ]
+      },
+      "skill_id": "skill-18",
+      "dataset_name": "Cloud infrastructure management",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "SOX compliance",
+        "category": "domain",
+        "importance": "preferred",
+        "context_phrases": [
+          "Experience operating in SOX or other financial-controls environments - audit trails, change management, controls testing"
+        ]
+      },
+      "skill_id": "skill-19",
+      "dataset_name": "Regulatory compliance oversight",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "platform engineering leadership",
+        "category": "soft",
+        "importance": "preferred",
+        "context_phrases": [
+          "Prior experience leading platform engineering through product expansion or team re-structure"
+        ]
+      },
+      "skill_id": "skill-45",
+      "dataset_name": "engineering leadership experience",
+      "semantic": true
+    }
+  ],
+  "weak": [],
+  "unknown": [
+    {
+      "name": "distributed data systems",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong understanding of distributed data systems: ingestion, stream/batch processing, schema evolution, exactly-once semantics, and replays"
+      ]
+    },
+    {
+      "name": "billing systems design",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Proven experience leading teams that build and ship production data- or revenue-critical backend systems at scale - metering, billing, payments, financial reporting, large-scale data pipelines, or close adjacencies"
+      ]
+    },
+    {
+      "name": "multi-tenant data modeling",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Strong understanding of multi-tenant data modeling, including org/project hierarchies, contracts, entitlements, and usage attribution"
+      ]
+    },
+    {
+      "name": "cloud/SaaS metering platforms",
+      "category": "hard",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience building or operating cloud/SaaS metering or billing platforms - usage ingestion, rating, invoicing, or reconciliation"
+      ]
+    },
+    {
+      "name": "Kafka",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "Flink",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "Spark",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "Apache Beam",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "meter-to-cash platforms",
+      "category": "hard",
+      "importance": "preferred",
+      "context_phrases": [
+        "Familiarity with meter-to-cash platforms as integration partners or systems of record"
+      ]
+    },
+    {
+      "name": "GPU infrastructure",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Exposure to GPU/cloud infrastructure concepts and consumption models (on-demand, reserved, spot, flex)"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "objections": [
+    {
+      "target": "skills_section",
+      "severity": "blocking",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The JD lists Kubernetes and distributed systems as core required qualifications and the role is about a production-scale inference serving platform. Nothing in the work history or skills shows Kubernetes, orchestration, or distributed-systems work. Docker containerization (bullet-48) is not the same thing. This is the single biggest gap.",
+      "suggestion": "If there is any Kubernetes or distributed-systems exposure in the actual history, surface it explicitly; if not, do not paper over it — this gap is real and should drive whether to even apply."
+    },
+    {
+      "target": "skills_section",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "Required technical depth is in Python, Go, or Rust. The history is overwhelmingly Node.js/TypeScript/JavaScript with React/Angular. 'Typescript/Python' appears in skills but Python is never demonstrated in any bullet. Listing it without backing reads as keyword-stuffing.",
+      "suggestion": "Drop or de-emphasize Python in skills unless a bullet supports it; do not claim Go/Rust at all since there is no evidence."
+    },
+    {
+      "target": "skills_section",
+      "severity": "major",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "This skills block is a keyword dump with heavy redundancy: 'Engineering team leadership and management,' 'Director of Software Engineering,' 'Software Engineering Manager,' 'team recruitment and development,' 'Talent acquisition and development,' 'Team leadership and mentorship,' 'technical leadership' are six near-synonyms. Likewise 'Cursor/Anthropic Claude,' 'AI Engineering Workflows,' 'AI-assisted workflows' are three versions of one thing.",
+      "suggestion": "Collapse the duplicates into a tight, deduplicated list and lead with the JD's required terms you can honestly claim."
+    },
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'led the engineering and compliance work across a 7-year regulatory build-out' implies leading compliance, which is a stretch — the bullets show engineering leadership partnered with compliance, not ownership of compliance work. Don't overreach on a domain you didn't own.",
+      "suggestion": "Rephrase to 'led the engineering work supporting a 7-year regulatory build-out' to match what the bullets actually demonstrate."
+    },
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "The summary is one dense ~120-word paragraph that buries the strongest, most differentiated fact (first regulatory-approved the platform) mid-sentence. A skeptical reader skims; the lead should hit hardest first.",
+      "suggestion": "Split into two shorter sentences and lead with the team-from-1-to-20 and regulatory-first outcome."
+    },
+    {
+      "target": {
+        "bullet": "bullet-41"
+      },
+      "severity": "major",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "This bullet substantially overlaps with bullet-4 (both cover cross-team sprint/release planning across 4 teams) and adds nothing new — 'translating business priorities into a structured delivery cadence' is boilerplate. Two bullets saying the same thing weakens both.",
+      "suggestion": "Merge into bullet-4 or cut entirely."
+    },
+    {
+      "target": {
+        "bullet": "bullet-32"
+      },
+      "severity": "minor",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "'Migrated from a PHP backend to a Node.js/MEAN stack' is a single-line fragment with no scope, motivation, or result. As written it's a footnote, not an accomplishment.",
+      "suggestion": "Either merge into bullet-16 or fold it in with whatever outcome it produced; standing alone it adds little."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This bullet is overloaded — microservices, PostgreSQL schemas, Docker, GitHub Actions CI/CD, engineering standards, code review, and the 1-to-20 scaling all in one sentence. The 1-to-20 scaling also repeats bullet-1. Reads as a kitchen-sink line.",
+      "suggestion": "Split the architecture/infra work from the standards/process work, and remove the team-scaling clause already covered in bullet-1."
+    }
+  ],
+  "overall_score": 0.55,
+  "persona_notes": "Strong people-leadership and delivery story with a genuinely differentiated regulatory build-out and AI-tooling angle, but this is a hands-on AI-infrastructure role demanding Python/Go/Rust depth, Kubernetes, and distributed-systems-at-production-scale, and the candidate's stack is Node/TS in regulated fintech. The leadership half clears the bar; the deep-technical half does not, and I can't see Kubernetes or distributed systems anywhere."
+}

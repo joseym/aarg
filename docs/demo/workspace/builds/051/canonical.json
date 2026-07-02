@@ -1,0 +1,157 @@
+{
+  "build_id": "051",
+  "jd_id": "northwind-labs-engineering-manager-billing-platform",
+  "generated_at": "2026-06-25T14:41:57.875202513Z",
+  "contact": {
+    "full_name": "Sam Rivera",
+    "email": "sam.rivera@example.com",
+    "phone": "(555) 010-1974",
+    "location": "Remote (US)",
+    "links": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/sam-rivera-dev"
+      }
+    ]
+  },
+  "target_title": "Engineering Manager, Billing Platform",
+  "summary": "Founding engineer turned Director of Engineering at Meridian Logistics, where I grew the team from just myself to 20+ engineers spanning backend, frontend, QA, DevOps, and release management, and delivered the infrastructure behind Meridian Logistics becoming the first regulated fintech platform in the US. I architected the backend systems and processes the platform is built on, took releases from ad hoc to a structured bi-weekly cadence across 4 engineering teams, and led the engineering and compliance work across a 7-year regulatory build-out. Hands-on with Node.js and TypeScript, and equally comfortable shaping technical strategy with C-suite leadership, I'm targeting Director of Engineering and VP of Engineering roles where team development and delivery excellence are priorities.",
+  "roles": [
+    {
+      "id": "role-1",
+      "company": "Meridian Logistics",
+      "title": "Director of Engineering",
+      "start": "2019-04",
+      "end": "2026-05",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-1",
+          "text": "Built the engineering organization from the ground up, growing from sole backend engineer to a 20+ person team spanning backend, frontend, QA, DevOps, and release management, with full hiring authority and ownership of every career-level and cultural decision."
+        },
+        {
+          "source_id": "bullet-48",
+          "text": "Designed the TypeScript microservice backend framework and PostgreSQL database schemas that Meridian Logistics's platform is built on today, containerizing services with Docker and building GitHub Actions CI/CD pipelines to satisfy regulatory auditability and compliance requirements."
+        },
+        {
+          "source_id": "bullet-4",
+          "text": "Took on scrum and release management across 4 engineering teams, standardizing sprint and epic planning and replacing ad hoc deployments with a bi-weekly release cadence, 3x faster than the prior process, that gave the business consistent, predictable delivery."
+        },
+        {
+          "source_id": "bullet-41",
+          "text": "Partnered with product and stakeholders to translate business priorities into delivery, shipping a run of regulated milestones including platform approval, custody launch, ETH custody, and clearing and settlement approval."
+        },
+        {
+          "source_id": "bullet-27",
+          "text": "Coordinated change management and auditor communication across 3 concurrent audits covering backend platform, onboarding, mobile app, and blockchain, managing timelines, drafting responses, conducting the least-privilege access review, and converting audit findings into prioritized remediation items entered into the SDLC workflow."
+        },
+        {
+          "source_id": "bullet-39",
+          "text": "Served as engineering lead for incident response across backend, DevOps, and release teams, owning technical investigation and cross-functional coordination to drive issues to resolution in an environment where platform failures carried direct regulatory and compliance risk."
+        }
+      ]
+    },
+    {
+      "id": "role-2",
+      "company": "Vantage Retail",
+      "title": "Director of Product Development",
+      "start": "2017-12",
+      "end": "2019-04",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-8",
+          "text": "Held a dual engineering and product role as an IC, defining product requirements with stakeholders and contributing to software architecture decisions alongside establishing the QA standards, CI/CD pipelines, and PR annotation practices that governed how the team designed, reviewed, and shipped code."
+        },
+        {
+          "source_id": "bullet-10",
+          "text": "Built QA standards and testing protocols for the team, integrating Codecov coverage verification, CI/CD pipelines, and Xray scripts linked to Jira stories, raising enforced test coverage from roughly 50% to 97%."
+        },
+        {
+          "source_id": "bullet-11",
+          "text": "Defined product requirements in collaboration with stakeholders, balancing customer needs, business objectives, and technical constraints."
+        }
+      ]
+    },
+    {
+      "id": "role-3",
+      "company": "Harbor Reviews",
+      "title": "Software Engineer, Tooling/Automation Lead",
+      "start": "2015-08",
+      "end": "2017-12",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-12",
+          "text": "Led automation initiatives and built internal tooling to streamline developer onboarding and integration workflows, cutting onboarding time from over 2 weeks to 3 days."
+        },
+        {
+          "source_id": "bullet-14",
+          "text": "Built internal tooling and software solutions in JavaScript, React.js, HTML, and CSS within an Agile workflow."
+        }
+      ]
+    },
+    {
+      "id": "role-4",
+      "company": "Nimbus Freight",
+      "title": "Senior Software Engineer, Frontend/UX Lead",
+      "start": "2013-08",
+      "end": "2014-12",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-16",
+          "text": "Built the frontend media player and user platform in AngularJS, styled with LessCSS and bundled with Grunt, backed by a Node.js/Express API that handled cloud storage interactions for user media collections."
+        },
+        {
+          "source_id": "bullet-32",
+          "text": "Migrated the backend from PHP to a Node.js/MEAN stack."
+        }
+      ]
+    },
+    {
+      "id": "role-5",
+      "company": "Beacon Labs",
+      "title": "Senior Software Engineer",
+      "start": "2012-08",
+      "end": "2013-08",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-17",
+          "text": "Built custom client applications, including accounting and reservation software, in PHP and AngularJS, running weekly stakeholder check-ins and tracking work velocity in Pivotal Tracker to keep requirements, timelines, and delivery goals aligned across the full delivery cycle."
+        },
+        {
+          "source_id": "bullet-34",
+          "text": "Managed end-to-end delivery of custom client applications by running weekly check-in calls with stakeholders, defining requirements, and tracking work velocity in Pivotal Tracker to keep timelines and delivery goals on target."
+        }
+      ]
+    }
+  ],
+  "education": [],
+  "skills_section": {
+    "skills": [
+      "Engineering management",
+      "Cross-functional collaboration",
+      "Software architecture design",
+      "Release management",
+      "Software development lifecycle",
+      "Continuous integration and delivery",
+      "data correctness",
+      "operational excellence",
+      "Regulatory compliance oversight",
+      "Incident management",
+      "backend engineering",
+      "TypeScript",
+      "PostgreSQL",
+      "Node.js development",
+      "GraphQL API design",
+      "Docker",
+      "microservices architecture",
+      "CI/CD"
+    ]
+  },
+  "projects": [],
+  "achievements": [],
+  "certifications": []
+}
