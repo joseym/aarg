@@ -165,6 +165,8 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                   <b>grounded</b> — closest recorded match;
                   <b>your own edit</b> — you changed it. A flag means a line isn’t
                   yet traced and needs your confirmation.
+                  Click the badge to jump to a flagged line — confirm it as your
+                  own evidence, or edit it.
                 </div>
               }
             </div>
@@ -172,7 +174,12 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 
           @if (view() === 'preview') {
             @if (previewModel(); as m) {
-              <app-resume-preview [model]="m" (edit)="onEdit($event)" />
+              <app-resume-preview
+                [model]="m"
+                [highlightKey]="highlightKey()"
+                (edit)="onEdit($event)"
+                (confirm)="onConfirmLine($event)"
+              />
               <div class="fidelity">
                 <span class="tag">HTML · editing</span>
                 <span>Live in-browser preview — edit any line. Facts stay identical to the</span>
@@ -322,6 +329,12 @@ export class TailoringWorkspace {
   // ── local UI state ───────────────────────────────────────────────────
   protected readonly view = signal<'preview' | 'coverage'>('preview');
   protected readonly infoOpen = signal(false);
+  /** The line key the preview should spotlight (badge → jump). Cycles through
+   *  {@link unrecordedKeys} on repeated badge clicks. */
+  protected readonly highlightKey = signal<string | null>(null);
+  /** Which unrecorded line the next badge click jumps to. Reset to 0 whenever the
+   *  set of flagged lines changes (see the constructor effect). */
+  private cycleIndex = 0;
   protected readonly edits = signal<Record<string, string>>({});
   /** Edit keys already recorded to the dataset this session. Kept IN `edits` (so
    *  the preview text persists rather than snapping back), but excluded from the
@@ -422,12 +435,17 @@ export class TailoringWorkspace {
     return unrecorded || this.claimsFlagged() ? 'flag' : 'ok';
   });
 
-  private readonly flaggedCount = computed(() => {
+  /** The ordered keys of lines the badge flags — the exact predicate
+   *  {@link claimState} uses (unrecorded, not overridden by a pending edit). The
+   *  badge jump cycles through these; the count drives {@link claimText}. */
+  protected readonly unrecordedKeys = computed<string[]>(() => {
     const edits = this.edits();
-    return (this.provReport()?.lines ?? []).filter(
-      (l) => l.status === 'unrecorded' && !Object.prototype.hasOwnProperty.call(edits, keyOf(l)),
-    ).length;
+    return (this.provReport()?.lines ?? [])
+      .filter((l) => l.status === 'unrecorded' && !Object.prototype.hasOwnProperty.call(edits, keyOf(l)))
+      .map((l) => keyOf(l));
   });
+
+  private readonly flaggedCount = computed(() => this.unrecordedKeys().length);
 
   protected readonly claimText = computed(() => {
     switch (this.claimState()) {
@@ -443,6 +461,13 @@ export class TailoringWorkspace {
   });
 
   constructor() {
+    // Whenever the set of flagged lines changes (a re-check, an edit, a confirm),
+    // restart the jump cycle from the first flagged line.
+    effect(() => {
+      this.unrecordedKeys();
+      this.cycleIndex = 0;
+    });
+
     // Load whenever the route id changes; then run the deterministic checks.
     effect(() => {
       const id = this.id();
@@ -568,23 +593,93 @@ export class TailoringWorkspace {
    *  The PUT is validate-gated exactly like {@link onAccept}: a 422 surfaces the
    *  findings and leaves the edits intact so nothing is silently lost. */
   protected async recordEdits(): Promise<void> {
-    const ds = this.dataset();
     const editMap = this.edits();
     // Only pending edits are recordable — keys already recorded this session stay
     // in `edits` for the preview but must not be re-written (they match editCount).
     const recordedSet = this.recordedKeys();
-    const keys = Object.keys(editMap).filter((k) => !recordedSet.has(k));
-    if (!ds || keys.length === 0) return;
+    const entries = Object.keys(editMap)
+      .filter((k) => !recordedSet.has(k))
+      .map((k) => ({ key: k, text: editMap[k] }));
+    if (entries.length === 0) return;
 
+    this.recording.set(true);
+    try {
+      const res = await this.recordLines(entries);
+      if (!res.saved) {
+        this.showToast(
+          res.skippedSkills.length > 0
+            ? 'Only summary and bullet edits can be recorded yet — skill edits stay local.'
+            : 'Nothing to record — these edits don’t map to a dataset item.',
+        );
+        return;
+      }
+      // Never-fabricate honesty: a recorded line may still not trace (e.g. the
+      // edit diverged from every evidence phrase). Warn, but never block the save.
+      const provMap = provenanceIndex(this.provReport());
+      const stillUnrecorded = res.recorded.filter((k) => provMap.get(k)?.status === 'unrecorded');
+
+      let msg =
+        stillUnrecorded.length > 0
+          ? `Recorded, but ${plural(stillUnrecorded.length, 'line')} no longer trace to your evidence — review them.`
+          : `Recorded ${plural(res.recorded.length, 'edit')} to your dataset.`;
+      if (res.skippedSkills.length > 0) {
+        msg += ` ${plural(res.skippedSkills.length, 'skill edit')} skipped — skills aren’t recordable yet.`;
+      }
+      this.showToast(msg);
+    } catch (err) {
+      this.showToast(this.saveErrorMessage(err));
+    } finally {
+      this.recording.set(false);
+    }
+  }
+
+  /** Confirm a single unrecorded line as the user's own evidence, straight from
+   *  the provenance popover — no prior edit needed. Records the CANONICAL
+   *  claim's text (from the provenance report line), NOT the preview's text:
+   *  the preview shows the human variant's reword, but provenance checks the
+   *  canonical draft — recording the reworded presentation would leave the flag
+   *  raised forever. Same validated path as {@link recordEdits}; on success the
+   *  line re-checks verbatim and the flag count drops. */
+  protected async onConfirmLine(e: { key: string; text: string }): Promise<void> {
+    // The claim being confirmed is the canonical line the checker flagged.
+    const canonicalText = (this.provReport()?.lines ?? []).find((l) => keyOf(l) === e.key)?.text;
+    try {
+      const res = await this.recordLines([{ key: e.key, text: canonicalText ?? e.text }]);
+      if (!res.saved) {
+        this.showToast(
+          res.skippedSkills.length > 0
+            ? 'Skill lines aren’t recordable yet — edit it in the preview instead.'
+            : 'Couldn’t record this line — it doesn’t map to a dataset item.',
+        );
+        return;
+      }
+      this.showToast('Confirmed — recorded as your evidence.');
+    } catch (err) {
+      this.showToast(this.saveErrorMessage(err));
+    }
+  }
+
+  /** The single record path shared by the bulk "Record N edits" button and the
+   *  per-line popover confirm. Maps each key to its dataset item (summary → the
+   *  summary; `bullet:role:i` → the payload bullet's `source_id` → the dataset
+   *  bullet) and writes the given CURRENT text; skill chips aren't free prose we
+   *  can trace, so they're reported skipped. PUTs the enriched dataset (validate-
+   *  gated — the caller catches a 422 and surfaces findings), then on success
+   *  keeps the keys IN `edits` but marks them recorded (so they drop out of the
+   *  pending `editCount`) and re-runs the deterministic checks. Throws on the PUT
+   *  so callers own the toast copy. */
+  private async recordLines(
+    entries: { key: string; text: string }[],
+  ): Promise<{ recorded: string[]; skippedSkills: string[]; unresolved: string[]; saved: boolean }> {
+    const ds = this.dataset();
     const payload = this.previewPayload();
-    const next = structuredClone(ds) as ResumeDataset;
-
     const recorded: string[] = []; // keys we actually wrote into `next`
     const skippedSkills: string[] = [];
     const unresolved: string[] = [];
+    if (!ds) return { recorded, skippedSkills, unresolved, saved: false };
 
-    for (const key of keys) {
-      const text = editMap[key];
+    const next = structuredClone(ds) as ResumeDataset;
+    for (const { key, text } of entries) {
       if (key === 'summary') {
         next.summary = text;
         recorded.push(key);
@@ -607,58 +702,49 @@ export class TailoringWorkspace {
     }
 
     if (recorded.length === 0) {
-      this.showToast(
-        skippedSkills.length > 0
-          ? 'Only summary and bullet edits can be recorded yet — skill edits stay local.'
-          : 'Nothing to record — these edits don’t map to a dataset item.',
-      );
-      return;
+      return { recorded, skippedSkills, unresolved, saved: false };
     }
 
-    this.recording.set(true);
-    try {
-      // The PUT responds with an ack ({status:"saved"}), not the dataset —
-      // keep the object we sent, or every later check parses the ack as a
-      // dataset and wedges.
-      await firstValueFrom(this.api.putDataset(next));
-      this.dataset.set(next);
-      // Keep the recorded keys IN `edits` so the preview text persists (it no
-      // longer snaps back to the payload's pre-edit prose); mark them recorded so
-      // they drop out of the pending `editCount`. Skipped/unresolved keys stay
-      // pending local edits. A later re-edit re-pends the key (see `onEdit`).
-      this.recordedKeys.update((s) => recorded.reduce((acc, k) => withAdded(acc, k), s));
-      // Re-run the deterministic checks against the enriched dataset.
-      await this.recompute();
+    // The PUT responds with an ack ({status:"saved"}), not the dataset — keep the
+    // object we sent, or every later check parses the ack as a dataset and wedges.
+    await firstValueFrom(this.api.putDataset(next));
+    this.dataset.set(next);
+    // Keep the recorded keys IN `edits` so any edited preview text persists (it no
+    // longer snaps back to the payload's pre-edit prose); mark them recorded so
+    // they drop out of the pending `editCount`. A later re-edit re-pends the key
+    // (see `onEdit`). A confirm of an un-edited line adds a key not in `edits` —
+    // harmless, since `editCount` only counts `edits` keys.
+    this.recordedKeys.update((s) => recorded.reduce((acc, k) => withAdded(acc, k), s));
+    // Re-run the deterministic checks against the enriched dataset.
+    await this.recompute();
+    return { recorded, skippedSkills, unresolved, saved: true };
+  }
 
-      // Never-fabricate honesty: a recorded line may still not trace (e.g. the
-      // edit diverged from every evidence phrase). Warn, but never block the save.
-      const provMap = provenanceIndex(this.provReport());
-      const stillUnrecorded = recorded.filter((k) => provMap.get(k)?.status === 'unrecorded');
-
-      let msg =
-        stillUnrecorded.length > 0
-          ? `Recorded, but ${plural(stillUnrecorded.length, 'line')} no longer trace to your evidence — review them.`
-          : `Recorded ${plural(recorded.length, 'edit')} to your dataset.`;
-      if (skippedSkills.length > 0) {
-        msg += ` ${plural(skippedSkills.length, 'skill edit')} skipped — skills aren’t recordable yet.`;
-      }
-      this.showToast(msg);
-    } catch (err) {
-      // Same 422 path as onAccept: surface validation findings, keep the edits.
-      const msg =
-        err instanceof HttpErrorResponse && err.status === 422
-          ? `Validation blocked the save: ${findings(err)}`
-          : errMessage(err);
-      this.showToast(msg);
-    } finally {
-      this.recording.set(false);
-    }
+  /** The shared save-error message: a 422 surfaces the validation findings, every
+   *  other failure its plain message. */
+  private saveErrorMessage(err: unknown): string {
+    return err instanceof HttpErrorResponse && err.status === 422
+      ? `Validation blocked the save: ${findings(err)}`
+      : errMessage(err);
   }
 
   // ── claim check ──────────────────────────────────────────────────────
+  /** The badge does double duty: it re-runs the deterministic check, and — when
+   *  the draft is flagged — jumps the preview to the next unrecorded line so the
+   *  count points at something actionable instead of nothing. */
   protected runClaimCheck(): void {
+    if (this.claimState() === 'flag') this.jumpToNextFlagged();
     this.claimChecking.set(true);
     void this.recompute().finally(() => this.claimChecking.set(false));
+  }
+
+  /** Spotlight the next flagged line, cycling through them on repeated clicks. */
+  private jumpToNextFlagged(): void {
+    const keys = this.unrecordedKeys();
+    if (keys.length === 0) return;
+    if (this.cycleIndex >= keys.length) this.cycleIndex = 0;
+    this.highlightKey.set(keys[this.cycleIndex]);
+    this.cycleIndex = (this.cycleIndex + 1) % keys.length;
   }
 
   // ── objection triage ─────────────────────────────────────────────────

@@ -1,7 +1,7 @@
-import { ChangeDetectionStrategy, Component, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, effect, inject, input, output, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 
-import type { PreviewLine, PreviewModel } from './workspace.model';
+import type { LineStatus, PreviewLine, PreviewModel } from './workspace.model';
 
 /** The left pane: the tailored résumé rendered as the export's "paper". Every
  *  line is free-editable (contenteditable) and provenance-aware — hovering or
@@ -52,14 +52,15 @@ import type { PreviewLine, PreviewModel } from './workspace.model';
             class="chip-skill"
             [class.prov]="!!s.status"
             [attr.data-status]="s.status"
+            [attr.data-key]="s.key"
             tabindex="0"
             role="textbox"
             aria-label="Skill, editable"
             contenteditable="true"
-            (focus)="showPop(s, $event)"
+            (focus)="onFocus(s, $event)"
             (mouseenter)="showPop(s, $event)"
             (blur)="onBlur(s, $event)"
-            (mouseleave)="hidePop()"
+            (mouseleave)="onLineLeave()"
             (keydown.escape)="blurEl($event)"
           >{{ s.text }}</span>
         }
@@ -70,14 +71,15 @@ import type { PreviewLine, PreviewModel } from './workspace.model';
       <span
         class="prov"
         [attr.data-status]="line.status"
+        [attr.data-key]="line.key"
         tabindex="0"
         role="textbox"
         [attr.aria-label]="tag + ', editable. ' + (line.prov?.text || '')"
         contenteditable="true"
-        (focus)="showPop(line, $event)"
+        (focus)="onFocus(line, $event)"
         (mouseenter)="showPop(line, $event)"
         (blur)="onBlur(line, $event)"
-        (mouseleave)="hidePop()"
+        (mouseleave)="onLineLeave()"
         (keydown.escape)="blurEl($event)"
       >{{ line.text }}</span>
     </ng-template>
@@ -87,6 +89,16 @@ import type { PreviewLine, PreviewModel } from './workspace.model';
       <div class="pop on" role="status" [style.left.px]="p.x" [style.top.px]="p.y">
         <div class="pl">{{ p.label }}</div>
         {{ p.text }}
+        @if (p.status === 'unrecorded') {
+          <button
+            class="pop-confirm"
+            type="button"
+            (mousedown)="$event.preventDefault()"
+            (click)="confirmLine()"
+          >
+            This is true — record it as evidence
+          </button>
+        }
       </div>
     }
   `,
@@ -134,6 +146,23 @@ import type { PreviewLine, PreviewModel } from './workspace.model';
       box-shadow: 0 12px 30px -12px color-mix(in oklch, var(--fg) 60%, transparent);
     }
     .pop .pl { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: oklch(78% 0.06 60); margin-bottom: 4px; }
+    .pop-confirm {
+      display: block; margin-top: 9px; width: 100%; padding: 7px 10px; border-radius: 7px;
+      border: 1px solid transparent; background: var(--accent); color: oklch(97% 0.02 40);
+      font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left;
+    }
+    .pop-confirm:hover { background: var(--accent-2); }
+    .pop-confirm:focus-visible { outline: 2px solid oklch(96% 0.01 80); outline-offset: 2px; }
+
+    /* Badge → line: a temporary warn-tinted pulse on the jumped-to line. */
+    @keyframes cc-pulse {
+      0% { background: color-mix(in oklch, var(--warn) 36%, transparent); box-shadow: 0 0 0 5px color-mix(in oklch, var(--warn) 22%, transparent); }
+      100% { background: transparent; box-shadow: 0 0 0 0 transparent; }
+    }
+    .pulse { animation: cc-pulse 1.6s ease-out; border-radius: 3px; }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse { animation: none; outline: 2px solid var(--warn); outline-offset: 2px; border-radius: 3px; }
+    }
 
     @media (max-width: 720px) {
       .paper { padding: 30px 22px 34px; }
@@ -144,16 +173,58 @@ import type { PreviewLine, PreviewModel } from './workspace.model';
   imports: [NgTemplateOutlet],
 })
 export class ResumePreview {
-  readonly model = input.required<PreviewModel>();
-  readonly edit = output<{ key: string; text: string }>();
+  private readonly host: ElementRef<HTMLElement> = inject(ElementRef);
 
-  protected readonly pop = signal<{ label: string; text: string; x: number; y: number } | null>(null);
+  readonly model = input.required<PreviewModel>();
+  /** The line key the container wants spotlighted (badge → jump). A change
+   *  scrolls that line into view and pulses it; null clears. */
+  readonly highlightKey = input<string | null>(null);
+  readonly edit = output<{ key: string; text: string }>();
+  /** The user confirmed an unrecorded line as their own evidence, carrying the
+   *  line's CURRENT text (which may be the payload's original, un-edited prose). */
+  readonly confirm = output<{ key: string; text: string }>();
+
+  protected readonly pop = signal<{
+    key: string;
+    status: LineStatus | null;
+    label: string;
+    text: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  /** Whether a line currently holds focus. Keeps the popover open on
+   *  `mouseleave` (so its confirm button stays reachable) — a hover-only popover
+   *  would vanish before the pointer crossed the gap to the button. */
+  private readonly focused = signal(false);
+  /** The element the popover is anchored to — read for the line's live text when
+   *  confirming (it may hold an un-blurred edit). */
+  private popEl: HTMLElement | null = null;
+
+  constructor() {
+    // Badge → line: scroll the targeted line into view and pulse it. Restarts
+    // the animation on each distinct key so cycling re-highlights.
+    effect(() => {
+      const key = this.highlightKey();
+      if (!key) return;
+      const el = this.host.nativeElement.querySelector<HTMLElement>(`[data-key="${cssAttr(key)}"]`);
+      if (!el) return;
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.classList.remove('pulse');
+      void el.offsetWidth; // force reflow so the animation replays
+      el.classList.add('pulse');
+      setTimeout(() => el.classList.remove('pulse'), 1700);
+    });
+  }
 
   protected showPop(line: PreviewLine, ev: Event): void {
     if (!line.prov) return;
     const el = ev.target as HTMLElement;
+    this.popEl = el;
     const r = el.getBoundingClientRect();
     this.pop.set({
+      key: line.key,
+      status: line.status,
       label: line.prov.label,
       text: line.prov.text,
       x: Math.min(r.left, window.innerWidth - 300),
@@ -161,8 +232,20 @@ export class ResumePreview {
     });
   }
 
+  protected onFocus(line: PreviewLine, ev: Event): void {
+    this.focused.set(true);
+    this.showPop(line, ev);
+  }
+
   protected hidePop(): void {
     this.pop.set(null);
+    this.popEl = null;
+  }
+
+  /** Pointer left a line: keep the popover if the line is still focused (so its
+   *  confirm button stays reachable); otherwise this was a hover, so dismiss. */
+  protected onLineLeave(): void {
+    if (!this.focused()) this.hidePop();
   }
 
   protected blurEl(ev: Event): void {
@@ -171,10 +254,29 @@ export class ResumePreview {
 
   /** Capture the edited text on blur; only emit when it actually changed. */
   protected onBlur(line: PreviewLine, ev: Event): void {
+    this.focused.set(false);
     this.hidePop();
     const text = ((ev.target as HTMLElement).innerText ?? '').trim();
     if (text && text !== line.text) {
       this.edit.emit({ key: line.key, text });
     }
   }
+
+  /** Confirm the currently-popover'd unrecorded line as evidence. The button's
+   *  `mousedown` preventDefault keeps the line focused (no blur), so its live
+   *  text is read here and emitted; the container records it to the dataset. */
+  protected confirmLine(): void {
+    const p = this.pop();
+    if (!p || p.status !== 'unrecorded') return;
+    const text = ((this.popEl?.innerText ?? '') || '').trim();
+    if (text) this.confirm.emit({ key: p.key, text });
+    this.hidePop();
+  }
+}
+
+/** Escape a line key for use inside a `[data-key="…"]` attribute selector. Keys
+ *  hold `:` and `-`, so a quoted value is enough once quotes/backslashes are
+ *  escaped — avoids depending on `CSS.escape` for the plain characters we emit. */
+function cssAttr(key: string): string {
+  return key.replace(/["\\]/g, '\\$&');
 }
