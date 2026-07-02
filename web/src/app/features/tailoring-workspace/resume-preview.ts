@@ -155,7 +155,11 @@ import type { LineStatus, PreviewLine, PreviewModel } from './workspace.model';
     .chip-skill[data-status='edited'] { border-color: color-mix(in oklch, var(--success) 50%, var(--border)); }
 
     .pop {
-      position: fixed; z-index: 60; max-width: 280px; background: var(--fg);
+      /* z 75: above the pending-edits bar (z 70) — this popover is the user's
+         ACTIVE focus (it carries the confirm-as-evidence button), so it outranks
+         the passive bar; a line near the viewport bottom must not put the
+         confirm button behind the bar's own click targets. */
+      position: fixed; z-index: 75; max-width: 280px; background: var(--fg);
       color: oklch(96% 0.01 80); padding: 11px 13px; border-radius: 9px;
       font-family: var(--font-body); font-size: 12.5px; line-height: 1.5;
       box-shadow: 0 12px 30px -12px color-mix(in oklch, var(--fg) 60%, transparent);

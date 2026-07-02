@@ -31,6 +31,7 @@ import { ResumePreview } from './resume-preview';
 import { PdfPreview } from './pdf-preview';
 import { ReviewerRail } from './reviewer-rail';
 import { RefineDrawer } from './refine-drawer';
+import { EditBar, type EditLogRow } from './edit-bar';
 import { CoverageMap } from '../../shared/coverage-map';
 import { ViewToggle } from '../../shared/view-toggle';
 import { ScorePanel } from '../../shared/score-panel';
@@ -76,7 +77,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
   selector: 'app-tailoring-workspace',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(document:keydown)': 'onKeydown($event)' },
-  imports: [RouterLink, ResumePreview, PdfPreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel],
+  imports: [RouterLink, ResumePreview, PdfPreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel, EditBar],
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
     <div class="ctxbar">
@@ -155,7 +156,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     } @else {
       <div class="work">
         <!-- ── left: preview / coverage ── -->
-        <section class="col-preview">
+        <section class="col-preview" [class.bar-open]="showEditBar()">
           <div class="pv-head">
             <app-view-toggle [selected]="view()" (change)="view.set($event)" />
 
@@ -247,71 +248,14 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                   (edit)="onEdit($event)"
                   (confirm)="onConfirmLine($event)"
                 />
+                <!-- The pending-edit actions (Undo / Record / Save) and the edit
+                     history now live in the slide-up sticky app-edit-bar below —
+                     this bar keeps only the mode concerns (fidelity + pixel link). -->
                 <div class="fidelity">
                   <span class="tag">HTML · editing</span>
                   <span>Live in-browser preview — edit any line. Facts stay identical to the</span>
                   <button class="btn btn-sm" type="button" (click)="previewMode.set('pixel')">pixel-perfect PDF</button>
-                  @if (editHistory().length > 0) {
-                    <button
-                      class="btn btn-sm"
-                      type="button"
-                      (click)="undoEdit()"
-                      [title]="'Undo last edit (' + editHistory().length + ' in history)'"
-                    >
-                      Undo ↩
-                    </button>
-                  }
-                  @if (editCount() > 0) {
-                    <button
-                      class="btn btn-sm btn-record"
-                      type="button"
-                      (click)="recordEdits()"
-                      [disabled]="recording()"
-                    >
-                      {{ recording() ? 'Recording…' : 'Record ' + editCount() + ' edit' + (editCount() === 1 ? '' : 's') + ' in your dataset' }}
-                    </button>
-                    <button
-                      class="btn btn-sm btn-save"
-                      type="button"
-                      title="Bake these edits into this build's canonical draft and re-render its PDFs"
-                      (click)="saveEdits()"
-                      [disabled]="saving()"
-                    >
-                      {{ saving() ? 'Saving…' : 'Save ' + editCount() + ' edit' + (editCount() === 1 ? '' : 's') + ' to this build' }}
-                    </button>
-                  }
                 </div>
-
-                <!-- Cross-session undo: the build's on-disk edit log. Each entry
-                     can be reverted (posts the inverse edit to the same endpoint). -->
-                @if (editLog().length > 0) {
-                  <details class="edit-log">
-                    <summary>Edit history ({{ editLog().length }})</summary>
-                    <ul>
-                      @for (entry of editLog(); track $index) {
-                        <li>
-                          <div class="el-row">
-                            <span class="el-target">{{ editTargetLabel(entry.target) }}</span>
-                            <span class="el-time">{{ editEntryTime(entry.at) }}</span>
-                            <button
-                              class="btn btn-sm el-revert"
-                              type="button"
-                              (click)="revertEdit(entry)"
-                              [disabled]="saving()"
-                            >
-                              Revert
-                            </button>
-                          </div>
-                          <div class="el-diff">
-                            <span class="el-prev">{{ truncate(entry.prev) }}</span>
-                            <span class="el-arrow" aria-hidden="true">→</span>
-                            <span class="el-next">{{ truncate(entry.next) }}</span>
-                          </div>
-                        </li>
-                      }
-                    </ul>
-                  </details>
-                }
               } @else {
                 <div class="panel muted">This build has no résumé payload to preview.</div>
               }
@@ -349,8 +293,27 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 
     <app-refine-drawer [objection]="drawer()" (close)="drawer.set(null)" (run)="runCopilot($event)" />
 
+    <!-- ── slide-up sticky pending-edits bar. Its single visibility rule is
+         showEditBar() (pending edits / undoable history, editing preview, no
+         modal up); hidden it is opacity-0 and pointer-events:none, so it can
+         stay mounted for the slide-out transition. ── -->
+    <app-edit-bar
+      [visible]="showEditBar()"
+      [editCount]="editCount()"
+      [canUndo]="editHistory().length > 0"
+      [recording]="recording()"
+      [saving]="saving()"
+      [logRows]="editLogRows()"
+      (undo)="undoEdit()"
+      (record)="recordEdits()"
+      (save)="saveEdits()"
+      (revert)="revertEdit($event)"
+    />
+
     @if (toast(); as t) {
-      <div class="toast on" role="status">{{ t }}</div>
+      <!-- "raised" lifts the toast clear of the pending-edits bar so it never
+           covers the bar's controls while the bar is slid in. -->
+      <div class="toast on" [class.raised]="showEditBar()" role="status">{{ t }}</div>
     }
   `,
   styles: `
@@ -420,34 +383,29 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 
     .fidelity { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
     .fidelity .tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; }
-    .btn-record { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); color: var(--accent); background: var(--accent-soft); }
-    .btn-record:hover:not(:disabled) { border-color: var(--accent); }
-    .btn-save { border-color: var(--accent); color: oklch(97% 0.02 40); background: var(--accent); }
-    .btn-save:hover:not(:disabled) { background: var(--accent-2); border-color: var(--accent-2); }
 
-    .edit-log { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); font-size: 12.5px; }
-    .edit-log > summary { cursor: pointer; padding: 9px 12px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); list-style: none; }
-    .edit-log > summary::-webkit-details-marker { display: none; }
-    .edit-log ul { list-style: none; margin: 0; padding: 4px 0; max-height: 260px; overflow-y: auto; }
-    .edit-log li { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
-    .edit-log li + li { border-top: 1px solid color-mix(in oklch, var(--border) 55%, transparent); }
-    .el-row { display: flex; align-items: center; gap: 10px; }
-    .el-target { font-weight: 600; color: var(--fg); }
-    .el-time { color: var(--faint); font-family: var(--font-mono); font-size: 11px; }
-    .el-revert { margin-left: auto; height: 24px; padding: 0 9px; font-size: 12px; }
-    .el-diff { display: flex; align-items: baseline; gap: 7px; color: var(--muted); flex-wrap: wrap; }
-    .el-prev { text-decoration: line-through; color: var(--faint); }
-    .el-next { color: var(--fg); }
+    /* Reserve room for the fixed pending-edits bar so it never permanently
+       covers the last preview line while it's slid in. */
+    .col-preview.bar-open { padding-bottom: 96px; }
 
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 22px; max-width: 62ch; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
     .muted { color: var(--muted); }
 
-    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 80; background: var(--fg); color: oklch(97% 0.01 80); padding: 12px 18px; border-radius: 11px; font-size: 13.5px; box-shadow: 0 16px 40px -16px color-mix(in oklch, var(--fg) 60%, transparent); }
+    /* pointer-events: none — a toast is a passive status flash; it must never
+       intercept clicks meant for what's beneath it (e.g. history-popover rows). */
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 80; pointer-events: none; background: var(--fg); color: oklch(97% 0.01 80); padding: 12px 18px; border-radius: 11px; font-size: 13.5px; box-shadow: 0 16px 40px -16px color-mix(in oklch, var(--fg) 60%, transparent); }
+    /* While the pending-edits bar is slid in (bottom: 18px + ~72px tall), lift
+       the toast above it — a toast must never cover the bar's controls. */
+    .toast.raised { bottom: 118px; }
 
     @media (max-width: 1080px) {
       .work { grid-template-columns: 1fr; }
       .col-preview { border-right: 0; border-bottom: 1px solid var(--border); padding: 4px 0 32px; }
       .col-work { position: static; padding: 26px 0 40px; }
+      /* Narrow widths let the bar's actions wrap to a second row (~120px tall):
+         reserve more room under the preview and lift the toast further. */
+      .col-preview.bar-open { padding-bottom: 156px; }
+      .toast.raised { bottom: 172px; }
     }
     @media (max-width: 720px) {
       .ctxbar { gap: 10px; }
@@ -539,6 +497,35 @@ export class TailoringWorkspace {
   protected readonly coverage = computed(() => this.coverageReport());
   /** The build's on-disk edit history (empty until an edit is saved into it). */
   protected readonly editLog = computed<EditLogEntry[]>(() => this.bundle()?.edit_log ?? []);
+
+  /** The ONE visibility rule for the slide-up pending-edits bar: there is
+   *  something to act on (pending edits OR undoable session history), we're in
+   *  the editable HTML preview, AND no modal surface is up — a fixed toolbar
+   *  must not float above (or stay interactive under) modal surfaces, so the
+   *  refine drawer and the copilot overlay / Q&A modal each hide it. Gates the
+   *  bar's slide-in, the preview's bottom padding, and the raised toast. */
+  protected readonly showEditBar = computed(
+    () =>
+      (this.editCount() > 0 || this.editHistory().length > 0) &&
+      this.view() === 'preview' &&
+      this.previewMode() === 'editing' &&
+      this.drawer() === null &&
+      !this.copilot.running() &&
+      !this.copilot.question(),
+  );
+
+  /** The build's on-disk edit log, pre-formatted for the bar's history popover.
+   *  The bar stays presentational — it renders these strings and emits the raw
+   *  `entry` back on Revert. */
+  protected readonly editLogRows = computed<EditLogRow[]>(() =>
+    this.editLog().map((e) => ({
+      label: this.editTargetLabel(e.target),
+      time: this.editEntryTime(e.at),
+      prevText: this.truncate(e.prev),
+      nextText: this.truncate(e.next),
+      entry: e,
+    })),
+  );
 
   protected readonly jobTitle = computed(
     () => this.jd()?.title ?? this.bundle()?.canonical?.target_title ?? 'Untitled build',
@@ -875,7 +862,8 @@ export class TailoringWorkspace {
     // The edited line is shown as "your own edit" locally; a later wave will
     // rebuild an edited canonical so the core can re-check the changed line too.
     void this.recompute();
-    this.showToast('Edit kept locally — not yet saved to your dataset.');
+    // No toast here: the pending-edits bar sliding up IS the "kept locally"
+    // signal, with the save/record affordances right on it.
   }
 
   /** Undo the most recent local edit. If the key wasn't overlaid before the edit
@@ -912,8 +900,44 @@ export class TailoringWorkspace {
    *  while a contenteditable line is focused, so we only claim Cmd/Ctrl+Z when the
    *  event target is NOT inside an editable line. */
   protected onKeydown(event: KeyboardEvent): void {
-    const isUndo =
-      (event.metaKey || event.ctrlKey) && !event.shiftKey && (event.key === 'z' || event.key === 'Z');
+    const mod = event.metaKey || event.ctrlKey;
+
+    // Cmd/Ctrl+S saves the pending edits into this build. Claimed only in the
+    // editable HTML preview — anywhere else the browser default stands.
+    if (mod && !event.shiftKey && (event.key === 's' || event.key === 'S')) {
+      if (this.view() !== 'preview' || this.previewMode() !== 'editing') return;
+      // A modal surface (refine drawer, copilot Q&A) is not an editor context:
+      // the bar hides there, and the shortcut it fronts must die with it — a
+      // save mid-drawer would reloadBundle() under the open dialog's feet.
+      // Plain return: the browser default stands, per this branch's philosophy.
+      if (this.drawer() !== null || this.copilot.running() || this.copilot.question()) return;
+      // Keydown auto-repeats while the chord is held: swallow repeats while a
+      // save/record is already in flight so we never fire concurrent POSTs —
+      // and never let the browser Save dialog pop mid-save.
+      if (this.saving() || this.recording()) {
+        event.preventDefault();
+        return;
+      }
+      // A focused line may hold an uncommitted edit, so check focus BEFORE
+      // counting: preventDefault first (we're in an editor context — hijacking
+      // Cmd+S is correct even if the commit turns out to be a no-op), then blur
+      // — the line's blur handler emits its edit synchronously — THEN evaluate
+      // editCount against the committed overlay.
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.isContentEditable) {
+        event.preventDefault();
+        active.blur();
+        if (this.editCount() === 0) return; // no-op commit — dialog already suppressed
+        void this.saveEdits();
+        return;
+      }
+      if (this.editCount() === 0) return; // nothing to save — default stands
+      event.preventDefault();
+      void this.saveEdits();
+      return;
+    }
+
+    const isUndo = mod && !event.shiftKey && (event.key === 'z' || event.key === 'Z');
     if (!isUndo) return;
     if ((event.target as HTMLElement | null)?.isContentEditable) return;
     if (this.editHistory().length === 0) return;
