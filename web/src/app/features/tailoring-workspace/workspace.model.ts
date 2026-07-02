@@ -18,7 +18,6 @@ import type {
 import type { LineLocation, LineProvenance, SourceRef, ProvenanceReport } from '../../models';
 import type { ResumeDataset } from '../../models';
 import type { VariantPayload } from '../../models';
-import type { GapReport } from '../../models';
 
 // ── provenance ──────────────────────────────────────────────────────────
 
@@ -276,37 +275,6 @@ export function buildObjectionVMs(
       copilot: copilotForScope(o.scope, copilot),
     };
   });
-}
-
-// ── coverage map ────────────────────────────────────────────────────────
-
-export type CoverageState = 'matched' | 'weak' | 'unmatched';
-
-export interface CoverageRow {
-  name: string;
-  state: CoverageState;
-  evidence: string | null;
-}
-
-export function buildCoverageRows(gap: GapReport | null): CoverageRow[] {
-  if (!gap) return [];
-  return [
-    ...gap.matched.map((m) => ({
-      name: m.jd_skill.name,
-      state: 'matched' as const,
-      evidence: `${m.dataset_name}${m.semantic ? ' (semantic match)' : ''}`,
-    })),
-    ...gap.weak.map((m) => ({
-      name: m.jd_skill.name,
-      state: 'weak' as const,
-      evidence: `partial: ${m.dataset_name}`,
-    })),
-    ...gap.unknown.map((s) => ({
-      name: s.name,
-      state: 'unmatched' as const,
-      evidence: null,
-    })),
-  ];
 }
 
 // ── scoring ─────────────────────────────────────────────────────────────

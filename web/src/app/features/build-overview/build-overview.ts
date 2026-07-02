@@ -1,17 +1,15 @@
 import { Component, computed, effect, inject, signal } from '@angular/core';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { map } from 'rxjs';
 
 import { BuildsStore } from '../../services/builds-store';
 import { ApiService } from '../../services/api.service';
 import { WasmService } from '../../services/wasm.service';
+import { CoverageMap } from '../../shared/coverage-map';
+import { ViewToggle } from '../../shared/view-toggle';
 import type {
   BuildDetail,
-  GapMatch,
-  GapReport,
-  JobRequirements,
-  SkillImportance,
   VariantPayload,
 } from '../../models';
 
@@ -30,25 +28,7 @@ interface WeightedCoverage {
   by_importance: { critical: TierCount; required: TierCount; preferred: TierCount };
 }
 
-type ReqState = 'exact' | 'semantic' | 'gap';
-
-/** One coverage-table row: a JD requirement paired with the dataset evidence (if
- *  any) that backs it. `intent` is the deep-link hint the tailoring screen reads. */
-interface ReqRow {
-  name: string;
-  importance: SkillImportance;
-  category: string;
-  context: string;
-  state: ReqState;
-  mark: string;
-  tag: string;
-  evidence: string;
-  action: string;
-  intent: 'matched' | 'semantic' | 'gap';
-}
-
 type Tier = 'high' | 'mid' | 'low';
-type CovFilter = 'all' | 'exact' | 'semantic' | 'gap';
 
 const MONTHS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -62,12 +42,13 @@ const MONTHS = [
  *  evidence coverage table, with a Coverage-map / Final-preview toggle. */
 @Component({
   selector: 'app-build-overview',
-  imports: [RouterLink],
+  imports: [RouterLink, CoverageMap, ViewToggle],
   templateUrl: './build-overview.html',
   styleUrl: './build-overview.css',
 })
 export class BuildOverview {
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
   private readonly api = inject(ApiService);
   private readonly wasm = inject(WasmService);
   protected readonly store = inject(BuildsStore);
@@ -85,15 +66,13 @@ export class BuildOverview {
 
   protected readonly detail = signal<BuildDetail | null>(null);
   protected readonly coverage = signal<WeightedCoverage | null>(null);
-  protected readonly rows = signal<ReqRow[]>([]);
   protected readonly loading = signal(true);
   protected readonly error = signal<string | null>(null);
 
   /** Animated count-up value for the headline number (0..100, whole percent). */
   protected readonly displayScore = signal(0);
 
-  protected readonly view = signal<'map' | 'preview'>('map');
-  protected readonly covFilter = signal<CovFilter>('all');
+  protected readonly view = signal<'coverage' | 'preview'>('coverage');
 
   private readonly reduceMotion =
     typeof matchMedia !== 'undefined' &&
@@ -126,29 +105,6 @@ export class BuildOverview {
   );
 
   protected readonly tier = computed<Tier>(() => bandTier(this.coverage()?.score ?? 0));
-
-  protected readonly counts = computed(() => {
-    const rows = this.rows();
-    return {
-      all: rows.length,
-      exact: rows.filter((r) => r.state === 'exact').length,
-      semantic: rows.filter((r) => r.state === 'semantic').length,
-      gap: rows.filter((r) => r.state === 'gap').length,
-    };
-  });
-
-  protected readonly visibleRows = computed(() => {
-    const f = this.covFilter();
-    const rows = this.rows();
-    if (f === 'all') return rows;
-    return rows.filter((r) => r.state === f);
-  });
-
-  protected readonly emptyFilterNote = computed(() =>
-    this.covFilter() === 'gap'
-      ? 'No gaps — every requirement is covered.'
-      : 'Nothing matches this filter.',
-  );
 
   /** The variant payload to project into the preview. Prefer the human variant,
    *  but most builds are rendered ATS-only, so fall back to the ATS payload —
@@ -192,12 +148,16 @@ export class BuildOverview {
 
   // ── interactions ──────────────────────────────────────────────────────
 
-  protected setView(mode: 'map' | 'preview'): void {
+  protected setView(mode: 'coverage' | 'preview'): void {
     this.view.set(mode);
   }
 
-  protected setFilter(f: CovFilter): void {
-    this.covFilter.set(f);
+  /** A coverage-map row's action → deep-link into the tailoring screen, carrying
+   *  the requirement name and match intent (matched / semantic / gap). */
+  protected onCovAct(e: { name: string; intent: 'matched' | 'semantic' | 'gap' }): void {
+    this.router.navigate(this.tailorLink(), {
+      queryParams: { focus: e.name, intent: e.intent },
+    });
   }
 
   protected retry(): void {
@@ -219,8 +179,7 @@ export class BuildOverview {
       next: (detail) => {
         if (token !== this.seq) return;
         this.detail.set(detail);
-        this.covFilter.set('all');
-        this.view.set('map');
+        this.view.set('coverage');
         this.computeCoverage(detail, token);
         this.loading.set(false);
       },
@@ -236,12 +195,10 @@ export class BuildOverview {
     const jd = detail.jd;
     const gap = detail.gap_report;
     if (!jd || !gap) {
-      this.rows.set([]);
       this.coverage.set(null);
       this.displayScore.set(0);
       return;
     }
-    this.rows.set(buildRows(jd, gap));
     try {
       const cov = (await this.wasm.weightedCoverage(
         gap,
@@ -296,39 +253,6 @@ function bandTier(score01: number): Tier {
   if (score01 >= 0.8) return 'high';
   if (score01 >= 0.6) return 'mid';
   return 'low';
-}
-
-/** Cross-reference every JD requirement against the gap report's matches. Solid
- *  matches (`matched`) are exact (green) or semantic (amber); `weak` matches are
- *  amber too; anything unmatched is a gap (red). Iteration order follows the JD
- *  (required first, then preferred) so the table reads like the posting. */
-function buildRows(jd: JobRequirements, gap: GapReport): ReqRow[] {
-  const matched = new Map<string, GapMatch>();
-  for (const m of gap.matched ?? []) matched.set(m.jd_skill.name, m);
-  const weak = new Map<string, GapMatch>();
-  for (const w of gap.weak ?? []) weak.set(w.jd_skill.name, w);
-
-  const skills = [...(jd.required_skills ?? []), ...(jd.preferred_skills ?? [])];
-  return skills.map((s) => {
-    const m = matched.get(s.name);
-    const w = weak.get(s.name);
-    const base = {
-      name: s.name,
-      importance: s.importance,
-      category: s.category,
-      context: s.context_phrases?.[0] ?? '',
-    };
-    if (m && !m.semantic) {
-      return { ...base, state: 'exact' as const, mark: '✓', tag: 'exact match', evidence: m.dataset_name, action: 'Refine', intent: 'matched' as const };
-    }
-    if (m) {
-      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'semantic match', evidence: m.dataset_name, action: 'Strengthen', intent: 'semantic' as const };
-    }
-    if (w) {
-      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'weak match', evidence: w.dataset_name, action: 'Strengthen', intent: 'semantic' as const };
-    }
-    return { ...base, state: 'gap' as const, mark: '✕', tag: `gap · ${s.category}`, evidence: 'No matching experience', action: 'Fill the gap', intent: 'gap' as const };
-  });
 }
 
 /** ISO timestamp → "Jun 25, 2026 · 14:22" (local time). Falls back to the raw

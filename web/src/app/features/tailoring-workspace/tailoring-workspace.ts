@@ -23,20 +23,19 @@ import type {
 } from '../../models';
 
 import { ResumePreview } from './resume-preview';
-import { CoverageMap } from './coverage-map';
 import { ReviewerRail } from './reviewer-rail';
 import { RefineDrawer } from './refine-drawer';
+import { CoverageMap } from '../../shared/coverage-map';
+import { ViewToggle } from '../../shared/view-toggle';
 import { CoverageScore } from '../../shared/coverage-score';
 import {
   band,
-  buildCoverageRows,
   buildObjectionVMs,
   buildPreviewModel,
   objectionId,
   pct,
   provenanceIndex,
   targetKey,
-  type CoverageRow,
   type ObjectionVM,
   type PreviewModel,
 } from './workspace.model';
@@ -57,7 +56,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 @Component({
   selector: 'app-tailoring-workspace',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, ResumePreview, CoverageMap, ReviewerRail, RefineDrawer, CoverageScore],
+  imports: [RouterLink, ResumePreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, CoverageScore],
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
     <div class="ctxbar">
@@ -96,20 +95,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
         <!-- ── left: preview / coverage ── -->
         <section class="col-preview">
           <div class="pv-head">
-            <div class="segmented" role="tablist" aria-label="View mode">
-              <button type="button" role="tab" [attr.aria-selected]="view() === 'coverage'" [class.on]="view() === 'coverage'" (click)="view.set('coverage')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <path d="M9 3H5a2 2 0 0 0-2 2v4M15 3h4a2 2 0 0 1 2 2v4M9 21H5a2 2 0 0 1-2-2v-4M15 21h4a2 2 0 0 0 2-2v-4" />
-                </svg>
-                Coverage map
-              </button>
-              <button type="button" role="tab" [attr.aria-selected]="view() === 'preview'" [class.on]="view() === 'preview'" (click)="view.set('preview')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <path d="M4 3h11l5 5v13H4z" /><path d="M15 3v5h5M8 13h8M8 17h8" />
-                </svg>
-                Final preview
-              </button>
-            </div>
+            <app-view-toggle [selected]="view()" (change)="view.set($event)" />
 
             <div class="cc-wrap">
               <button class="claimcheck" [attr.data-state]="claimState()" (click)="runClaimCheck()" [attr.aria-busy]="claimState() === 'checking'">
@@ -149,7 +135,11 @@ type ClaimState = 'ok' | 'checking' | 'flag';
               <div class="panel muted">This build has no résumé payload to preview.</div>
             }
           } @else {
-            <app-coverage-map [rows]="coverageRows()" />
+            <app-coverage-map
+              [jd]="jd()"
+              [gap]="bundle()?.gap_report ?? null"
+              (act)="onCovAct($event)"
+            />
           }
         </section>
 
@@ -204,12 +194,6 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     .col-work { padding: 4px 0 40px 26px; position: sticky; top: 76px; }
 
     .pv-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-    .segmented { display: inline-flex; padding: 3px; gap: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; }
-    .segmented button { display: inline-flex; align-items: center; gap: 7px; padding: 7px 15px; border: 0; border-radius: 999px; background: transparent; font: inherit; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; transition: background 0.15s, color 0.15s, box-shadow 0.15s; }
-    .segmented button svg { width: 14px; height: 14px; }
-    .segmented button.on { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 12%, transparent); }
-    .segmented button:not(.on):hover { color: var(--fg); }
-    .segmented button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     .cc-wrap { position: relative; display: inline-flex; align-items: center; gap: 6px; }
     .claimcheck { display: inline-flex; align-items: center; gap: 9px; padding: 7px 13px; border-radius: 999px; cursor: pointer; font-family: var(--font-mono); font-size: 12px; border: 1px solid; background: var(--surface-2); color: var(--muted); }
@@ -250,7 +234,7 @@ export class TailoringWorkspace {
   readonly id = input.required<string>();
 
   // ── raw loaded data ──────────────────────────────────────────────────
-  private readonly bundle = signal<BuildBundle | null>(null);
+  protected readonly bundle = signal<BuildBundle | null>(null);
   private readonly dataset = signal<ResumeDataset | null>(null);
   protected readonly loading = signal(true);
   protected readonly error = signal<string | null>(null);
@@ -274,7 +258,7 @@ export class TailoringWorkspace {
   protected readonly toast = this._toast.asReadonly();
 
   // ── derived view state ───────────────────────────────────────────────
-  private readonly jd = computed<JobRequirements | null>(() => this.bundle()?.jd ?? null);
+  protected readonly jd = computed<JobRequirements | null>(() => this.bundle()?.jd ?? null);
   protected readonly report = computed<AdversarialReport | null>(() => this.bundle()?.adversarial_report ?? null);
   protected readonly coverage = computed(() => this.coverageReport());
 
@@ -305,10 +289,6 @@ export class TailoringWorkspace {
       return null;
     }
   });
-
-  protected readonly coverageRows = computed<CoverageRow[]>(() =>
-    buildCoverageRows(this.bundle()?.gap_report ?? null),
-  );
 
   protected readonly objectionVMs = computed<ObjectionVM[]>(() =>
     buildObjectionVMs(this.report()?.objections ?? [], this.previewPayload(), this.dataset()),
@@ -475,6 +455,24 @@ export class TailoringWorkspace {
 
   protected onRefine(o: ObjectionVM): void {
     this.drawer.set(o);
+  }
+
+  /** A coverage-map row's action. If an open objection already targets this
+   *  requirement, open its refine drawer; otherwise flag that targeted refine
+   *  for a bare requirement lands in the interactive pass (rather than fabricate
+   *  an ObjectionVM the drawer can't drive). */
+  protected onCovAct(e: { name: string; intent: 'matched' | 'semantic' | 'gap' }): void {
+    const needle = e.name.toLowerCase();
+    const match = this.objectionVMs().find(
+      (o) =>
+        o.targetLabel.toLowerCase().includes(needle) ||
+        (o.flaggedText?.toLowerCase().includes(needle) ?? false),
+    );
+    if (match) {
+      this.drawer.set(match);
+    } else {
+      this.showToast(`Targeted refine for “${e.name}” is coming in the interactive pass.`);
+    }
   }
 
   /** Accept as intentional → append a `DismissedObjection` to the dataset and

@@ -113,118 +113,21 @@
   <!-- ── section row + view toggle ── -->
   <div class="section-row">
     <div class="section-title">
-      <h3>{{ view() === 'map' ? 'Requirements coverage' : 'Final preview' }}</h3>
-      @if (view() === 'map' && coverage(); as cov) {
+      <h3>{{ view() === 'coverage' ? 'Requirements coverage' : 'Final preview' }}</h3>
+      @if (view() === 'coverage' && coverage(); as cov) {
         <span class="st-note">{{ cov.matched }}/{{ cov.total }} matched · weighted by importance</span>
       }
     </div>
-    <div class="segmented" role="tablist" aria-label="View mode">
-      <button
-        type="button"
-        role="tab"
-        [class.on]="view() === 'map'"
-        [attr.aria-selected]="view() === 'map'"
-        (click)="setView('map')"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path d="M9 3H5a2 2 0 0 0-2 2v4M15 3h4a2 2 0 0 1 2 2v4M9 21H5a2 2 0 0 1-2-2v-4M15 21h4a2 2 0 0 0 2-2v-4" />
-        </svg>
-        Coverage map
-      </button>
-      <button
-        type="button"
-        role="tab"
-        [class.on]="view() === 'preview'"
-        [attr.aria-selected]="view() === 'preview'"
-        (click)="setView('preview')"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <path d="M4 3h11l5 5v13H4z" /><path d="M15 3v5h5M8 13h8M8 17h8" />
-        </svg>
-        Final preview
-      </button>
-    </div>
+    <app-view-toggle [selected]="view()" (change)="setView($event)" />
   </div>
 
   <!-- ── coverage map ── -->
-  @if (view() === 'map') {
-    @if (rows().length === 0) {
-      <div class="cov-map anim-fade">
-        <div class="cov-empty">
-          This build has no parsed requirements to map yet.
-        </div>
-      </div>
-    } @else {
-      <div class="cov-map anim-fade">
-        <div class="cm-head">
-          <div><span>Job requirement</span></div>
-          <div>
-            <span>Your background</span>
-            <span class="legend">
-              <span class="lg"><i style="background: var(--success)"></i>exact</span>
-              <span class="lg"><i style="background: var(--warn)"></i>semantic</span>
-              <span class="lg"><i style="background: var(--danger)"></i>gap</span>
-            </span>
-          </div>
-        </div>
-
-        <div class="cov-filter" role="group" aria-label="Filter requirements">
-          <span class="fl-label">Filter</span>
-          <button type="button" class="cov-chip" [class.on]="covFilter() === 'all'" (click)="setFilter('all')">
-            All <span class="fl-n">{{ counts().all }}</span>
-          </button>
-          <button type="button" class="cov-chip" data-t="exact" [class.on]="covFilter() === 'exact'" (click)="setFilter('exact')">
-            <span class="fl-dot"></span>Matched <span class="fl-n">{{ counts().exact }}</span>
-          </button>
-          <button type="button" class="cov-chip" data-t="semantic" [class.on]="covFilter() === 'semantic'" (click)="setFilter('semantic')">
-            <span class="fl-dot"></span>Weak <span class="fl-n">{{ counts().semantic }}</span>
-          </button>
-          <button type="button" class="cov-chip" data-t="gap" [class.on]="covFilter() === 'gap'" (click)="setFilter('gap')">
-            <span class="fl-dot"></span>Gaps <span class="fl-n">{{ counts().gap }}</span>
-          </button>
-        </div>
-
-        @for (r of visibleRows(); track r.name) {
-          <div class="req-row" [class]="r.state" [attr.data-t]="r.state">
-            <div class="rq-left">
-              <div class="req-top">
-                <span class="req-name">{{ r.name }}</span>
-                <span class="imp" [attr.data-imp]="r.importance">{{ r.importance }}</span>
-              </div>
-              @if (r.context) {
-                <div class="req-ctx">{{ r.context }}</div>
-              }
-            </div>
-            <div class="rq-right">
-              <div class="ev">
-                <span class="ev-mark" aria-hidden="true">{{ r.mark }}</span>
-                <span class="ev-name">{{ r.evidence }}</span>
-              </div>
-              <div class="ev-tag">{{ r.tag }}</div>
-              <a
-                class="cov-act"
-                [routerLink]="tailorLink()"
-                [queryParams]="{ focus: r.name, intent: r.intent }"
-                [attr.title]="'Open targeted tailoring for ' + r.name"
-              >
-                {{ r.action }}
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-              </a>
-            </div>
-          </div>
-        } @empty {
-          <div class="cov-empty">{{ emptyFilterNote() }}</div>
-        }
-
-        <div class="cm-foot">
-          <span style="color: var(--success)"><b style="color: var(--success)">{{ counts().exact }}</b> exact</span>
-          <span style="color: var(--warn)"><b style="color: var(--warn)">{{ counts().semantic }}</b> semantic</span>
-          <span style="color: var(--danger)"><b style="color: var(--danger)">{{ counts().gap }}</b> gaps</span>
-        </div>
-      </div>
-    }
+  @if (view() === 'coverage') {
+    <app-coverage-map
+      [jd]="detail()?.jd ?? null"
+      [gap]="detail()?.gap_report ?? null"
+      (act)="onCovAct($event)"
+    />
   } @else {
     <!-- ── final preview ── -->
     @if (previewDoc(); as p) {
