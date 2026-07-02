@@ -10,7 +10,7 @@ type TypeFilter = ObjectionVM['type'];
 /** The right rail: the reviewer's verdict (persona notes + the overall score as
  *  a rail number, not the headline) and the objection cards with multi-select
  *  status/type facets. Triage actions bubble to the container: Refine it opens a
- *  copilot placeholder, Accept persists a dismissal, Leave it is session-local. */
+ *  runs the copilot, Accept persists a dismissal, Leave it is session-local. */
 @Component({
   selector: 'app-reviewer-rail',
   changeDetection: ChangeDetectionStrategy.OnPush,
