@@ -126,9 +126,21 @@ import type { LineStatus, PreviewLine, PreviewModel } from './workspace.model';
 
     /* editable + provenance-marked lines */
     .prov { border-bottom: 1px dotted color-mix(in oklch, var(--accent) 45%, var(--border)); cursor: text; }
-    .prov[data-status='unrecorded'] { border-bottom-color: color-mix(in oklch, var(--warn) 60%, var(--border)); }
+    /* Unrecorded lines are THE lines to track — give them a highlighter wash,
+       not just a tinted underline, so they read at a glance. Background-only
+       (no pseudo-content) keeps the contenteditable caret and text reads safe;
+       box-decoration-break keeps the wash continuous across wrapped lines. */
+    .prov[data-status='unrecorded'] {
+      background: color-mix(in oklch, var(--warn) 14%, transparent);
+      border-bottom: 2px solid color-mix(in oklch, var(--warn) 80%, var(--border));
+      border-radius: 3px;
+      padding: 1px 3px;
+      -webkit-box-decoration-break: clone;
+      box-decoration-break: clone;
+    }
     .prov[data-status='edited'] { border-bottom-color: color-mix(in oklch, var(--success) 55%, var(--border)); }
     .prov:hover { background: var(--accent-soft); border-radius: 2px; }
+    .prov[data-status='unrecorded']:hover { background: color-mix(in oklch, var(--warn) 22%, transparent); }
     .prov:focus { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; background: var(--accent-soft); }
     .chip-skill {
       display: inline-block; font-family: var(--font-body); font-size: 12.5px; color: var(--fg);
@@ -136,7 +148,10 @@ import type { LineStatus, PreviewLine, PreviewModel } from './workspace.model';
       padding: 3px 10px; margin: 0 5px 6px 0;
     }
     .chip-skill:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .chip-skill[data-status='unrecorded'] { border-color: color-mix(in oklch, var(--warn) 50%, var(--border)); }
+    .chip-skill[data-status='unrecorded'] {
+      border-color: color-mix(in oklch, var(--warn) 70%, var(--border));
+      background: color-mix(in oklch, var(--warn) 14%, var(--surface-2));
+    }
     .chip-skill[data-status='edited'] { border-color: color-mix(in oklch, var(--success) 50%, var(--border)); }
 
     .pop {
