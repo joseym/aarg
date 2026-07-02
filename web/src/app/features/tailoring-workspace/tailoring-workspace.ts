@@ -14,6 +14,7 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../services/api.service';
 import { WasmService } from '../../services/wasm.service';
 import { CopilotHost } from '../../shared/copilot-host';
+import { BuildRunner } from '../../services/build-runner';
 import type {
   AdversarialReport,
   BuildDetail,
@@ -102,6 +103,15 @@ type ClaimState = 'ok' | 'checking' | 'flag';
         </div>
       </div>
       <div class="spacer"></div>
+      <button
+        class="btn"
+        type="button"
+        title="Regenerate this résumé with your current evidence"
+        (click)="retailor()"
+        [disabled]="copilot.running()"
+      >
+        Retailor ↻
+      </button>
       <button class="btn" type="button" (click)="downloadPdf()" [disabled]="downloading()">
         {{ downloading() ? 'Rendering…' : 'Download PDF' }}
       </button>
@@ -292,7 +302,8 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 export class TailoringWorkspace {
   private readonly api = inject(ApiService);
   private readonly wasm = inject(WasmService);
-  private readonly copilot = inject(CopilotHost);
+  protected readonly copilot = inject(CopilotHost);
+  private readonly buildRunner = inject(BuildRunner);
 
   readonly id = input.required<string>();
 
@@ -849,6 +860,39 @@ export class TailoringWorkspace {
         this.showToast(msg);
       },
     });
+  }
+
+  // ── retailor ─────────────────────────────────────────────────────────
+  /** Regenerate this build's résumé: re-run the adversarial loop for the same
+   *  JD against the user's *current* (possibly copilot-enriched) dataset via the
+   *  shared {@link BuildRunner}, saving a fresh build and navigating to it. The
+   *  overlay refuses a concurrent run; every failure surfaces a toast, never a
+   *  dead spinner. */
+  protected async retailor(): Promise<void> {
+    if (this.copilot.running()) {
+      this.showToast('A copilot is already running — finish or dismiss it first.');
+      return;
+    }
+    const jd = this.bundle()?.jd;
+    if (!jd) {
+      this.showToast('This build has no parsed job description to retailor.');
+      return;
+    }
+    try {
+      let dataset: ResumeDataset;
+      try {
+        dataset = await firstValueFrom(this.api.getDataset());
+      } catch (err) {
+        if (err instanceof HttpErrorResponse && err.status === 404) {
+          this.showToast('No dataset yet.');
+          return;
+        }
+        throw err;
+      }
+      await this.buildRunner.runAndSave(jd, dataset, 'Retailor');
+    } catch (err) {
+      this.showToast(errMessage(err));
+    }
   }
 
   // ── download ─────────────────────────────────────────────────────────

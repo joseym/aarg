@@ -1,24 +1,29 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
-import { Router } from '@angular/router';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
 import { WasmService } from '../../services/wasm.service';
 import { CopilotHost } from '../../shared/copilot-host';
-import type {
-  AdversarialReport,
-  TailoredResume,
-  TokenUsage,
-  VariantPayload,
-} from '../../models';
+import { BuildRunner } from '../../services/build-runner';
+import { BuildsStore } from '../../services/builds-store';
+import type { JobRequirements } from '../../models';
 
-/** `/new` — the New-Build screen. Paste (or fetch) a job description, then run
- *  the full adversarial tailor loop entirely in the browser: parse the JD →
- *  analyze the gap → drive the capped tailor/review/revise loop → project the
- *  human variant, and persist the result via `POST /api/builds`. The live
- *  iteration/score/cost overlay is the shared {@link CopilotHost} progress panel
- *  — running the loop inside `runWithUi` lights it up for free.
+/** Which of the three mutually-exclusive JD sources is active. */
+type JdSource = 'paste' | 'url' | 'reuse';
+
+/** `/new` — the New-Build screen. Pick a job description one of three ways —
+ *  paste it, fetch it from a URL, or reuse a previous build's parsed JD — then
+ *  run the full adversarial tailor loop entirely in the browser via the shared
+ *  {@link BuildRunner}: analyze the gap → drive the capped tailor/review/revise
+ *  loop → project the human variant, and persist the result via `POST /api/builds`.
+ *  The live iteration/score/cost overlay is the shared {@link CopilotHost}
+ *  progress panel — {@link BuildRunner} runs the loop inside `runWithUi`, which
+ *  lights it up for free.
+ *
+ *  Reusing a previous JD is a *retailor*: the same posting, re-run against your
+ *  current (possibly copilot-enriched) dataset — the one code path New Build and
+ *  the per-build Retailor button both share.
  *
  *  This is the same loop `aarg tailor` runs, live. It can't be cancelled mid-run
  *  yet — the loop exposes no stop seam — so the UI says so plainly and simply
@@ -42,79 +47,110 @@ import type {
 
       <!-- ── JD source ── -->
       <section class="field">
-        <label class="lbl" for="jd">Job description</label>
-        <div class="url-row">
-          <input
-            id="jd-url"
-            class="in"
-            type="url"
-            inputmode="url"
-            placeholder="https://… paste a posting URL to fetch"
-            [value]="url()"
-            (input)="url.set(asValue($event))"
-            [disabled]="running()"
-          />
+        <label class="lbl">Job description</label>
+
+        <!-- three mutually-exclusive sources -->
+        <div class="seg" role="tablist" aria-label="Job description source">
           <button
-            class="btn"
+            class="seg-btn"
             type="button"
-            (click)="fetchJd()"
-            [disabled]="running() || fetching() || !url().trim()"
+            role="tab"
+            [attr.aria-selected]="source() === 'paste'"
+            [class.on]="source() === 'paste'"
+            (click)="source.set('paste')"
+            [disabled]="running()"
           >
-            {{ fetching() ? 'Fetching…' : 'Fetch' }}
+            Paste
+          </button>
+          <button
+            class="seg-btn"
+            type="button"
+            role="tab"
+            [attr.aria-selected]="source() === 'url'"
+            [class.on]="source() === 'url'"
+            (click)="source.set('url')"
+            [disabled]="running()"
+          >
+            URL
+          </button>
+          <button
+            class="seg-btn"
+            type="button"
+            role="tab"
+            [attr.aria-selected]="source() === 'reuse'"
+            [class.on]="source() === 'reuse'"
+            (click)="source.set('reuse')"
+            [disabled]="running()"
+          >
+            Reuse a previous build
           </button>
         </div>
-        <textarea
-          id="jd"
-          class="ta"
-          rows="12"
-          placeholder="…or paste the full job description here."
-          [value]="jdText()"
-          (input)="jdText.set(asValue($event))"
-          [disabled]="running()"
-        ></textarea>
-      </section>
 
-      <!-- ── advanced (collapsible) ── -->
-      <details class="adv">
-        <summary>Advanced</summary>
-        <div class="adv-grid">
-          <label class="adv-field">
-            <span>Revisions</span>
+        @if (source() === 'url') {
+          <div class="url-row">
             <input
-              class="in sm"
-              type="number"
-              min="0"
-              max="5"
-              step="1"
-              [value]="revisions()"
-              (input)="revisions.set(asNumber($event, 2))"
+              id="jd-url"
+              class="in"
+              type="url"
+              inputmode="url"
+              placeholder="https://… paste a posting URL to fetch"
+              [value]="url()"
+              (input)="url.set(asValue($event))"
               [disabled]="running()"
             />
-          </label>
-          <label class="adv-field">
-            <span>Acceptable score</span>
-            <input
-              class="in sm"
-              type="number"
-              min="0"
-              max="1"
-              step="0.05"
-              [value]="acceptableScore()"
-              (input)="acceptableScore.set(asNumber($event, 0.85))"
+            <button
+              class="btn"
+              type="button"
+              (click)="fetchJd()"
+              [disabled]="running() || fetching() || !url().trim()"
+            >
+              {{ fetching() ? 'Fetching…' : 'Fetch' }}
+            </button>
+          </div>
+        }
+
+        @if (source() === 'reuse') {
+          @if (builds().length > 0) {
+            <select
+              class="in reuse"
+              aria-label="Reuse a previous build's job description"
+              [value]="selectedBuildId()"
+              (change)="selectedBuildId.set(asValue($event))"
               [disabled]="running()"
-            />
-          </label>
-        </div>
-      </details>
+            >
+              <option value="" disabled>Pick a previous build to retailor…</option>
+              @for (b of builds(); track b.id) {
+                <option [value]="b.id">{{ b.target }}</option>
+              }
+            </select>
+            <p class="note">
+              Retailors the chosen posting against your current, possibly
+              copilot-enriched dataset — the same loop, fresh evidence.
+            </p>
+          } @else {
+            <p class="note">No previous builds yet — paste or fetch a posting instead.</p>
+          }
+        } @else {
+          <textarea
+            id="jd"
+            class="ta"
+            rows="12"
+            placeholder="…paste the full job description here."
+            [value]="jdText()"
+            (input)="jdText.set(asValue($event))"
+            [disabled]="running()"
+          ></textarea>
+        }
+      </section>
 
       <div class="actions">
         <button
           class="btn btn-primary"
           type="button"
           (click)="runBuild()"
-          [disabled]="running() || !jdText().trim()"
+          [disabled]="running() || !canRun()"
         >
-          {{ running() ? 'Running…' : 'Run build' }}
+          {{ running() ? 'Running…' : source() === 'reuse' ? 'Retailor' : 'Run build' }}
         </button>
         <p class="note">
           Runs live and can’t be cancelled mid-run yet — the loop has no stop
@@ -153,11 +189,13 @@ import type {
     .ta:disabled { opacity: 0.6; }
     .ta::placeholder { color: var(--faint); }
 
-    .adv { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 4px 14px; }
-    .adv summary { cursor: pointer; font-size: 13.5px; color: var(--muted); padding: 8px 0; }
-    .adv summary:hover { color: var(--fg); }
-    .adv-grid { display: flex; gap: 24px; padding: 6px 0 14px; flex-wrap: wrap; }
-    .adv-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+    .seg { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); align-self: flex-start; flex-wrap: wrap; }
+    .seg-btn { height: 30px; padding: 0 13px; border: 0; border-radius: calc(var(--radius) - 2px); background: transparent; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+    .seg-btn:hover:not(:disabled):not(.on) { color: var(--fg); }
+    .seg-btn.on { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+    .seg-btn:disabled { opacity: 0.6; cursor: default; }
+    .seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .in.reuse { width: 100%; }
 
     .actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
     .note { color: var(--faint); font-size: 12.5px; line-height: 1.5; margin: 0; max-width: 48ch; }
@@ -176,17 +214,34 @@ export class NewBuild {
   private readonly api = inject(ApiService);
   private readonly wasm = inject(WasmService);
   private readonly copilot = inject(CopilotHost);
-  private readonly router = inject(Router);
+  private readonly buildRunner = inject(BuildRunner);
+  private readonly buildsStore = inject(BuildsStore);
 
+  /** Which JD source is active — paste, URL fetch, or reuse a previous build. */
+  protected readonly source = signal<JdSource>('paste');
   protected readonly jdText = signal('');
   protected readonly url = signal('');
-  protected readonly revisions = signal(2);
-  protected readonly acceptableScore = signal(0.85);
+  /** The previous build whose parsed JD to reuse (retailor). */
+  protected readonly selectedBuildId = signal('');
+
+  /** Past builds to pick from in the reuse source. */
+  protected readonly builds = this.buildsStore.builds;
 
   protected readonly running = signal(false);
   protected readonly fetching = signal(false);
   private readonly _toast = signal<string | null>(null);
   protected readonly toast = this._toast.asReadonly();
+
+  /** The Run button is enabled only when the active source has an input. */
+  protected readonly canRun = computed(() =>
+    this.source() === 'reuse' ? !!this.selectedBuildId() : !!this.jdText().trim(),
+  );
+
+  constructor() {
+    // The sidebar loads the list at app start, but land here directly (or on a
+    // fresh reload) and it may be empty — load it so the reuse picker has data.
+    if (this.builds().length === 0) this.buildsStore.load();
+  }
 
   /** Fetch a cross-origin posting server-side and drop it into the textarea. */
   protected fetchJd(): void {
@@ -205,15 +260,15 @@ export class NewBuild {
     });
   }
 
-  /** Run the full adversarial loop in-browser, then persist the build. Every
-   *  failure (including "no dataset" and a missing LLM credential surfacing as an
-   *  `/api/llm` error) surfaces a toast and re-enables the form — never a dead
-   *  spinner. */
+  /** Resolve the JD from the active source, then hand off to {@link BuildRunner}
+   *  (the shared gap → loop → project → persist → navigate path). Every failure
+   *  — "no dataset", a reused build with no parsed JD, a concurrent-run refusal
+   *  from `runWithUi`, or a missing LLM credential surfacing as an `/api/llm`
+   *  error — surfaces a toast and re-enables the form, never a dead spinner. */
   protected async runBuild(): Promise<void> {
-    const jdText = this.jdText().trim();
     // Don't start a build while any copilot (here or in the tailoring workspace)
     // holds the shared modal — a concurrent run would hang it (CopilotHost.ask).
-    if (!jdText || this.running() || this.copilot.running()) return;
+    if (this.running() || !this.canRun() || this.copilot.running()) return;
 
     this.running.set(true);
     try {
@@ -228,32 +283,20 @@ export class NewBuild {
         throw err;
       }
 
-      const id = await this.copilot.runWithUi('New build', async () => {
-        const jd = await this.wasm.parseJd(jdText);
-        const gap = await this.wasm.analyzeGapLlm(jd, dataset);
-        const loop = await this.wasm.tailorLoop(dataset, jd, gap, {
-          revisions: this.revisions(),
-          acceptable_score: this.acceptableScore(),
-        });
-        // ATS is re-projected server-side by the endpoint (never trusting a
-        // client-supplied one), so only the LLM-reworded human variant is sent.
-        const human = await this.wasm.projectHuman(loop.resume, dataset, jd);
-
-        const created = await firstValueFrom(
-          this.api.createBuild({
-            jd,
-            gap_report: gap,
-            canonical: loop.resume as TailoredResume,
-            adversarial_report: loop['report'] as AdversarialReport,
-            human_payload: human as VariantPayload,
-            model: this.wasm.models.model,
-            usage: loop['usage'] as TokenUsage,
-          }),
-        );
-        return created.id;
-      });
-
-      await this.router.navigate(['/build', id, 'tailor']);
+      if (this.source() === 'reuse') {
+        // Retailor: reuse the chosen build's already-parsed JD (no re-parse) and
+        // run it against the current dataset via the shared path.
+        const detail = await firstValueFrom(this.api.getBuild(this.selectedBuildId()));
+        const jd = detail.jd;
+        if (!jd) {
+          this.showToast('That build has no parsed job description to reuse.');
+          return;
+        }
+        await this.buildRunner.runAndSave(jd, dataset, 'Retailor');
+      } else {
+        const jd: JobRequirements = await this.wasm.parseJd(this.jdText().trim());
+        await this.buildRunner.runAndSave(jd, dataset);
+      }
     } catch (err) {
       this.showToast(errMessage(err));
     } finally {
@@ -262,12 +305,7 @@ export class NewBuild {
   }
 
   protected asValue(ev: Event): string {
-    return (ev.target as HTMLInputElement | HTMLTextAreaElement).value;
-  }
-
-  protected asNumber(ev: Event, fallback: number): number {
-    const v = Number((ev.target as HTMLInputElement).value);
-    return Number.isFinite(v) ? v : fallback;
+    return (ev.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value;
   }
 
   private showToast(msg: string): void {
