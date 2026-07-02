@@ -135,7 +135,15 @@ export class PdfPreview {
         next: (blob) => {
           if (id !== this.reqId) return; // superseded — drop it, nothing allocated yet
           const blobUrl = URL.createObjectURL(blob);
-          const safe = this.sanitizer.bypassSecurityTrustResourceUrl(blobUrl);
+          // Chrome/PDFium honours PDF open parameters on blob URLs: this fragment
+          // hides the viewer's dark toolbar and thumbnail nav pane and fits the
+          // page to width, so the preview reads as the *document* rather than a
+          // browser PDF viewer. Append to the URL *string* before sanitizing so
+          // the fragment survives into the SafeResourceUrl; keep the bare
+          // `blobUrl` (no fragment) for `URL.revokeObjectURL`, which keys on it.
+          const safe = this.sanitizer.bypassSecurityTrustResourceUrl(
+            `${blobUrl}#toolbar=0&navpanes=0&view=FitH`,
+          );
           this.cache.set(key, { blobUrl, safe });
           this.url.set(safe);
           this.rendering.set(false);

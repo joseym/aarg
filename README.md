@@ -121,7 +121,7 @@ on a phone, too:
 <p align="center">
   <img src="docs/screenshots/mobile.png" alt="The same build screen on a narrow phone viewport" width="300">
   &nbsp;&nbsp;
-  <img src="docs/screenshots/coverage.png" alt="The coverage map: each posting requirement marked exact match, semantic match, or gap, with a per-requirement action" width="300">
+  <img src="docs/screenshots/coverage.png" alt="The coverage map on a phone: each posting requirement is a state-railed card marked exact match, semantic match, or gap, with a per-requirement action" width="300">
 </p>
 
 ## It won't make things up
