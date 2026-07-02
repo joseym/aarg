@@ -1,0 +1,212 @@
+{
+  "company": "Helios AI",
+  "title": "Director, Software Engineering",
+  "seniority": "director",
+  "location": "San Jose, CA",
+  "remote": "remote",
+  "domain_keywords": [
+    "generative AI",
+    "AI inference serving",
+    "large language models",
+    "enterprise AI",
+    "AI infrastructure",
+    "high-performance computing",
+    "foundation models",
+    "LLM workloads"
+  ],
+  "required_skills": [
+    {
+      "name": "Engineering team leadership and management",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "Lead a high-performing team of engineers while remaining a hands-on technical contributor",
+        "2+ years leading and managing engineering teams",
+        "manage, develop, and hire strong engineers"
+      ]
+    },
+    {
+      "name": "Backend systems development",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong technical depth in backend systems built with Python, Go, or Rust"
+      ]
+    },
+    {
+      "name": "Kubernetes",
+      "category": "tool",
+      "importance": "critical",
+      "context_phrases": [
+        "Solid understanding of Kubernetes, distributed systems principles, and building scalable, reliable services"
+      ]
+    },
+    {
+      "name": "Distributed systems",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Solid understanding of Kubernetes, distributed systems principles, and building scalable, reliable services"
+      ]
+    },
+    {
+      "name": "Python",
+      "category": "language",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong technical depth in backend systems built with Python, Go, or Rust"
+      ]
+    },
+    {
+      "name": "Go",
+      "category": "language",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong technical depth in backend systems built with Python, Go, or Rust"
+      ]
+    },
+    {
+      "name": "Rust",
+      "category": "language",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong technical depth in backend systems built with Python, Go, or Rust"
+      ]
+    },
+    {
+      "name": "Engineering excellence and standards",
+      "category": "soft",
+      "importance": "required",
+      "context_phrases": [
+        "Proven ability to drive engineering excellence across an engineering team",
+        "Establish and uphold engineering standards, best practices, and coding quality across the team"
+      ]
+    },
+    {
+      "name": "Cross-functional collaboration",
+      "category": "soft",
+      "importance": "required",
+      "context_phrases": [
+        "Excellent communication skills: able to work effectively with engineers, cross-functional partners, and senior leadership",
+        "Partner with Product, ML, QA, and DevOps leadership"
+      ]
+    },
+    {
+      "name": "Systems design and architecture",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "designing systems, writing code, and leading implementation on critical platform initiatives",
+        "lead design reviews, providing authoritative technical guidance on major features and cross-cutting changes"
+      ]
+    },
+    {
+      "name": "Team hiring and talent development",
+      "category": "soft",
+      "importance": "required",
+      "context_phrases": [
+        "Own hiring for your team: define roles, assess candidates, and build a diverse, high-performing engineering organization",
+        "Drive the career development of your engineers through regular 1:1s, meaningful feedback, and clear growth plans"
+      ]
+    }
+  ],
+  "preferred_skills": [
+    {
+      "name": "AI inference serving and orchestration",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Familiarity with AI inference serving, orchestration, and the infrastructure challenges of LLM workloads at production scale"
+      ]
+    },
+    {
+      "name": "Kubernetes ecosystem tooling",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience with Kubernetes ecosystem tooling, including Operators and Helm Charts"
+      ]
+    },
+    {
+      "name": "Helm Charts",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience with Kubernetes ecosystem tooling, including Operators and Helm Charts"
+      ]
+    },
+    {
+      "name": "Kubernetes Operators",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience with Kubernetes ecosystem tooling, including Operators and Helm Charts"
+      ]
+    },
+    {
+      "name": "ML application optimization and productionization",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Background in ML application optimization and productionization"
+      ]
+    },
+    {
+      "name": "Cloud-native platform development",
+      "category": "hard",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience building or managing teams that deliver cloud-native platforms for enterprise customers"
+      ]
+    },
+    {
+      "name": "AI coding assistants and developer tooling",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Familiarity with AI coding assistants and the developer tooling ecosystem"
+      ]
+    },
+    {
+      "name": "AI infrastructure company experience",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience at a high-growth AI infrastructure company"
+      ]
+    }
+  ],
+  "responsibilities": [
+    "Lead, grow, and inspire a software team, fostering a culture of technical excellence, collaboration, and continuous improvement",
+    "Own hiring for the team: define roles, assess candidates, and build a diverse, high-performing engineering organization",
+    "Drive career development of engineers through regular 1:1s, meaningful feedback, and clear growth plans",
+    "Set clear goals and expectations, track team progress, and remove blockers to keep the team executing effectively",
+    "Partner with Product, ML, QA, and DevOps leadership to align team priorities with broader organizational objectives",
+    "Champion a healthy, inclusive engineering culture within the SambaStack engineering organization",
+    "Contribute directly as a software engineer: designing systems, writing code, and leading implementation on critical platform initiatives",
+    "Participate in and lead design reviews, providing authoritative technical guidance on major features and cross-cutting changes",
+    "Establish and uphold engineering standards, best practices, and coding quality across the team",
+    "Proactively identify and drive resolution of systemic risks: performance bottlenecks, reliability gaps, and scaling constraints",
+    "Mentor engineers at all levels, growing technical depth and architectural thinking across the team",
+    "Stay current on emerging technologies and AI inference trends to inform the team's technical direction"
+  ],
+  "ats_phrases": [
+    "Director, Software Engineering",
+    "Software Engineering Manager",
+    "SambaStack platform",
+    "AI inference serving",
+    "generative AI platform",
+    "RDU (Reconfigurable Dataflow Unit)",
+    "LLM workloads",
+    "backend systems",
+    "distributed systems",
+    "Kubernetes",
+    "Python, Go, or Rust",
+    "cloud-native platforms",
+    "AI infrastructure",
+    "engineering excellence",
+    "hands-on technical contributor"
+  ],
+  "raw_text": "Here's the job description as plain text:\n\n---\n\nDirector, Software Engineering — Helios AI\nSan Jose, CA · Remote · Full-time\n\nAbout the job\n\nThe era of pervasive AI has arrived. In this era, organizations will use generative AI to unlock hidden value in their data, accelerate processes, reduce costs, drive efficiency and innovation to fundamentally transform their businesses and operations at scale.\n\nHelios AI Suite™ is the first full-stack, generative AI platform, from chip to model, optimized for enterprise and government organizations. Powered by the intelligent SN40L chip, the Helios AI Suite is a fully integrated platform, delivered on-premises or in the cloud, combined with state-of-the-art open-source models that can be easily and securely fine-tuned using customer data for greater accuracy. Once adapted with customer data, customers retain model ownership in perpetuity, so they can turn generative AI into one of their most valuable assets.\n\nAbout Helios AI\n\nJoin the company that's building the future of AI computing. Helios AI is disrupting the AI and high-performance computing space with an integrated hardware and software platform.\n\nOur Helios AI inference serving stack is pushing the boundaries of inference serving for generative AI and large language models. We are a team of passionate innovators tackling some of the world's most challenging computational problems.\n\nAbout The Role\n\nHelios AI is hiring a Software Engineering Manager for the SambaStack platform.\n\nWe help enterprises and service providers host their own AI inference platforms, powered by our state-of-the-art RDU (Reconfigurable Dataflow Unit) hardware architecture. Our cloud-agnostic, enterprise-grade inference serving platform enables seamless deployment, management, and scaling of foundation model workloads at production scale.\n\nAs an Engineering Manager on the SambaStack team, you will lead a high-performing team of engineers while remaining a hands-on technical contributor. You will be responsible for the growth and effectiveness of your team, the technical quality of their output, and driving key engineering initiatives while continuing to contribute directly on the platform's most important challenges.\n\nThis is a high-impact, high-visibility role combining:\n- People leadership and team development\n- AI infrastructure\n- Enterprise software\n- Systems architecture and design\n\nKey Responsibilities\n\nPeople & Team Leadership\n- Lead, grow, and inspire a software team, fostering a culture of technical excellence, collaboration, and continuous improvement.\n- Own hiring for your team: define roles, assess candidates, and build a diverse, high-performing engineering organization.\n- Drive the career development of your engineers through regular 1:1s, meaningful feedback, and clear growth plans.\n- Set clear goals and expectations, track team progress, and remove blockers to keep the team executing effectively.\n- Partner with Product, ML, QA, and DevOps leadership to align team priorities with broader organizational objectives.\n- Champion a healthy, inclusive engineering culture within the SambaStack engineering organization.\n\nTechnical Contribution\n- Contribute directly as a software engineer: designing systems, writing code, and leading implementation on critical platform initiatives.\n- Participate in and lead design reviews, providing authoritative technical guidance on major features and cross-cutting changes.\n- Establish and uphold engineering standards, best practices, and coding quality across the team.\n- Proactively identify and drive the resolution of systemic risks: performance bottlenecks, reliability gaps, and scaling constraints.\n- Mentor engineers at all levels, growing technical depth and architectural thinking across the team.\n- Stay current on emerging technologies and AI inference trends to inform the team's technical direction.\n\nRequired Qualifications\n- 12+ years of software engineering experience, including 2+ years leading and managing engineering teams.\n- Demonstrated ability to manage, develop, and hire strong engineers while remaining a hands-on technical contributor.\n- Strong technical depth in backend systems built with Python, Go, or Rust.\n- Solid understanding of Kubernetes, distributed systems principles, and building scalable, reliable services.\n- Proven ability to drive engineering excellence across an engineering team.\n- Excellent communication skills: able to work effectively with engineers, cross-functional partners, and senior leadership.\n- Experience running iterative engineering processes in a fast-paced environment.\n\nPreferred Qualifications\n- Familiarity with AI inference serving, orchestration, and the infrastructure challenges of LLM workloads at production scale.\n- Experience with Kubernetes ecosystem tooling, including Operators and Helm Charts.\n- Background in ML application optimization and productionization.\n- Experience building or managing teams that deliver cloud-native platforms for enterprise customers.\n- Familiarity with AI coding assistants and the developer tooling ecosystem.\n- Experience at a high-growth AI infrastructure company.\n\nBase Salary Range: $245,000 - $325,000 USD\n\nSubmission Guidelines\n\nPlease note that in order to be considered an applicant for any position at Helios AI Systems, you must submit an application form for each position for which you believe you are qualified.\n\n---\n\nI trimmed the boilerplate EEO and benefits paragraphs at the end since they're standard; say the word if you want those verbatim too.\n\nQuick read on fit: the title says \"Director, Software Engineering\" but the body is consistently for a Software Engineering Manager, hands-on, on a hardware-adjacent AI inference platform (RDU chips, SambaStack). The required Python/Go/Rust depth, Kubernetes, and the AI-infrastructure-at-production-scale emphasis are the heaviest asks, and they sit further from your regulated-fintech and product-delivery strengths than something like Datalink or Equinox did. The one bullet that plays to you is \"Familiarity with AI coding assistants and the developer tooling ecosystem,\" which is squarely your Copilot/Claude Code experience. Want me to draft a positioning angle or a \"why Helios AI\" answer?",
+  "source_url": null
+}

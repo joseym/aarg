@@ -214,9 +214,43 @@ pub struct VariantInput {
     pub summary_locked: bool,
 }
 
+/// What the *directed* human adapter works from: the canonical draft, whether
+/// its summary is user-confirmed (kept verbatim), and an optional presentation
+/// directive folded into the prompt.
+///
+/// This is a separate input from [`VariantInput`] on purpose. A layout-scoped
+/// objection (FR-5.4: `ObjectionScope::VariantOnly`) is a *presentation*
+/// problem — the fix is re-projecting the human variant with a hint like
+/// "tighten to one page", never editing a canonical claim. Rather than widen
+/// [`VariantInput`] (and every caller of it), the directed path gets its own
+/// input and agent that reuse the same prompt, message builder, and
+/// `project_human` assembly. The directive is presentation-only: it can never
+/// license a new fact, because assembly still runs every never-fabricate guard
+/// regardless of what the note asked for.
+#[derive(Serialize)]
+pub struct HumanVariantInput {
+    pub draft: TailoredResume,
+    /// When the canonical summary is user-confirmed, keep it verbatim (as
+    /// `VariantInput::summary_locked` does).
+    pub summary_locked: bool,
+    /// A presentation-only instruction (e.g. "the layout reads too dense —
+    /// tighten every bullet to one line and drop to a single page"). `None` or
+    /// empty means the plain human projection, byte-identical to the
+    /// undirected reword — so an absent directive changes nothing.
+    pub directive: Option<String>,
+}
+
 /// The human-variant adapter: the model reshapes presentation, the guards in
 /// `project_human` keep the claims identical to the canonical draft.
 pub struct VariantAdapterAgent;
+
+/// The human-variant adapter that also accepts a presentation directive — the
+/// layout-refine path's agent (FR-5.4). Identical to [`VariantAdapterAgent`]
+/// in every way that touches a claim (same system prompt, same `project_human`
+/// assembly, same guards); it differs only in folding an optional layout note
+/// into the user message. Kept separate so [`VariantAdapterAgent`]'s existing
+/// callers are untouched.
+pub struct HumanVariantAgent;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VariantError {
@@ -337,6 +371,61 @@ fn build_user_message(draft: &TailoredResume) -> String {
         draft.skills_section.skills.join(", ")
     ));
     text
+}
+
+/// Fold an optional presentation directive onto the base human message. Empty
+/// or whitespace-only directives add nothing, so a directed run with no note
+/// produces the exact same prompt as an undirected one. The note is fenced as
+/// presentation-only guidance — the model may reshape to honor it, never add a
+/// fact — and `project_human`'s guards enforce that regardless.
+fn build_directed_message(draft: &TailoredResume, directive: Option<&str>) -> String {
+    let mut text = build_user_message(draft);
+    if let Some(note) = directive.map(str::trim).filter(|note| !note.is_empty()) {
+        text.push_str(&format!(
+            "\nLAYOUT NOTE (presentation only — reshape to honor it, but NEVER add or change a fact): {note}\n"
+        ));
+    }
+    text
+}
+
+#[async_trait]
+impl Agent for HumanVariantAgent {
+    type Input = HumanVariantInput;
+    type Wire = RawVariant;
+    type Output = VariantPayload;
+    type Error = VariantError;
+
+    fn id(&self) -> &'static str {
+        // The same agent id as `VariantAdapterAgent`: this is the same
+        // rewording task and resolves to the same model tier, differing only
+        // in the optional layout note appended to the message.
+        "variant_adapter_v1"
+    }
+    fn model_tier(&self) -> ModelTier {
+        ModelTier::Mid
+    }
+    fn system_prompt(&self) -> &str {
+        HUMAN_SYSTEM_PROMPT
+    }
+    fn reply_budget(&self) -> u32 {
+        4096
+    }
+    fn user_message(&self, input: &HumanVariantInput) -> String {
+        build_directed_message(&input.draft, input.directive.as_deref())
+    }
+    fn bad_reply(&self, snippet: String, source: serde_json::Error) -> VariantError {
+        VariantError::BadReply { snippet, source }
+    }
+    fn assemble(
+        &self,
+        wire: RawVariant,
+        input: HumanVariantInput,
+    ) -> Result<VariantPayload, VariantError> {
+        // The identical assembly as the undirected adapter: structure, digit
+        // guard, skills-subset, and grouping all hold. The directive only
+        // shaped the *request*, never how a claim is admitted.
+        Ok(project_human(wire, input.draft, input.summary_locked))
+    }
 }
 
 /// The most skill groups the human variant will show. The prompt asks for 3
@@ -1016,6 +1105,81 @@ mod tests {
         assert_eq!(
             bullet_text(&vetted, "bullet-1").unwrap(),
             "Drove the platform migration"
+        );
+    }
+
+    async fn run_directed(reply: &str, directive: Option<&str>) -> VariantPayload {
+        let mock = MockLlmClient::new();
+        mock.enqueue(reply);
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        };
+        HumanVariantAgent
+            .run(
+                &ctx,
+                HumanVariantInput {
+                    draft: draft(),
+                    summary_locked: false,
+                    directive: directive.map(str::to_string),
+                },
+            )
+            .await
+            .unwrap()
+            .output
+    }
+
+    #[tokio::test]
+    async fn a_layout_directive_reprojects_without_adding_a_claim() {
+        // A layout note asks for a tighter presentation; the model complies on
+        // wording. The re-projected payload stays a subset of the canonical
+        // claims — the directive shaped presentation, never content.
+        let p = run_directed(
+            r#"{"summary":"Engineering leader who ships.","roles":[{"id":"role-1","bullets":[{"source_id":"bullet-1","text":"Drove the platform migration"}]}],"skills":["Rust"]}"#,
+            Some("the layout reads too dense — tighten to one page"),
+        )
+        .await;
+        assert_eq!(p.variant, Variant::Human);
+        assert_eq!(
+            bullet_text(&p, "bullet-1").unwrap(),
+            "Drove the platform migration"
+        );
+        // Never-fabricate: the re-projection introduces no claim the canonical
+        // draft doesn't already back.
+        assert!(check_claims(&draft(), &p).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_layout_directive_cannot_smuggle_an_invented_number() {
+        // Even with a directive present, a reworded bullet that gains a number
+        // its source lacks reverts to the source — the guard is unchanged.
+        let p = run_directed(
+            r#"{"summary":"Engineering leader.","roles":[{"id":"role-1","bullets":[{"source_id":"bullet-1","text":"Led the platform migration, cutting costs 30%"}]}],"skills":[]}"#,
+            Some("make it punchier and add impact numbers"),
+        )
+        .await;
+        assert_eq!(
+            bullet_text(&p, "bullet-1").unwrap(),
+            "Led the platform migration"
+        );
+        assert!(check_claims(&draft(), &p).is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_absent_directive_matches_the_undirected_reword() {
+        // A directed run with no note produces the same payload the plain
+        // `VariantAdapterAgent` would — the directive is the only difference,
+        // and an empty one changes nothing.
+        let reply = r#"{"summary":"Engineering leader who ships.","roles":[{"id":"role-1","bullets":[{"source_id":"bullet-1","text":"Drove the platform migration"}]}],"skills":["Kubernetes","Rust"]}"#;
+        let directed = run_directed(reply, None).await;
+        let plain = run_human(reply).await;
+        assert_eq!(directed.summary, plain.summary);
+        assert_eq!(directed.skills_section.skills, plain.skills_section.skills);
+        assert_eq!(
+            bullet_text(&directed, "bullet-1"),
+            bullet_text(&plain, "bullet-1")
         );
     }
 

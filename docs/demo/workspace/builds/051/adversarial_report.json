@@ -1,0 +1,70 @@
+{
+  "objections": [
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Stating you're 'targeting Director of Engineering and VP of Engineering roles' on a resume tailored to an Engineering Manager position is a tell that this is a generic header pasted on. It reads as overqualified-and-not-really-interested for an EM IC-adjacent role.",
+      "suggestion": "Cut the targeting sentence entirely, or align it to the actual role level."
+    },
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'first regulated fintech platform in the US' is an impressive company milestone, but the summary attributes 'delivered the infrastructure behind' it to you personally. The regulatory-first status is a company/legal achievement; be careful not to imply you personally drove the approval.",
+      "suggestion": "Keep the regulatory context but phrase your contribution as the engineering systems you owned that supported it, rather than implying ownership of the approval itself."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "This is your most technical bullet and your best chance to show data-systems depth, but it describes a generic microservice/PostgreSQL/Docker/CI stack. The JD wants metering pipelines, stream/batch processing, schema evolution, exactly-once semantics, multi-tenant data modeling. Nothing here speaks to distributed data systems. If you have relevant data-pipeline work, surface it; if you don't, this is the gap that may sink the application.",
+      "suggestion": "If your backend work touched high-volume data correctness, reconciliation, or schema evolution, foreground that. Do not invent pipeline experience — but if it genuinely isn't there, recognize this resume underserves the core technical bar."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'3x faster than the prior process' compares a structured bi-weekly cadence to 'ad hoc deployments,' which is an apples-to-oranges baseline. A cadence isn't inherently a speed metric, and 3x against an undefined ad hoc baseline is soft.",
+      "suggestion": "Either define what the 3x measures concretely or drop the multiplier and let 'replaced ad hoc deployments with a predictable bi-weekly cadence' stand on its own."
+    },
+    {
+      "target": {
+        "bullet": "bullet-41"
+      },
+      "severity": "major",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "'shipping a run of regulated milestones' is the kind of outcome a hiring manager wants quantified, and it's narrated as a list of company milestones (the platform approval, custody, ETH custody, clearing/settlement) without your specific engineering deliverable on each. Reads as taking credit for company-level events.",
+      "suggestion": "Tie each milestone to the specific system or delivery you owned. Do not add metrics that aren't real, but make your engineering role concrete rather than listing corporate achievements."
+    },
+    {
+      "target": {
+        "bullet": "bullet-14"
+      },
+      "severity": "minor",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "'Built internal tooling and software solutions in JavaScript, React.js, HTML, and CSS within an Agile workflow' is a generic tech-list bullet that overlaps with bullet-12 from the same role and adds little.",
+      "suggestion": "Fold the relevant tech into bullet-12 and drop this line."
+    },
+    {
+      "target": "skills_section",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The skills list omits the exact terms this JD weighs most: distributed data systems, billing/metering, multi-tenant data modeling, stream/batch (Kafka/Flink/Spark), reconciliation, data contracts. You list GraphQL API design, which isn't even referenced in your experience bullets. If those data-systems skills aren't real, the list is honest but reveals the gap; if any are real, they belong here over generic items.",
+      "suggestion": "Drop unsupported entries like GraphQL if no bullet backs them, and surface any genuine data-pipeline or data-contract experience. Do not list skills you can't defend in an interview."
+    }
+  ],
+  "overall_score": 0.62,
+  "persona_notes": "Strong leadership and regulated-systems story with genuine relevance to billing's audit/compliance emphasis, but the resume reads as a generalist Director pitch and never directly addresses the core technical bar of this role: distributed data systems, metering pipelines, stream/batch processing, multi-tenant data modeling, and billing/revenue systems specifically. The compliance-and-audit overlap is real and a reason to talk, but I'd push hard on whether this candidate has actually built data-critical billing-adjacent backends."
+}

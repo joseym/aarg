@@ -1,0 +1,16 @@
+<app-topbar (toggleNav)="navOpen.set(!navOpen())" />
+
+<div class="shell" [class.nav-open]="navOpen()" [class.collapsed]="collapsed()">
+  <div class="nav-scrim" (click)="navOpen.set(false)"></div>
+  <app-sidebar
+    [open]="navOpen()"
+    [collapsed]="collapsed()"
+    (closeNav)="navOpen.set(false)"
+    (toggleCollapse)="toggleCollapsed()"
+  />
+  <main class="main">
+    <router-outlet />
+  </main>
+</div>
+
+<app-copilot-overlay />

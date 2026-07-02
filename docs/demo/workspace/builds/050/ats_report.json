@@ -1,0 +1,218 @@
+{
+  "keyword_hits": [
+    {
+      "phrase": "engineering management",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "API design",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "data correctness and auditability",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "production systems operations",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "cross-functional stakeholder alignment",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "SOX compliance",
+      "kind": "preferred_skill"
+    },
+    {
+      "phrase": "Engineering Manager, Billing Platform",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "data correctness",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "auditability",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "SOX compliance",
+      "kind": "ats_phrase"
+    }
+  ],
+  "keyword_misses": [
+    {
+      "phrase": "distributed data systems",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "billing systems design",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "multi-tenant data modeling",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "cloud providers",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "Cloud infrastructure management"
+      }
+    },
+    {
+      "phrase": "software engineering",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "software engineering"
+      }
+    },
+    {
+      "phrase": "cloud/SaaS metering platforms",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Kafka",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Flink",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Spark",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Apache Beam",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "meter-to-cash platforms",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "GPU infrastructure",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "platform engineering leadership",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "engineering leadership experience"
+      }
+    },
+    {
+      "phrase": "billing pipeline",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "metering pipelines",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "distributed data systems",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "multi-tenant data modeling",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "meter-to-cash",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "idempotency",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "stream/batch processing",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "cloud/SaaS metering",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "meter-to-cash platforms",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "financial-controls environments",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "GPU infrastructure consumption models",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    }
+  ],
+  "coverage": 0.5
+}

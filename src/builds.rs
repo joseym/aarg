@@ -69,7 +69,7 @@ pub fn create_next() -> Result<Build, BuildError> {
     create_next_in(&builds_root()?)
 }
 
-fn create_next_in(root: &Path) -> Result<Build, BuildError> {
+pub(crate) fn create_next_in(root: &Path) -> Result<Build, BuildError> {
     let io_err = |source| BuildError::Io {
         path: root.to_path_buf(),
         source,

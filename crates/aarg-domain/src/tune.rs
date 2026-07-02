@@ -31,10 +31,63 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::dataset::types::BulletId;
 use crate::llm::{LlmError, TokenUsage};
-use crate::style;
 use crate::tailor::{TailoredBullet, TailoredResume};
 use crate::user::{Answer, AskError, Question, UserHandle};
 use crate::voice::{self, VoiceError};
+
+/// How to style the session's notifications — the seam that keeps the terminal
+/// styler out of this portable crate.
+///
+/// The tune session reports each change through `user.notify` using the CLI's
+/// semantic vocabulary: a green "✓ removed…", a blue "ℹ nothing to change", a
+/// dim before/after diff, a yellow "⚠ couldn't read that". Building those means
+/// reaching for `owo-colors`, which a crate that must compile to `wasm32` can't
+/// depend on — the same wall `metric`'s [`crate::metric::AnchorStyle`] hits. So
+/// the domain builds the message text and defers the glyph-and-color to the
+/// caller: the CLI passes its `style`-backed functions, tests and the wasm host
+/// pass [`SessionStyle::PLAIN`] (identity). Same messages, no terminal
+/// dependency crossing the crate line.
+///
+/// It's a set of `fn(&str) -> String` pointers rather than closures because
+/// nothing here captures state — a plain function per tier is all the caller
+/// needs to hand across the seam, and `Copy` lets it pass by value freely. Each
+/// tier maps to one of `style`'s helpers, so the CLI output stays byte-identical
+/// to before the extraction.
+#[derive(Clone, Copy)]
+pub struct SessionStyle {
+    /// Dimmed detail — the quoted "was:" line and a "left as is" note.
+    pub dim: fn(&str) -> String,
+    /// Bold — the "now:" label over a reworded line.
+    pub bold: fn(&str) -> String,
+    /// Yellow warn (`⚠`) — a request that couldn't be read or applied.
+    pub warn: fn(&str) -> String,
+    /// Green done (`✓`) — a removal or a kept rewrite.
+    pub done: fn(&str) -> String,
+    /// Blue info (`ℹ`) — a tone pass that found nothing to change.
+    pub info: fn(&str) -> String,
+    /// Cyan suggest (`→`) — an unsupported request's explanation.
+    pub suggest: fn(&str) -> String,
+}
+
+/// Identity styling: return the text unchanged. What every
+/// [`SessionStyle::PLAIN`] tier points at — for tests and any host without a
+/// terminal (the wasm build), where glyphs and color would be noise.
+fn plain(s: &str) -> String {
+    s.to_string()
+}
+
+impl SessionStyle {
+    /// Every part passes through unchanged. The default for tests and for any
+    /// host without a terminal (the wasm build).
+    pub const PLAIN: SessionStyle = SessionStyle {
+        dim: plain,
+        bold: plain,
+        warn: plain,
+        done: plain,
+        info: plain,
+        suggest: plain,
+    };
+}
 
 /// Where a bullet sits in a draft, with a snapshot of it. Returned by
 /// [`locate_bullet`] so a caller can show the user exactly which line a
@@ -330,6 +383,7 @@ pub async fn apply(
     intent: TuneIntent,
     user: &dyn UserHandle,
     samples: &[String],
+    style: SessionStyle,
 ) -> Result<(TuneOutcome, TokenUsage), TuneError> {
     match intent {
         TuneIntent::Remove(location) => {
@@ -372,7 +426,7 @@ pub async fn apply(
             // final gate (the same leg the strengthen flow stands on): show what
             // changed, line by line, and keep it only if they say so. Declining
             // leaves the draft exactly as it was.
-            show_tone_changes(user, resume, &out, &ids);
+            show_tone_changes(user, resume, &out, &ids, style);
             let keep = user.confirm("keep these wording changes?", true).await?;
             if keep {
                 *resume = out;
@@ -410,6 +464,7 @@ fn show_tone_changes(
     before: &TailoredResume,
     after: &TailoredResume,
     ids: &[String],
+    style: SessionStyle,
 ) {
     for id in ids {
         let (Some(old), Some(new)) = (current_line(before, id), current_line(after, id)) else {
@@ -420,9 +475,9 @@ fn show_tone_changes(
         }
         user.notify(&format!(
             "  {} {}\n  {} {}",
-            style::dim("was:"),
-            style::dim(old),
-            style::bold("now:"),
+            (style.dim)("was:"),
+            (style.dim)(&old),
+            (style.bold)("now:"),
             new
         ));
     }
@@ -446,6 +501,7 @@ pub async fn run_session(
     resume: &mut TailoredResume,
     user: &dyn UserHandle,
     samples: &[String],
+    style: SessionStyle,
 ) -> (bool, TokenUsage) {
     let mut changed = false;
     let mut total = TokenUsage::default();
@@ -473,22 +529,22 @@ pub async fn run_session(
         let (intent, usage) = match classify(ctx, resume, &request).await {
             Ok(pair) => pair,
             Err(e) => {
-                user.notify(&style::warn(format!("couldn't read that request ({e})")));
+                user.notify(&(style.warn)(&format!("couldn't read that request ({e})")));
                 continue;
             }
         };
         accumulate(&mut total, usage);
 
-        let (outcome, usage) = match apply(ctx, resume, intent, user, samples).await {
+        let (outcome, usage) = match apply(ctx, resume, intent, user, samples, style).await {
             Ok(pair) => pair,
             Err(e) => {
-                user.notify(&style::warn(format!("couldn't make that change ({e})")));
+                user.notify(&(style.warn)(&format!("couldn't make that change ({e})")));
                 continue;
             }
         };
         accumulate(&mut total, usage);
 
-        report(user, &outcome);
+        report(user, &outcome, style);
         if outcome.changed_draft() {
             changed = true;
         }
@@ -503,10 +559,10 @@ fn accumulate(total: &mut TokenUsage, other: TokenUsage) {
 }
 
 /// Report one applied outcome through the user handle.
-fn report(user: &dyn UserHandle, outcome: &TuneOutcome) {
+fn report(user: &dyn UserHandle, outcome: &TuneOutcome, style: SessionStyle) {
     match outcome {
         TuneOutcome::Removed { line } => {
-            user.notify(&style::done(format!("removed: \"{line}\"")));
+            user.notify(&(style.done)(&format!("removed: \"{line}\"")));
         }
         TuneOutcome::Retoned {
             rewritten,
@@ -518,13 +574,13 @@ fn report(user: &dyn UserHandle, outcome: &TuneOutcome) {
                 } else {
                     String::new()
                 };
-                user.notify(&style::done(format!("rewrote {rewritten} line(s){note}")));
+                user.notify(&(style.done)(&format!("rewrote {rewritten} line(s){note}")));
             } else {
-                user.notify(&style::info("nothing there needed changing"));
+                user.notify(&(style.info)("nothing there needed changing"));
             }
         }
-        TuneOutcome::Declined => user.notify(&style::dim("left as is")),
-        TuneOutcome::NothingToDo { note } => user.notify(&style::suggest(note)),
+        TuneOutcome::Declined => user.notify(&(style.dim)("left as is")),
+        TuneOutcome::NothingToDo { note } => user.notify(&(style.suggest)(note)),
     }
 }
 
@@ -766,6 +822,7 @@ mod tests {
             TuneIntent::Remove(location),
             &user,
             &[],
+            SessionStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -792,6 +849,7 @@ mod tests {
             TuneIntent::Remove(location),
             &user,
             &[],
+            SessionStyle::PLAIN,
         )
         .await
         .unwrap();
@@ -812,9 +870,16 @@ mod tests {
             ids: vec!["summary".to_string()],
             register: "conversational".to_string(),
         };
-        let (outcome, _) = apply(&ctx(&mock), &mut resume, intent, &user, &[])
-            .await
-            .unwrap();
+        let (outcome, _) = apply(
+            &ctx(&mock),
+            &mut resume,
+            intent,
+            &user,
+            &[],
+            SessionStyle::PLAIN,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             outcome,
@@ -840,9 +905,16 @@ mod tests {
             ids: vec!["summary".to_string()],
             register: "conversational".to_string(),
         };
-        let (outcome, _) = apply(&ctx(&mock), &mut resume, intent, &user, &[])
-            .await
-            .unwrap();
+        let (outcome, _) = apply(
+            &ctx(&mock),
+            &mut resume,
+            intent,
+            &user,
+            &[],
+            SessionStyle::PLAIN,
+        )
+        .await
+        .unwrap();
 
         // Declined: the draft is exactly as it was, even though the model
         // produced a clean rewrite.
@@ -864,7 +936,8 @@ mod tests {
         user.confirm_with(true); // yes to the removal confirm
         user.answer(Answer::Text("".into())); // a blank line ends the loop
 
-        let (changed, _usage) = run_session(&ctx(&mock), &mut resume, &user, &[]).await;
+        let (changed, _usage) =
+            run_session(&ctx(&mock), &mut resume, &user, &[], SessionStyle::PLAIN).await;
 
         assert!(changed);
         assert!(locate_bullet(&resume, &BulletId("bullet-9".into())).is_none());
@@ -879,7 +952,8 @@ mod tests {
         let user = ScriptedUser::new();
         user.confirm_with(false); // no to the offer
 
-        let (changed, _usage) = run_session(&ctx(&mock), &mut resume, &user, &[]).await;
+        let (changed, _usage) =
+            run_session(&ctx(&mock), &mut resume, &user, &[], SessionStyle::PLAIN).await;
 
         assert!(!changed);
         assert_eq!(resume, before);

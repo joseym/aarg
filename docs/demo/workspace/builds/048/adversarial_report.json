@@ -1,0 +1,72 @@
+{
+  "objections": [
+    {
+      "target": "skills_section",
+      "severity": "blocking",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The JD's heaviest required asks are Kubernetes, distributed systems, and backend in Python/Go/Rust. Skills lists Docker and microservices but no Kubernetes anywhere in the resume, no Go, no Rust, and Python only appears as 'Typescript/Python' with no supporting bullet. This is the single biggest gap for the role.",
+      "suggestion": "If you have any genuine Kubernetes or distributed-systems exposure, surface it explicitly; if you don't, don't paper over it — be honest that the orchestration/distributed-systems depth isn't here."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This is a strong, JD-relevant bullet (microservices, PostgreSQL, Docker, CI/CD, engineering standards), but it's overloaded into one sentence and repeats the 'single engineer to 20+' scaling point already made in bullet-1. The technical substance gets buried.",
+      "suggestion": "Split into two tighter bullets — one on the architecture/infra, one on engineering standards — and drop the repeated team-scaling clause already covered above."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This bullet and bullet-41 are near-duplicates: both cite '4 engineering teams,' 'bi-weekly cadence,' 'consistent, predictable delivery,' and '5+ product milestones.' Repeating the same claim twice wastes space and signals padding.",
+      "suggestion": "Merge bullet-4 and bullet-41 into one; keep the scrum/release-management framing of bullet-4."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "minor",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "'3x faster than the prior process' is good, but 'predictable delivery' against undefined baselines is soft. The '3x' is the only hard number and it's anchored to a vague 'ad hoc' baseline.",
+      "suggestion": "Keep the 3x; consider clarifying what the prior cadence was if known, otherwise leave as-is rather than inventing."
+    },
+    {
+      "target": {
+        "bullet": "bullet-13"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "bullet-13 and bullet-14 both claim reduced onboarding time from weeks to days; one cites Docker, the other 'automation initiatives.' These overlap and dilute each other.",
+      "suggestion": "Fold bullet-13's Docker detail into bullet-14 and drop the duplicate."
+    },
+    {
+      "target": {
+        "bullet": "bullet-41"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Duplicate of bullet-4 (see above) — same metrics, same 4 teams, same milestones, same cadence. Redundant.",
+      "suggestion": "Remove or merge with bullet-4."
+    },
+    {
+      "target": "overall",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "Nothing in the work history touches AI inference serving, LLM workloads at production scale, hardware-adjacent platforms, or distributed systems — the recurring themes of this posting. The strongest experience (regulated fintech delivery) is the least transferable. Strong manager, wrong domain depth.",
+      "suggestion": "Be realistic about fit; this resume positions well for a general engineering-leadership role but underdelivers on this role's infra-specific bar."
+    }
+  ],
+  "overall_score": 0.55,
+  "persona_notes": "Strong people-leadership and delivery story from a regulated-fintech context, but the technical core is a mismatch with this role's Kubernetes / distributed-systems / Python-Go-Rust / AI-inference-at-scale asks. The candidate clears the management bar and the AI-tooling preferred qualification, but nothing here demonstrates the hardware-adjacent infra depth the body of the JD repeatedly demands. Interviewable for a generic Director role; borderline for this one."
+}

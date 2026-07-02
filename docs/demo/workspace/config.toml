@@ -1,0 +1,26 @@
+provider = "anthropic"
+
+[anthropic]
+model = "claude-haiku-4-5-20251001"
+
+[anthropic.tiers]
+
+[anthropic.agents]
+
+[anthropic.key_kinds]
+
+[anthropic.credential_commands]
+
+[limits]
+revisions = 2
+acceptable_score = 0.85
+strengthen_questions = 3
+strengthen_revises = 3
+
+[templates]
+
+[export]
+
+[render]
+
+[prices]

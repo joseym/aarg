@@ -1,0 +1,10 @@
+{
+  "created_at": "2026-06-25T14:22:54.257471597Z",
+  "model": "claude-opus-4-8",
+  "template": "ats/classic",
+  "tailor_usage": {
+    "input_tokens": 58123,
+    "output_tokens": 23234
+  },
+  "subscription": true
+}

@@ -1,0 +1,100 @@
+{
+  "keyword_hits": [
+    {
+      "phrase": "People Leadership",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Distributed Systems Architecture",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Microservices Architecture",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Cloud-Native Technologies",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "CI/CD",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Docker",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Strategic Leadership",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Technical Strategy",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Programming (Go, Python, or Java)",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Director of Engineering",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "microservices architecture",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "cloud-native technologies",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "CI/CD",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "Docker",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "technical strategy",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "platform architecture",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "operational excellence",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "technical debt",
+      "kind": "ats_phrase"
+    }
+  ],
+  "keyword_misses": [
+    {
+      "phrase": "distributed systems",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "developer experience",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "system modernization",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    }
+  ],
+  "coverage": 1.0
+}

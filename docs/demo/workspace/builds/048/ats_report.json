@@ -1,0 +1,212 @@
+{
+  "keyword_hits": [
+    {
+      "phrase": "Engineering team leadership and management",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Backend systems development",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Python",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Go",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Engineering excellence and standards",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Cross-functional collaboration",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Systems design and architecture",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Team hiring and talent development",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "AI coding assistants and developer tooling",
+      "kind": "preferred_skill"
+    },
+    {
+      "phrase": "Director, Software Engineering",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "backend systems",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "engineering excellence",
+      "kind": "ats_phrase"
+    }
+  ],
+  "keyword_misses": [
+    {
+      "phrase": "Kubernetes",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Distributed systems",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Rust",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "AI inference serving and orchestration",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Kubernetes ecosystem tooling",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Helm Charts",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Kubernetes Operators",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "ML application optimization and productionization",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Cloud-native platform development",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "Cloud infrastructure management"
+      }
+    },
+    {
+      "phrase": "AI infrastructure company experience",
+      "kind": "preferred_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Software Engineering Manager",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "Software Engineering Manager"
+      }
+    },
+    {
+      "phrase": "SambaStack platform",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "AI inference serving",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "generative AI platform",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "RDU (Reconfigurable Dataflow Unit)",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "LLM workloads",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "LLM workloads"
+      }
+    },
+    {
+      "phrase": "distributed systems",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Kubernetes",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Python, Go, or Rust",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "cloud-native platforms",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "AI infrastructure",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "hands-on technical contributor",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    }
+  ],
+  "coverage": 0.72727275
+}

@@ -25,6 +25,7 @@ pub mod open;
 pub mod ping;
 pub mod render;
 pub mod roles;
+pub mod serve;
 pub mod skills;
 pub mod tailor;
 pub mod templates;
@@ -575,7 +576,11 @@ pub(crate) async fn pick_build(prompt: &str, example: &str) -> Result<Option<Str
         .map(|b| {
             format!(
                 "{}  {:.2}  {}  {} · {} obj",
-                b.id, b.score, b.target, b.created_at, b.objections
+                b.id,
+                b.score,
+                b.target(),
+                b.created_at,
+                b.objections
             )
         })
         .collect();
@@ -899,6 +904,12 @@ pub enum CliError {
 
     #[error(transparent)]
     Mcp(#[from] crate::mcp::McpError),
+
+    #[error(transparent)]
+    #[diagnostic(help(
+        "the HTTP companion server binds 127.0.0.1 only; if the port is taken, pass a free one with `aarg serve --port <n>`"
+    ))]
+    Serve(#[from] serve::ServeError),
 }
 
 /// Route a transport error to the right diagnostic: an HTTP 429 is a rate
@@ -1049,6 +1060,12 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             command: TemplatesCommand::Use { name },
         } => templates::use_template(name).await?,
         Command::Mcp => mcp::run().await?,
+        Command::Serve {
+            port,
+            dir,
+            bind,
+            allow_host,
+        } => serve::run(bind, port, allow_host, dir).await?,
     }
     Ok(())
 }

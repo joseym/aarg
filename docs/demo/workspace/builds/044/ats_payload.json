@@ -1,0 +1,163 @@
+{
+  "variant": "ats",
+  "template": "ats/classic",
+  "contact": {
+    "full_name": "Sam Rivera",
+    "email": "sam.rivera@example.com",
+    "phone": "(555) 010-1974",
+    "location": "Remote (US)",
+    "links": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/sam-rivera-dev"
+      }
+    ]
+  },
+  "target_title": "Director of Engineering",
+  "summary": "Founding engineer turned Director of Engineering at Meridian Logistics, where I grew the team from just myself to 20+ engineers spanning backend, frontend, QA, DevOps, and release management, and delivered the infrastructure behind Meridian Logistics becoming the first regulated fintech platform in the US. I architected the backend systems and processes the platform is built on, took releases from ad hoc to a structured bi-weekly cadence across 4 engineering teams, and led the engineering and compliance work across a 7-year regulatory build-out. Hands-on with Node.js and TypeScript, and equally comfortable shaping technical strategy with C-suite leadership, I'm targeting Director of Engineering and VP of Engineering roles where team development and delivery excellence are priorities.",
+  "roles": [
+    {
+      "id": "role-1",
+      "company": "Meridian Logistics",
+      "title": "Director of Engineering",
+      "start": "2019-04",
+      "end": "2026-05",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-1",
+          "text": "Built the engineering organization from the ground up, growing from sole backend engineer to a 20+ person team spanning backend, frontend, QA, DevOps, and release management, with full hiring authority and ownership of every career-level and cultural decision."
+        },
+        {
+          "source_id": "bullet-48",
+          "text": "Architected the microservices backend framework and PostgreSQL database schemas that Meridian Logistics's platform is built on today, containerizing services and automating deployments with GitHub Actions and CI/CD pipelines to support a regulated platform that scaled from a single engineer to a 20+ person team across backend, DevOps, and QA."
+        },
+        {
+          "source_id": "bullet-4",
+          "text": "Standardized release management across 4 engineering teams, replacing ad hoc deployments with a structured bi-weekly cadence 3x faster than the prior process, with full sprint and epic planning that gave the business consistent delivery predictability across 5+ regulated product milestones including regulatory the platform approval, custody launch, ETH custody, and clearing and settlement approval."
+        },
+        {
+          "source_id": "bullet-50",
+          "text": "Introduced technical debt cleanup as a standing part of every sprint, embedding it into the engineering standards and SDLC processes defined from the ground up as the founding engineer, keeping a codebase that grew from 1 to 20+ engineers stable in a regulatory-regulated environment where shortcuts carried real compliance risk."
+        },
+        {
+          "source_id": "bullet-28",
+          "text": "Wrote engineering standards and code review processes from scratch as the founding engineer, prioritizing long-term maintainability across a codebase and team that grew from 1 to 20+ engineers in a regulatory-regulated environment."
+        },
+        {
+          "source_id": "bullet-38",
+          "text": "Piloted AI-assisted development and QA workflows using Claude and Cursor across a 20+ person engineering team in a regulatory-regulated environment, shifting both software and QA engineers to AI-native tooling and establishing the working patterns the team adopted going forward."
+        }
+      ]
+    },
+    {
+      "id": "role-2",
+      "company": "Vantage Retail",
+      "title": "Director of Product Development",
+      "start": "2017-12",
+      "end": "2019-04",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-8",
+          "text": "Held a dual engineering and product role as an IC, defining product requirements with stakeholders and contributing to software architecture decisions while establishing the QA standards, CI/CD pipelines, and PR annotation practices that governed how the team designed, reviewed, and shipped code."
+        },
+        {
+          "source_id": "bullet-10",
+          "text": "Established QA standards and testing protocols with coverage verification via Codecov, CI/CD pipelines, and Xray scripts linked to Jira stories, taking test coverage from roughly 50% to 100% as part of the peer review gates."
+        },
+        {
+          "source_id": "bullet-9",
+          "text": "Introduced a PR annotation practice requiring engineers to comment on their own code in GitHub with explanations of logic and intent, reducing bugs and tech debt through a final self-review and speeding up peer reviews by giving reviewers richer context, cutting time from in-progress to code-complete by 20%."
+        }
+      ]
+    },
+    {
+      "id": "role-3",
+      "company": "Harbor Reviews",
+      "title": "Software Engineer, Tooling/Automation Lead",
+      "start": "2015-08",
+      "end": "2017-12",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-13",
+          "text": "Built Docker automation that reduced engineer onboarding time from several weeks to a few days."
+        },
+        {
+          "source_id": "bullet-14",
+          "text": "Built internal tooling and software solutions in JavaScript, React.js, HTML, and CSS within an Agile workflow, contributing to automation initiatives that cut engineer onboarding time from over two weeks to three days."
+        }
+      ]
+    },
+    {
+      "id": "role-4",
+      "company": "Nimbus Freight",
+      "title": "Senior Software Engineer, Frontend/UX Lead",
+      "start": "2013-08",
+      "end": "2014-12",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-16",
+          "text": "Built the frontend media player and user platform in AngularJS, styled with LessCSS and bundled with Grunt, backed by a Node.js/Express API that handled cloud storage interactions for user media collections."
+        },
+        {
+          "source_id": "bullet-32",
+          "text": "Migrated the platform from a PHP backend to a Node.js/MEAN stack."
+        }
+      ]
+    },
+    {
+      "id": "role-5",
+      "company": "Beacon Labs",
+      "title": "Senior Software Engineer",
+      "start": "2012-08",
+      "end": "2013-08",
+      "location": null,
+      "bullets": [
+        {
+          "source_id": "bullet-17",
+          "text": "Led engineering on mid-sized client projects, managing timelines, delivery goals, and direct client communication to define requirements and produce action plans for custom applications including accounting and reservation software."
+        },
+        {
+          "source_id": "bullet-34",
+          "text": "Managed end-to-end delivery of custom client applications by running weekly check-in calls with stakeholders, defining requirements, and tracking work velocity in Pivotal Tracker to keep timelines and delivery goals on target."
+        }
+      ]
+    }
+  ],
+  "education": [],
+  "skills_section": {
+    "skills": [
+      "engineering leadership experience",
+      "managing senior technical leaders",
+      "translate ambiguous business requirements into clear technical strategies",
+      "microservices architecture",
+      "Software architecture design",
+      "System architecture principles",
+      "platform architecture",
+      "CI/CD",
+      "Docker",
+      "Cloud infrastructure management",
+      "technical debt",
+      "operational excellence",
+      "Typescript/Python",
+      "Release management",
+      "Continuous integration and delivery",
+      "Software development lifecycle",
+      "Agile and Scrum methodologies",
+      "Sprint planning and backlog refinement"
+    ]
+  },
+  "skill_groups": [],
+  "projects": [],
+  "certifications": [],
+  "layout_hints": {
+    "sidebar": false,
+    "accent_color": null,
+    "density": "standard",
+    "show_summary": true,
+    "max_pages": 2
+  }
+}
