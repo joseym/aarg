@@ -1,14 +1,14 @@
 import { Routes } from '@angular/router';
 
-/** Two routes for this wave: the build overview (`/`) and the per-build
- *  tailoring workspace (`/build/:id/tailor`). Both are lazy standalone
- *  components; the full screens land in a later wave. */
+/** One build screen. `/` is a thin landing that redirects to the newest
+ *  build's workspace; `/build/:id/tailor` is the single component that renders
+ *  any build (latest or selected). There is no separate overview. */
 export const routes: Routes = [
   {
     path: '',
     title: 'AARG — Builds',
     loadComponent: () =>
-      import('./features/build-overview/build-overview').then((m) => m.BuildOverview),
+      import('./features/build-landing/build-landing').then((m) => m.BuildLanding),
   },
   {
     path: 'build/:id/tailor',
