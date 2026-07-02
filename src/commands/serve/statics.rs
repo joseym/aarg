@@ -31,8 +31,19 @@ pub(super) fn serve(state: &AppState, path: &str) -> Resp {
         );
     };
 
-    let Some(file) = resolve(root, path) else {
-        return error_response(404, "not_found", format!("no static file for {path}"));
+    let file = match resolve(root, path) {
+        Some(file) => file,
+        // SPA fallback: a request for a client-side route (no file extension,
+        // e.g. `/build/051/tailor`) that matches no real file serves
+        // `index.html`, so the browser app's router takes over on a deep link
+        // or a refresh. A request that *looks* like an asset (has an extension)
+        // still 404s, so a broken script/style/wasm reference stays a real
+        // error rather than silently returning HTML.
+        None if is_spa_route(path) => match resolve(root, "index.html") {
+            Some(index) => index,
+            None => return error_response(404, "not_found", "no index.html to serve"),
+        },
+        None => return error_response(404, "not_found", format!("no static file for {path}")),
     };
 
     match std::fs::read(&file) {
@@ -47,9 +58,10 @@ pub(super) fn serve(state: &AppState, path: &str) -> Resp {
 /// nothing safe to serve. `root` must already be canonical (done once at
 /// startup). The rules:
 ///
-/// - `/` (the root path *only*) falls back to `index.html`, so the app's entry
-///   point loads without the client naming it. Any other missing path is a
-///   plain 404 — this is a single-file fallback, not a catch-all SPA rewrite.
+/// - `/` (the root path *only*) falls back to `index.html`. The wider
+///   client-route fallback (a missing extension-less path also serving
+///   `index.html`) lives in [`serve`], not here — `resolve` stays a strict
+///   file-or-nothing lookup.
 /// - The joined path is canonicalized and must still start with `root`, so no
 ///   `..` or symlink can reach outside the served directory.
 /// - It must resolve to a regular file (not a directory).
@@ -69,6 +81,16 @@ fn resolve(root: &Path, path: &str) -> Option<PathBuf> {
         return None; // escaped the served directory
     }
     candidate.is_file().then_some(candidate)
+}
+
+/// Whether a path is a client-side route (which should fall back to
+/// `index.html`) rather than an asset request. The test is simple and
+/// sufficient: an asset has a file extension in its last segment
+/// (`/main-ABC.js`, `/aarg_wasm_bg.wasm`), a route does not (`/build/051/tailor`,
+/// `/`). A missing asset stays a 404; a missing route serves the app.
+fn is_spa_route(path: &str) -> bool {
+    let last = path.rsplit('/').next().unwrap_or("");
+    !last.contains('.')
 }
 
 /// The `Content-Type` for a file, by extension. Covers the web-app kinds a
@@ -102,6 +124,18 @@ pub(super) fn content_type_for(path: &Path) -> &'static str {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spa_routes_fall_back_but_missing_assets_do_not() {
+        // Client routes (no extension in the last segment) fall back to the app.
+        assert!(is_spa_route("/build/051/tailor"));
+        assert!(is_spa_route("/"));
+        assert!(is_spa_route("/build/051/")); // trailing slash → route
+        // Asset requests (extension present) must 404 when missing, not serve HTML.
+        assert!(!is_spa_route("/main-ABC123.js"));
+        assert!(!is_spa_route("/aarg_wasm_bg.wasm"));
+        assert!(!is_spa_route("/styles-XQ.css"));
+    }
 
     #[test]
     fn content_types_cover_the_web_app_kinds() {
