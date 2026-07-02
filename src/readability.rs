@@ -230,7 +230,10 @@ mod tests {
     }
 
     /// Render a payload to a real PDF in a tempdir and check it. Hermetic:
-    /// each test gets its own tempdir; `typst` is on PATH per the harness.
+    /// each test gets its own tempdir. Rendering shells out to `typst`, which
+    /// is not guaranteed present (e.g. a CI runner without it); every caller
+    /// gates on `render::ensure_available()` and skips before reaching here, so
+    /// this helper assumes typst is available.
     fn render_and_check(draft: &TailoredResume) -> (tempfile::TempDir, ReadabilityReport) {
         let dir = tempfile::tempdir().unwrap();
         let payload = ats_payload(draft);
@@ -242,6 +245,10 @@ mod tests {
 
     #[test]
     fn a_normal_resume_extracts_real_text_and_stays_in_limit() {
+        if crate::render::ensure_available().is_err() {
+            eprintln!("skipping: typst not installed");
+            return;
+        }
         let draft = resume(vec![role("Engineer", 3, 4)]);
         let (_dir, report) = render_and_check(&draft);
 
@@ -261,6 +268,10 @@ mod tests {
 
     #[test]
     fn an_over_long_resume_trips_over_page_limit() {
+        if crate::render::ensure_available().is_err() {
+            eprintln!("skipping: typst not installed");
+            return;
+        }
         // Many roles, each with many long bullets, well past two pages.
         let roles = (0..16)
             .map(|i| {
@@ -296,6 +307,10 @@ mod tests {
 
     #[test]
     fn text_extraction_yields_real_text() {
+        if crate::render::ensure_available().is_err() {
+            eprintln!("skipping: typst not installed");
+            return;
+        }
         let draft = resume(vec![role("Engineer", 2, 3)]);
         let dir = tempfile::tempdir().unwrap();
         let payload = ats_payload(&draft);
@@ -314,6 +329,10 @@ mod tests {
 
     #[test]
     fn a_role_with_too_many_bullets_is_flagged() {
+        if crate::render::ensure_available().is_err() {
+            eprintln!("skipping: typst not installed");
+            return;
+        }
         let draft = resume(vec![role("Engineer", MAX_BULLETS_PER_ROLE + 2, 3)]);
         let (_dir, report) = render_and_check(&draft);
 
@@ -329,6 +348,10 @@ mod tests {
 
     #[test]
     fn the_hierarchy_check_is_reported_as_unavailable() {
+        if crate::render::ensure_available().is_err() {
+            eprintln!("skipping: typst not installed");
+            return;
+        }
         let draft = resume(vec![role("Engineer", 2, 3)]);
         let (_dir, report) = render_and_check(&draft);
 
