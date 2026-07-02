@@ -180,8 +180,27 @@ export type CovFilter = 'all' | 'exact' | 'semantic' | 'gap';
 
     @media (max-width: 1080px) {
       .cm-head, .req-row { grid-template-columns: 1fr; }
-      .rq-left { border-right: 0; border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent); }
       .cm-head > div:first-child { border-right: 0; }
+
+      /* Stacked, each requirement + its match status must read as ONE unit, or
+         it's unclear which "No matching experience" belongs to which
+         requirement. Make every row a distinct card: a gap between cards, a
+         state-coloured left rail down the whole card tying the requirement to
+         its status, and the internal divider softened so the card reads as one. */
+      .req-row {
+        margin: 10px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+      }
+      .req-row.exact { border-left-color: var(--success); }
+      .req-row.semantic { border-left-color: var(--warn); }
+      .req-row.gap { border-left-color: var(--danger); }
+      .rq-left {
+        border-right: 0;
+        border-bottom: 1px solid color-mix(in oklch, var(--border) 45%, transparent);
+      }
     }
   `,
 })
