@@ -74,9 +74,12 @@ export class ApiService {
     return this.http.get<ResumeDataset>(`${this.base}/dataset`);
   }
 
-  /** `PUT /api/dataset` — persist an edited dataset. */
-  putDataset(dataset: ResumeDataset): Observable<ResumeDataset> {
-    return this.http.put<ResumeDataset>(`${this.base}/dataset`, dataset);
+  /** `PUT /api/dataset` — persist an edited dataset. The response is a status
+   *  acknowledgement (`{status:"saved"}`), NOT the dataset — callers must keep
+   *  the object they sent (storing the ack as the dataset wedges every later
+   *  provenance check and copilot run). */
+  putDataset(dataset: ResumeDataset): Observable<{ status: string }> {
+    return this.http.put<{ status: string }>(`${this.base}/dataset`, dataset);
   }
 
   // ── render ──────────────────────────────────────────────────────────

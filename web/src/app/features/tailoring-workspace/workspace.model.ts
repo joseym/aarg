@@ -177,6 +177,12 @@ export interface ObjectionVM {
   suggestion: string | null;
   severity: Objection['severity'];
   copilot: CopilotKind;
+  /** Whether the resolved copilot can actually act on this objection. False for
+   *  whole-draft (`overall`) objections — no copilot acts on the whole draft —
+   *  and for a canonical-scoped layout objection (the layout copilot refuses
+   *  non-variant scope). The drawer shows an honest note instead of a Run button
+   *  when false; Accept/Leave stay available. */
+  runnable: boolean;
 }
 
 const TYPE_LABEL: Record<ObjectionType, string> = {
@@ -280,6 +286,11 @@ export function buildObjectionVMs(
 ): ObjectionVM[] {
   return objections.map((o) => {
     const { type } = classifyKind(o.kind);
+    const copilot = copilotFor(o);
+    // No copilot acts on the whole draft, and the layout copilot refuses a
+    // canonical (non-variant) scope — both would no-op or refuse, so mark them
+    // not-runnable and let the drawer explain rather than dead-end on a Run click.
+    const runnable = o.target !== 'overall' && !(copilot === 'layout' && o.scope === 'canonical');
     return {
       id: objectionId(o),
       objection: o,
@@ -290,7 +301,8 @@ export function buildObjectionVMs(
       message: o.message,
       suggestion: o.suggestion,
       severity: o.severity,
-      copilot: copilotFor(o),
+      copilot,
+      runnable,
     };
   });
 }

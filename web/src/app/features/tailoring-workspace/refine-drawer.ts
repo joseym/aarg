@@ -93,7 +93,19 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
         </div>
         <div class="cp-foot">
           <button class="btn btn-ghost" type="button" (click)="close.emit()">Close</button>
-          <button class="btn btn-primary" type="button" (click)="run.emit(o)">Run {{ o.copilot }} copilot →</button>
+          @if (o.runnable) {
+            <button class="btn btn-primary" type="button" (click)="run.emit(o)">Run {{ o.copilot }} copilot →</button>
+          } @else {
+            <p class="no-run">
+              @if (o.objection.target === 'overall') {
+                No copilot acts on the whole draft directly — Retailor addresses
+                overall objections in its revision pass, or accept it as intentional.
+              } @else {
+                This layout concern applies to the canonical draft; Retailor
+                addresses it, or accept it as intentional.
+              }
+            </p>
+          }
         </div>
       </div>
     }
@@ -128,6 +140,7 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
     .btn:hover:not(:disabled) { border-color: var(--fg); }
     .btn:disabled { opacity: 0.55; cursor: default; }
     .btn-ghost { border-color: transparent; background: transparent; }
+    .no-run { margin: 0; max-width: 34ch; font-size: 12.5px; line-height: 1.5; color: var(--muted); text-align: right; }
     .btn:focus-visible, .x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   `,
   imports: [],
