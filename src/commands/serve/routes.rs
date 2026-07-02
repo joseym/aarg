@@ -12,23 +12,31 @@
 
 use std::path::PathBuf;
 
+use chrono::Utc;
 use hyper::body::Incoming;
 use hyper::{Request, StatusCode};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{AppState, Resp, bytes_response, error_response, json_response, read_body};
+use crate::ats;
+use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::configured_client;
+use crate::commands::tailor::{resolve_ats_template, resolve_human_template};
 use crate::config::Config;
 use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
 use crate::dataset::validate;
 use crate::fetch::{self, FetchError};
+use crate::gap::GapReport;
+use crate::jd::JobRequirements;
 use crate::llm::{CompletionRequest, LlmClient, LlmError, TokenUsage};
 use crate::pricing;
 use crate::render::{self, RenderError};
+use crate::review::AdversarialReport;
+use crate::tailor::{TailoredResume, scrub_resume_text};
 use crate::templates;
-use crate::variant::{Variant, VariantPayload};
+use crate::variant::{self, TemplateId, Variant, VariantPayload};
 
 // ---------------------------------------------------------------------
 // POST /api/llm — proxy one completion through the server's credentials
@@ -448,6 +456,227 @@ fn is_safe_filename(name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------
+// POST /api/builds — persist a browser-run build the way the CLI does
+// ---------------------------------------------------------------------
+
+/// The `POST /api/builds` body: everything the browser's wasm tailor loop
+/// produced that the server needs to persist a numbered build, exactly as
+/// `aarg tailor`'s finalize step does.
+///
+/// Note what is *not* here: the ATS `VariantPayload`. The ATS variant is a
+/// deterministic projection of the canonical draft (`variant::ats_payload`),
+/// so the server re-derives it itself rather than trusting a client-supplied
+/// one — a browser could otherwise smuggle claims into the "upload this" PDF
+/// that never survived the never-fabricate guards. The `human_payload` *is*
+/// accepted as-is, because it's the LLM's reworded projection (produced in the
+/// browser via `POST /api/llm`) and can't be reproduced deterministically; it's
+/// optional, since a run may have rendered only the ATS variant.
+#[derive(Deserialize)]
+struct CreateBuildRequest {
+    jd: JobRequirements,
+    gap_report: GapReport,
+    canonical: TailoredResume,
+    adversarial_report: AdversarialReport,
+    #[serde(default)]
+    human_payload: Option<VariantPayload>,
+    model: String,
+    usage: TokenUsage,
+}
+
+/// Everything the persist step can fail with, kept as one typed enum so the
+/// blocking worker propagates with `?` and the async half maps each variant to
+/// the right HTTP status in one place ([`create_build_error_response`]).
+#[derive(Debug, thiserror::Error)]
+enum CreateBuildError {
+    #[error(transparent)]
+    Build(#[from] BuildError),
+    #[error(transparent)]
+    Render(#[from] RenderError),
+    #[error(transparent)]
+    Ats(#[from] ats::AtsError),
+    #[error(transparent)]
+    Dataset(#[from] store::DatasetError),
+}
+
+/// Persist a build the browser's wasm loop produced, mirroring `aarg tailor`'s
+/// finalize step so the saved build is byte-for-byte the kind the CLI writes
+/// and the history list scores it identically. The heavy lifting (disk writes,
+/// the `typst` subprocess, PDF text extraction) is blocking, so it runs on a
+/// blocking thread; only the request parse, credential-free config read, and
+/// template resolution happen on the async worker.
+pub(super) async fn create_build(req: Request<Incoming>) -> Resp {
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let request: CreateBuildRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return error_response(
+                400,
+                "bad_request",
+                format!("invalid create-build request: {error}"),
+            );
+        }
+    };
+
+    // Fail fast with the install message if typst is absent — before allocating
+    // a build directory that would otherwise be left empty.
+    if let Err(error) = render::ensure_available() {
+        return render_error_response(error);
+    }
+
+    // Config drives template resolution and the subscription flag. A config that
+    // won't load is a server-config problem the browser can't fix.
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => return error_response(500, "internal", error.to_string()),
+    };
+    // The ATS template the CLI would use (default `classic`), and — only when a
+    // human payload was sent — the default human template. Resolved here so a
+    // bad template name is a clean 400 before any disk work begins.
+    let ats_chosen = match resolve_ats_template(&config) {
+        Ok(chosen) => chosen,
+        Err(error) => return error_response(500, "internal", error.to_string()),
+    };
+    let human_chosen = if request.human_payload.is_some() {
+        match resolve_human_template(&None, &config) {
+            Ok(chosen) => Some(chosen),
+            Err(error) => return error_response(400, "bad_template", error.to_string()),
+        }
+    } else {
+        None
+    };
+    // Whether the active credential is a Claude plan — the same flag the CLI
+    // stamps into `meta.json`. Read from `Config` alone (see
+    // [`is_subscription_configured`]) so persisting a build never touches the
+    // keychain: this route saves a build, it does not spend the key.
+    let subscription = is_subscription_configured(&config);
+
+    let result = tokio::task::spawn_blocking(move || {
+        persist_build(request, ats_chosen, human_chosen, subscription)
+    })
+    .await;
+    match result {
+        Ok(Ok(id)) => json_response(200, &json!({ "id": id })),
+        Ok(Err(error)) => create_build_error_response(error),
+        Err(join) => error_response(
+            500,
+            "internal",
+            format!("the build task did not complete: {join}"),
+        ),
+    }
+}
+
+/// The blocking half of [`create_build`]: allocate the next numbered build and
+/// write its artifacts in the same order `aarg tailor` finalizes them —
+/// `canonical.json`, `adversarial_report.json`, `jd.json`, `gap_report.json`,
+/// then the rendered ATS PDF (with `ats_payload.json` alongside), the
+/// `ats_report.json` computed from that PDF, an optional human PDF, and finally
+/// `meta.json`. Returns the new build's id.
+fn persist_build(
+    request: CreateBuildRequest,
+    ats_chosen: crate::commands::tailor::ChosenTemplate,
+    human_chosen: Option<crate::commands::tailor::ChosenTemplate>,
+    subscription: bool,
+) -> Result<String, CreateBuildError> {
+    // Load the dataset first: the ATS coverage report is scored against it, and
+    // a build can't be honestly scored without it — fail before writing anything
+    // rather than leaving a half-written build directory behind.
+    let dataset = store::load()?;
+    let root = builds::builds_root()?;
+    persist_build_in(
+        &root,
+        &dataset,
+        request,
+        ats_chosen,
+        human_chosen,
+        subscription,
+    )
+}
+
+/// The core of [`persist_build`] with the builds root and dataset injected —
+/// the same `_in` seam `builds::create_next_in` / `history::list_in` use, so a
+/// test can drive the whole write-and-render sequence against a tempdir without
+/// touching the real workspace.
+fn persist_build_in(
+    root: &std::path::Path,
+    dataset: &ResumeDataset,
+    mut request: CreateBuildRequest,
+    ats_chosen: crate::commands::tailor::ChosenTemplate,
+    human_chosen: Option<crate::commands::tailor::ChosenTemplate>,
+    subscription: bool,
+) -> Result<String, CreateBuildError> {
+    // Strip AI-tell em/en dashes from the canonical prose, exactly as the CLI
+    // does before writing, so the stored JSON and every projection start clean.
+    // Punctuation only, never a claim change.
+    scrub_resume_text(&mut request.canonical);
+
+    let build = builds::create_next_in(root)?;
+    builds::write_json(&build.dir, "canonical.json", &request.canonical)?;
+    builds::write_json(
+        &build.dir,
+        "adversarial_report.json",
+        &request.adversarial_report,
+    )?;
+    builds::write_json(&build.dir, "jd.json", &request.jd)?;
+    builds::write_json(&build.dir, "gap_report.json", &request.gap_report)?;
+
+    // The ATS variant is re-projected server-side (never trusted from the
+    // client) and rendered. `render::render` writes `ats_payload.json` next to
+    // the PDF as a side effect.
+    let mut ats = variant::ats_payload(&request.canonical);
+    ats.template = TemplateId(ats_chosen.id.clone());
+    let ats_pdf = render::render(&build.dir, &ats, &ats_chosen.template)?;
+
+    // Coverage is scored against the *rendered* page text (a template bug that
+    // drops a section shows up here), matching the CLI's per-iteration evaluator.
+    let page_text = ats::extract_pdf_text(&ats_pdf)?;
+    let ats_report = ats::keyword_coverage(&request.jd, &request.gap_report, dataset, &page_text);
+    builds::write_json(&build.dir, "ats_report.json", &ats_report)?;
+
+    // The human variant, if the browser sent one, is the LLM's reworded
+    // projection — rendered as-is (it was already vetted browser-side), only its
+    // template stamp updated so the payload records which template drew it.
+    // `render::render` writes `human_payload.json` alongside the PDF.
+    if let Some(mut human) = request.human_payload.take()
+        && let Some(chosen) = human_chosen
+    {
+        human.template = TemplateId(chosen.id.clone());
+        render::render(&build.dir, &human, &chosen.template)?;
+    }
+
+    // `meta.json` last, so a build that has one is complete. The template id is
+    // the ATS one (the "upload this" PDF), matching the CLI.
+    builds::write_json(
+        &build.dir,
+        "meta.json",
+        &BuildMeta {
+            created_at: Utc::now(),
+            model: request.model,
+            template: ats_chosen.id,
+            tailor_usage: request.usage,
+            subscription,
+        },
+    )?;
+
+    Ok(build.id.0)
+}
+
+/// Map a [`CreateBuildError`] to a response: a render failure keeps the CLI's
+/// own status split (503 for a missing `typst`, 500 carrying typst's stderr);
+/// everything else is a 500 with the typed error's message. No message carries
+/// secret material.
+fn create_build_error_response(error: CreateBuildError) -> Resp {
+    match error {
+        CreateBuildError::Render(error) => render_error_response(error),
+        CreateBuildError::Dataset(error) => error_response(500, "dataset_error", error.to_string()),
+        CreateBuildError::Ats(error) => error_response(500, "ats_error", error.to_string()),
+        CreateBuildError::Build(error) => error_response(500, "build_error", error.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------
 // POST /api/fetch-jd — fetch a cross-origin posting server-side
 // ---------------------------------------------------------------------
 
@@ -769,5 +998,108 @@ mod tests {
         let body = cost_body(&query, true, &prices);
         assert!(body["usd"].is_null());
         assert_eq!(body["subscription_note"], "covered by your Claude plan");
+    }
+
+    /// A minimal `CreateBuildRequest` as the browser would POST it: an empty
+    /// JD/gap/adversarial report and a bare canonical draft, no human payload.
+    fn minimal_create_build_request() -> CreateBuildRequest {
+        serde_json::from_value(json!({
+            "jd": {
+                "company": "Acme",
+                "title": "Engineer",
+                "seniority": "senior",
+                "location": null,
+                "remote": "remote",
+                "domain_keywords": [],
+                "required_skills": [],
+                "preferred_skills": [],
+                "responsibilities": [],
+                "ats_phrases": [],
+                "raw_text": "Build things.",
+                "source_url": null
+            },
+            "gap_report": { "matched": [], "weak": [], "unknown": [] },
+            "canonical": {
+                "build_id": "000",
+                "jd_id": "acme",
+                "generated_at": "2026-07-01T00:00:00Z",
+                "contact": {
+                    "full_name": "Ada Lovelace",
+                    "email": "ada@example.com",
+                    "phone": null,
+                    "location": null,
+                    "links": []
+                },
+                "target_title": "Engineer",
+                "summary": "Engineering leader.",
+                "roles": [],
+                "education": [],
+                "skills_section": { "skills": [] },
+                "projects": [],
+                "achievements": [],
+                "certifications": []
+            },
+            "adversarial_report": {
+                "objections": [],
+                "overall_score": 0.8,
+                "persona_notes": "ok"
+            },
+            "model": "test-model",
+            "usage": { "input_tokens": 100, "output_tokens": 50 }
+        }))
+        .unwrap()
+    }
+
+    /// The persist step writes the same artifacts `aarg tailor` finalizes, into
+    /// the injected root. The four pre-render JSON files always land; the ATS
+    /// PDF, its payload, the coverage report, and `meta.json` need a real
+    /// `typst`, so those assertions are gated behind its availability (CI may
+    /// not have it installed).
+    #[test]
+    fn create_build_writes_the_cli_artifacts_to_the_injected_root() {
+        use crate::dataset::types::{Contact, ResumeDataset};
+
+        let root = tempfile::tempdir().unwrap();
+        let dataset = ResumeDataset::new(Contact {
+            full_name: "Ada Lovelace".into(),
+            email: "ada@example.com".into(),
+            phone: None,
+            location: None,
+            links: Vec::new(),
+        });
+        let request = minimal_create_build_request();
+        // ATS is built-in (`classic`), so this resolves without a config file.
+        let ats_chosen = resolve_ats_template(&Config::default()).unwrap();
+
+        let result = persist_build_in(root.path(), &dataset, request, ats_chosen, None, false);
+
+        // The first build is `001`; these four artifacts are written before any
+        // render, so they exist whether or not typst does.
+        let build_dir = root.path().join("001");
+        for artifact in [
+            "canonical.json",
+            "adversarial_report.json",
+            "jd.json",
+            "gap_report.json",
+        ] {
+            assert!(build_dir.join(artifact).is_file(), "missing {artifact}");
+        }
+
+        if render::ensure_available().is_ok() {
+            // typst present: the whole finalize runs and the id comes back.
+            assert_eq!(result.unwrap(), "001");
+            for artifact in [
+                "ats_payload.json",
+                "ats_report.json",
+                "meta.json",
+                "resume.ats.pdf",
+            ] {
+                assert!(build_dir.join(artifact).is_file(), "missing {artifact}");
+            }
+        } else {
+            // No typst: the render step fails, but the pre-render JSON (asserted
+            // above) is still on disk.
+            assert!(result.is_err());
+        }
     }
 }

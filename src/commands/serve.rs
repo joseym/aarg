@@ -336,6 +336,7 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::GetDataset => routes::get_dataset().await,
             ApiRoute::PutDataset => routes::put_dataset(req, &state).await,
             ApiRoute::ListBuilds => routes::list_builds().await,
+            ApiRoute::CreateBuild => routes::create_build(req).await,
             ApiRoute::GetBuild(id) => routes::get_build(&id).await,
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
@@ -415,7 +416,11 @@ fn system_hostname() -> Option<String> {
 fn requires_json_body(route: &ApiRoute) -> bool {
     matches!(
         route,
-        ApiRoute::Llm | ApiRoute::Render | ApiRoute::PutDataset | ApiRoute::FetchJd
+        ApiRoute::Llm
+            | ApiRoute::Render
+            | ApiRoute::PutDataset
+            | ApiRoute::CreateBuild
+            | ApiRoute::FetchJd
     )
 }
 
@@ -481,6 +486,7 @@ enum ApiRoute {
     GetDataset,
     PutDataset,
     ListBuilds,
+    CreateBuild,
     GetBuild(String),
     GetBuildFile(String, String),
     FetchJd,
@@ -513,6 +519,7 @@ fn match_route(method: &Method, path: &str) -> Match {
             ("GET", ["dataset"]) => Some(ApiRoute::GetDataset),
             ("PUT", ["dataset"]) => Some(ApiRoute::PutDataset),
             ("GET", ["builds"]) => Some(ApiRoute::ListBuilds),
+            ("POST", ["builds"]) => Some(ApiRoute::CreateBuild),
             ("GET", ["builds", id]) => Some(ApiRoute::GetBuild((*id).to_string())),
             ("GET", ["builds", id, "files", name]) => Some(ApiRoute::GetBuildFile(
                 (*id).to_string(),
@@ -694,6 +701,10 @@ mod tests {
         assert_eq!(
             route("GET", "/api/builds"),
             Match::Api(ApiRoute::ListBuilds)
+        );
+        assert_eq!(
+            route("POST", "/api/builds"),
+            Match::Api(ApiRoute::CreateBuild)
         );
         assert_eq!(
             route("GET", "/api/builds/041"),
