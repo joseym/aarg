@@ -4,25 +4,23 @@ AARG tailors your résumé to a specific job posting and then argues with itself
 about the result. A skeptical reviewer agent reads each draft the way a hiring
 manager looking for reasons to pass would, files specific objections, and a
 tailoring agent revises against them under tight bounds, keeping the best draft
-it finds rather than the last. The output is two PDFs built with
-[Typst](https://typst.app): a plain, parser-safe one to upload, and a designed
-one to hand a person.
+it finds along the way. It renders the winner with
+[Typst](https://typst.app) into two PDFs, one formatted to survive applicant
+tracking systems and one designed for a person to read.
 
 It runs on your machine, against your own career data, and it will not invent
-experience you don't have. That last part is the whole point, and it's enforced
-in three places rather than promised in one.
+experience you don't have. Three separate layers enforce that: the validation
+types, the assembly step, and the adversarial review.
 
-You can drive it two ways. There's a command-line tool, and there's a local
-browser workspace where the **same Rust runs in the page** via WebAssembly and a
-small companion server (`aarg serve`) does only the handful of things a browser
-page genuinely can't: hold your API key, run Typst, and touch your workspace on
-disk. Same facts, same guards, two front doors.
+You can drive it from a command-line tool or from a local browser workspace,
+which runs the same Rust in the page via WebAssembly alongside a small
+companion server (`aarg serve`).
 
 > **Status:** working end to end, from a command line or a local browser
 > workspace. Ingest, tailoring, the adversarial loop, both résumé variants,
 > history/diff, an interactive shell, and the in-browser build screen all work
-> today. Anthropic is the supported model provider; a fully-local one is on the
-> roadmap, not in the box yet.
+> today. Anthropic is the supported model provider; a fully-local option is
+> planned but not built yet.
 
 ## Demo
 
@@ -30,12 +28,10 @@ disk. Same facts, same guards, two front doors.
   <img src="docs/demo.gif" alt="aarg ingesting a resume, tailoring it to a posting through the adversarial loop, and exporting the PDFs" width="820">
 </p>
 
-A full run on a fictional candidate and posting: ingest a résumé into a
-structured dataset, then `tailor` parses the job, analyzes the gap, drafts, and
-works the review-and-revise loop, keeping the best draft rather than the last,
-before rendering both PDFs and exporting them under friendly names.
+A full run on a fictional candidate and posting, from `ingest` through the
+review loop to the exported PDFs.
 
-## The loop, briefly
+## How the loop works
 
 1. `ingest` turns an existing résumé into a structured **dataset**: roles,
    bullets, and skills, each tied to evidence.
@@ -55,9 +51,8 @@ before rendering both PDFs and exporting them under friendly names.
 
 When an objection can't be satisfied without lying ("this bullet states an
 outcome with no number"), the loop stops guessing and asks you. A short
-interview folds your real figures back into the dataset, then re-tailors. The
-machine revises what it can revise honestly; you supply the facts it is
-forbidden to invent.
+interview folds your real figures back into the dataset, then re-tailors.
+Anything factual has to come from you; the model only gets to rephrase it.
 
 The full write-up is in [docs/design/adversarial-loop.md](docs/design/adversarial-loop.md).
 
@@ -71,17 +66,17 @@ together:
   <img src="docs/screenshots/desktop.png" alt="The browser workspace: recent builds on the left, the tailored résumé in the centre with per-line provenance, the reviewer's verdict and objection cards on the right" width="860">
 </p>
 
-- **One score language.** Weighted coverage, the reviewer's verdict, ATS keyword
-  coverage, and the list-ranking score sit in one band, each explained in plain
-  words, instead of clashing across the screen.
+- **All the scores in one place.** Weighted coverage, the reviewer's verdict,
+  ATS keyword coverage, and the list-ranking score sit in one band, each with a
+  plain-words explanation of what it measures.
 - **A coverage map** of the posting's requirements against your dataset (exact
   match, semantic match, or gap), with a per-requirement **Refine**,
   **Strengthen**, or **Fill the gap** that drops you into the right copilot.
 - **An editable, provenance-checked preview.** Every line of the draft is
   free-editable and labelled by where it traces: **verbatim** from a bullet,
   **grounded** in your evidence, or **unrecorded**. An unrecorded line carries a
-  claim badge and a confirm-as-evidence button, so nothing reaches the page as
-  fact until it points at something real.
+  claim badge and a confirm-as-evidence button, so you can see exactly which
+  lines still need backing before the résumé goes anywhere.
 - **Interactive copilots.** The strengthen, metric, summary, and skills
   interviews from the CLI, run through a Q&A modal, plus a layout copilot for
   presentation-only objections. It's the browser mirror of the CLI's
@@ -107,12 +102,12 @@ together:
   <img src="docs/screenshots/edit-bar.png" alt="A line edited in the provenance-checked preview, with the sticky pending-edits bar offering save, undo, and record-as-evidence" width="820">
 </p>
 
-The honest architecture sentence: the whole domain pipeline is compiled to
-WebAssembly and runs in the page, and `aarg serve` is a small native companion
-that does only what a page can't: proxy one model completion through your
-keychain-held key, shell out to Typst, read and write your workspace on disk, and
-fetch a cross-origin posting. It binds to loopback by default; opt into `--bind`
-and `--allow-host` to reach it from a phone on a network you trust.
+Under the hood, the whole domain pipeline is compiled to WebAssembly and runs
+in the page. `aarg serve` is a small native companion for the things a page
+can't do itself: proxy one model completion through your keychain-held key,
+shell out to Typst, read and write your workspace on disk, and fetch a
+cross-origin posting. It binds to loopback by default; opt into `--bind` and
+`--allow-host` to reach it from a phone on a network you trust.
 
 The screenshots on this page use a bundled fictional demo dataset (a candidate
 named Sam Rivera), so there's no real résumé data in them. The workspace holds up
@@ -127,7 +122,8 @@ on a phone, too:
 ## It won't make things up
 
 Every skill, date, employer, and number in the output traces to evidence in your
-dataset. This is structural, not a request the model is trusted to honor:
+dataset. The model isn't trusted to follow that rule on its own; three separate
+mechanisms hold it:
 
 - **At the type level.** A skill with no backing evidence fails validation and
   never reaches a draft.
@@ -146,22 +142,21 @@ the obvious backdoor where an ATS miss turns into an invented bullet.
   <img src="docs/demo-evidence.gif" alt="aarg refusing to add a skill without evidence: it interviews the user for a real role and a sentence that becomes the backing evidence" width="820">
 </p>
 
-This is what the rule looks like when it meets a real gap. Adding a skill the
-posting wants but your résumé never mentioned isn't a free-text field: AARG makes
-you point at a real role and say what you actually did, and that one sentence is
-polished into résumé wording, never inflated, before it becomes the evidence. No
-evidence, no skill on the page.
+Adding a skill the posting wants but your résumé never mentioned means
+answering two questions: which real role demonstrates it, and what you actually
+did there. Your answer gets tightened into résumé wording and becomes the
+backing evidence. If you can't point at a real role, the skill stays off the
+page.
 
-The same guards hold in the browser, because it's the same code: the
-evidence checks and the claim-divergence lint are compiled into the WebAssembly
-and run client-side as you edit. But the server doesn't take the browser's word
-for any of it. Every draft or edit a page submits (`POST /api/builds`,
-`POST /api/builds/:id/edits`) is re-checked server-side against the same
-deterministic divergence guard before anything is written, and a saved dataset is
-re-validated the way `aarg dataset validate` would; a variant that claims more
-than the canonical draft is rejected with a `422`. The browser enforces the rule
-for a good experience; the server enforces it because it's the one that owns the
-disk and the key.
+The evidence checks and the claim-divergence lint are compiled into the
+WebAssembly bundle, so they also run client-side while you edit in the browser.
+The server re-checks everything anyway: a draft or edit submitted by a page
+(`POST /api/builds`, `POST /api/builds/:id/edits`) goes through the same
+deterministic divergence guard before anything is written, a saved dataset is
+re-validated the way `aarg dataset validate` would, and a variant that claims
+more than the canonical draft is rejected with a `422`. A page could be buggy
+or tampered with; the process that owns the disk and the key doesn't rely on
+it.
 
 ## Features
 
@@ -170,10 +165,9 @@ Beyond the core loop:
 - **Two résumé variants from one draft.** A plain, parser-safe ATS PDF and a
   designed human PDF, lint-checked to make the same claims. Five templates ship
   built-in, or point `tailor --template` at your own Typst layout.
-- **Honest gap-filling.** When the reviewer wants a number, a stronger verb, or a
-  skill you didn't surface, AARG interviews you for the real thing instead of
-  inventing it, then re-tailors. Thin roles and unbacked keywords work the same
-  way.
+- **Gap interviews.** When the reviewer wants a number, a stronger verb, or a
+  skill you didn't surface, AARG asks you for the real thing and re-tailors with
+  your answer. Thin roles and unbacked keywords work the same way.
 - **Voice.** Capture a few writing samples and AARG rewrites the AI-sounding lines
   toward how you actually write, without changing any facts.
 - **Cover letters.** Drafted from the tailored résumé and the posting, under the
@@ -184,9 +178,8 @@ Beyond the core loop:
 - **Flexible input.** Ingest a résumé from text, Markdown, or a PDF, including
   scanned ones read with the model's vision. Give a posting as a file, a
   Greenhouse/Lever URL, stdin, or a paste.
-- **A browser workspace.** `aarg serve` runs the whole build screen locally,
-  with the domain compiled to WebAssembly: the loop, the coverage map, the
-  provenance-checked editor, and the copilots. See [The browser workspace](#the-browser-workspace).
+- **A browser workspace.** The whole build screen, served locally by
+  `aarg serve`. See [The browser workspace](#the-browser-workspace).
 - **Use it from Claude.** Run AARG as an MCP server and drive it by chatting with
   Claude Desktop or Claude Code, on this machine or over SSH, with the copilots as
   in-chat prompts and the PDFs exposed as resources. See [docs/mcp.md](docs/mcp.md).
@@ -199,7 +192,8 @@ Beyond the core loop:
 
 - **Rust 1.89 or newer** (2024 edition).
 - **[Typst](https://github.com/typst/typst)** on your `PATH`; rendering shells
-  out to it. A missing binary fails with install instructions, not a panic.
+  out to it. If the binary is missing you get a clear message telling you how
+  to install it.
 - An **Anthropic API key**, or a Claude Pro/Max subscription (see
   [Authentication](#authentication)).
 - **[wasm-pack](https://rustwasm.github.io/wasm-pack/) and Node.js with npm**,
@@ -341,10 +335,10 @@ steps, flags, and the phone-on-your-network recipe are in
 `aarg-domain` (the résumé pipeline, pure code that transforms data and calls out
 through the runtime), `aarg-wasm` (a thin wasm-bindgen wrapper that exports the
 pipeline to the page), and the `aarg` binary (the CLI, the REPL, the MCP server,
-and `serve`). The browser front end is an Angular app, and the trick that keeps
-it honest is that it doesn't reimplement any of the pipeline: `aarg-domain` and
-its runtime compile to WebAssembly and run in the page. Two front ends, one
-domain core.
+and `serve`). The browser front end is an Angular app, but it doesn't
+reimplement any of the pipeline: `aarg-domain` and its runtime compile to
+WebAssembly and run in the page, so both front ends sit on the same domain
+code.
 
 ```mermaid
 flowchart TB
@@ -388,31 +382,30 @@ tests without a network or a key. In the browser, `aarg-core`'s `LlmClient` is
 answered by a JS callback across a small `Send`-preserving channel bridge, so the
 real domain agents run unchanged over the browser's own model calls.
 
-One honest seam: the in-browser loop's improve-or-stop gate scores on the
-reviewer's verdict alone, where the CLI blends in deterministic ATS keyword
-coverage. Same agents, same drafts; the browser weighs a revision slightly
-differently.
+One difference to know about: the in-browser loop's improve-or-stop gate scores
+on the reviewer's verdict alone, while the CLI blends in deterministic ATS
+keyword coverage. The agents and drafts are identical; the browser just weighs
+a revision slightly differently.
 
-### The runtime was extracted, not designed up front
+### Where the agent runtime came from
 
-This is the part the commit history is meant to show. Phase 1 shipped three
-model-backed features (JD parsing, gap analysis, tailoring) as plain `async`
-functions, with their prompt assembly, schema-validated parsing,
-retry-on-bad-output, and cost accounting honestly duplicated. By the third, what
-they shared was obvious. Phase 2 lifted a single generic `Agent` trait out of
-those three working cases in one reviewable diff, and the adversarial loop and
-the keyless eval harness then came almost for free, because every agent speaks
-one contract. New abstractions arrive when a second consumer does, not in
-anticipation of one.
+The first three model-backed features (JD parsing, gap analysis, tailoring)
+shipped as plain `async` functions, each carrying its own copy of prompt
+assembly, schema-validated parsing, retry-on-bad-output, and cost accounting.
+By the third, the duplication made the shared shape obvious, so the next phase
+lifted a generic `Agent` trait out of the three working cases in one reviewable
+diff. The adversarial loop and the keyless eval harness got cheap after that,
+since every agent speaks the same contract. I try not to add an abstraction
+until the second consumer shows up, and the commit history is there if you want
+to check that this one actually happened that way.
 
 The reasoning behind the trait, and the alternatives weighed against it, is in
 [docs/design/agent-runtime.md](docs/design/agent-runtime.md). The convergence
 problem the loop solves, and the score-must-improve gate that keeps it from
 oscillating, is in [docs/design/adversarial-loop.md](docs/design/adversarial-loop.md).
 
-Determinism stays out of the model wherever it can. ATS keyword coverage and
-readability are pure code, not agents, so the facts the score leans on can't be
-talked around.
+ATS keyword coverage and readability are computed by plain code with no model
+in the loop, so the facts the score leans on can't be talked around.
 
 ## Roadmap
 
@@ -423,9 +416,7 @@ diff, templates, résumé ingestion from text-layer PDFs, an interactive Q&A abo
 posting (`aarg chat`), exporting finished PDFs under friendly company names
 (`aarg export`), the REPL, experimental subscription auth, an MCP server
 (`aarg mcp`) that lets Claude Desktop and other MCP clients drive AARG by chat
-([docs/mcp.md](docs/mcp.md)), and the **browser workspace** (`aarg serve`) with
-the domain pipeline compiled to WebAssembly and the loop, coverage map, provenance
-editor, and copilots all running in the page.
+([docs/mcp.md](docs/mcp.md)), and the **browser workspace** (`aarg serve`).
 
 **Not there yet**: a fully-local model provider (the client trait and per-agent
 model tiers are already in place for it to slot into); an experimental vision pass
@@ -438,9 +429,8 @@ now; `--bind` past localhost is opt-in and unauthenticated).
 
 - **[Use AARG from Claude (MCP)](docs/mcp.md):** run AARG as an MCP server for
   Claude Desktop or Claude Code, locally or over SSH, and drive it by chat.
-- **[The agent runtime](docs/design/agent-runtime.md):** why the `Agent` trait
-  was extracted from three working features rather than designed up front, and
-  the alternatives weighed against it.
+- **[The agent runtime](docs/design/agent-runtime.md):** how the `Agent` trait
+  grew out of three working features, and the alternatives weighed against it.
 - **[The adversarial loop](docs/design/adversarial-loop.md):** the convergence
   problem the review-and-revise loop solves, and the score-must-improve gate that
   keeps it from oscillating.
