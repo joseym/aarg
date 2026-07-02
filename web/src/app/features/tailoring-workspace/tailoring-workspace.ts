@@ -26,6 +26,7 @@ import { ResumePreview } from './resume-preview';
 import { CoverageMap } from './coverage-map';
 import { ReviewerRail } from './reviewer-rail';
 import { RefineDrawer } from './refine-drawer';
+import { CoverageScore } from '../../shared/coverage-score';
 import {
   band,
   buildCoverageRows,
@@ -56,7 +57,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 @Component({
   selector: 'app-tailoring-workspace',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, ResumePreview, CoverageMap, ReviewerRail, RefineDrawer],
+  imports: [RouterLink, ResumePreview, CoverageMap, ReviewerRail, RefineDrawer, CoverageScore],
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
     <div class="ctxbar">
@@ -65,18 +66,23 @@ type ClaimState = 'ok' | 'checking' | 'flag';
         <div class="ctx-job">{{ jobTitle() }}</div>
         <div class="ctx-co">{{ jobCompany() }} · tailoring workspace</div>
       </div>
-      @if (coverage(); as cov) {
-        <span class="score-chip" [attr.data-band]="cov.band">
-          <span class="dot"></span>
-          <span class="num">{{ cov.pct }}%</span> · {{ cov.matched }}/{{ cov.total }} matched
-        </span>
-      }
       <div class="spacer"></div>
       <button class="btn" type="button" (click)="downloadPdf()" [disabled]="downloading()">
         {{ downloading() ? 'Rendering…' : 'Download PDF' }}
       </button>
       <a class="btn btn-primary" routerLink="/">New Build</a>
     </div>
+
+    <!-- ── weighted-coverage score (same treatment as the build overview) ── -->
+    @if (coverage(); as cov) {
+      <app-coverage-score
+        class="ctx-score"
+        [score]="cov.pct / 100"
+        [matched]="cov.matched"
+        [total]="cov.total"
+        [compact]="true"
+      />
+    }
 
     @if (loading()) {
       <div class="panel muted">Loading build {{ id() }}…</div>
@@ -171,14 +177,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     .ctx-job { font-family: var(--font-display); font-size: 15px; }
     .ctx-co { color: var(--muted); font-size: 13px; }
     .spacer { flex: 1; }
-    .score-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
-    .score-chip .dot { width: 7px; height: 7px; border-radius: 2px; background: var(--faint); }
-    .score-chip[data-band='ok'] { color: var(--success); border-color: color-mix(in oklch, var(--success) 40%, var(--border)); }
-    .score-chip[data-band='ok'] .dot { background: var(--success); }
-    .score-chip[data-band='warn'] { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 40%, var(--border)); }
-    .score-chip[data-band='warn'] .dot { background: var(--warn); }
-    .score-chip[data-band='bad'] { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 40%, var(--border)); }
-    .score-chip[data-band='bad'] .dot { background: var(--danger); }
+    .ctx-score { display: block; margin: 4px 0 26px; }
 
     .btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 14px; font-weight: 500; color: inherit; cursor: pointer; text-decoration: none; }
     .btn:hover:not(:disabled) { border-color: var(--fg); }
