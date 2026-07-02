@@ -41,7 +41,7 @@ type JdSource = 'paste' | 'url' | 'reuse';
         <p class="sub">
           Paste the posting (or fetch it from a URL), then run the adversarial
           tailor loop. It parses the JD, finds the gaps against your dataset, and
-          drafts → reviews → revises a canonical résumé — the same loop the CLI
+          drafts → reviews → revises a canonical résumé: the same loop the CLI
           runs, live in your browser.
         </p>
       </header>
@@ -126,10 +126,10 @@ type JdSource = 'paste' | 'url' | 'reuse';
             </select>
             <p class="note">
               Retailors the chosen posting against your current, possibly
-              copilot-enriched dataset — the same loop, fresh evidence.
+              copilot-enriched dataset: the same loop, fresh evidence.
             </p>
           } @else {
-            <p class="note">No previous builds yet — paste or fetch a posting instead.</p>
+            <p class="note">No previous builds yet: paste or fetch a posting instead.</p>
           }
         } @else {
           <textarea
@@ -154,7 +154,7 @@ type JdSource = 'paste' | 'url' | 'reuse';
           {{ running() ? 'Running…' : source() === 'reuse' ? 'Retailor' : 'Run build' }}
         </button>
         <p class="note">
-          Runs live — you can Stop it between passes from the progress overlay
+          Runs live: you can Stop it between passes from the progress overlay
           (an in-flight model call still finishes). Give it a minute.
         </p>
       </div>
@@ -256,7 +256,7 @@ export class NewBuild {
       },
       error: (err: unknown) => {
         this.fetching.set(false);
-        this.showToast(`Couldn’t fetch that URL: ${errMessage(err)} — paste the text instead.`);
+        this.showToast(`Couldn’t fetch that URL: ${errMessage(err)}. Paste the text instead.`);
       },
     });
   }
@@ -278,7 +278,7 @@ export class NewBuild {
         dataset = await firstValueFrom(this.api.getDataset());
       } catch (err) {
         if (err instanceof HttpErrorResponse && err.status === 404) {
-          this.showToast('No dataset yet — add your experience first.');
+          this.showToast('No dataset yet: add your experience first.');
           return;
         }
         throw err;
@@ -330,5 +330,5 @@ function errMessage(err: unknown): string {
   }
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
-  return 'Something went wrong — the run didn’t complete.';
+  return 'Something went wrong: the run didn’t complete.';
 }

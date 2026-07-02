@@ -13,6 +13,7 @@ import type {
   JobRequirements,
   SkillImportance,
 } from '../models';
+import { normalizeDashes } from './normalize-dashes';
 
 export type ReqState = 'exact' | 'semantic' | 'gap';
 
@@ -237,7 +238,7 @@ export class CoverageMap {
 
   protected readonly emptyFilterNote = computed(() =>
     this.covFilter() === 'gap'
-      ? 'No gaps — every requirement is covered.'
+      ? 'No gaps: every requirement is covered.'
       : 'Nothing matches this filter.',
   );
 
@@ -264,16 +265,18 @@ function buildRows(jd: JobRequirements, gap: GapReport): ReqRow[] {
       name: s.name,
       importance: s.importance,
       category: s.category,
-      context: s.context_phrases?.[0] ?? '',
+      // MODEL text: the JD context phrase is parsed from the posting, so
+      // normalize dashes at this render boundary (see shared/normalize-dashes).
+      context: normalizeDashes(s.context_phrases?.[0] ?? ''),
     };
     if (m && !m.semantic) {
-      return { ...base, state: 'exact' as const, mark: '✓', tag: 'exact match', evidence: m.dataset_name, action: 'Refine', intent: 'matched' as const };
+      return { ...base, state: 'exact' as const, mark: '✓', tag: 'exact match', evidence: normalizeDashes(m.dataset_name), action: 'Refine', intent: 'matched' as const };
     }
     if (m) {
-      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'semantic match', evidence: m.dataset_name, action: 'Strengthen', intent: 'semantic' as const };
+      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'semantic match', evidence: normalizeDashes(m.dataset_name), action: 'Strengthen', intent: 'semantic' as const };
     }
     if (w) {
-      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'weak match', evidence: w.dataset_name, action: 'Strengthen', intent: 'semantic' as const };
+      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'weak match', evidence: normalizeDashes(w.dataset_name), action: 'Strengthen', intent: 'semantic' as const };
     }
     return { ...base, state: 'gap' as const, mark: '✕', tag: `gap · ${s.category}`, evidence: 'No matching experience', action: 'Fill the gap', intent: 'gap' as const };
   });

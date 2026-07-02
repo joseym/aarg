@@ -160,7 +160,7 @@ export class ScorePanel {
         pct: toPct(w),
         band: band(w),
         explain:
-          "How much of the job's requirements your evidence backs — critical requirements weigh 3× a nice-to-have.",
+          "How much of the job's requirements your evidence backs: critical requirements weigh 3× a nice-to-have.",
         subNote: `${this.matched()} of ${this.total()} matched`,
         emphasized: true,
       });
@@ -172,7 +172,7 @@ export class ScorePanel {
         label: 'Reviewer verdict',
         pct: toPct(v),
         band: band(v),
-        explain: 'A skeptical hiring-manager review of this draft — drives the revision loop.',
+        explain: 'A skeptical hiring-manager review of this draft; it drives the revision loop.',
         subNote: null,
         emphasized: false,
       });
