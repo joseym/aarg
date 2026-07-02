@@ -124,6 +124,17 @@ struct AppState {
     /// racing that lock would make one spuriously 500. Holding this async mutex
     /// across validate-then-save turns a race into an orderly queue instead.
     dataset_write: Arc<tokio::sync::Mutex<()>>,
+    /// Serializes `POST /api/builds/:id/edits` writes. Unlike the dataset store,
+    /// build directories take no file lock at all: the handler read-modifies-
+    /// writes `canonical.json` + `edit_log.json`, so two concurrent saves or
+    /// reverts (two tabs on the same build) would silently lose the loser's
+    /// edit and log entries — last write wins, and both clients see a 200.
+    /// Holding this mutex across the whole read-apply-write-render sequence
+    /// turns that race into an orderly queue. One mutex for ALL builds (not a
+    /// per-id map) is deliberate: this is a single-user localhost server where
+    /// build edits are rare and brief, so cross-build contention is negligible
+    /// and one lock keeps the state trivially simple.
+    build_write: Arc<tokio::sync::Mutex<()>>,
     /// The port the listener actually bound to. Read from `TcpListener::local_addr`
     /// rather than trusted from the `--port` argument, so the `Host` allowlist
     /// (see [`host_is_allowed`]) is correct even when the OS picks the port —
@@ -215,6 +226,7 @@ pub async fn run(
     let state = AppState {
         static_root: static_root.clone(),
         dataset_write: Arc::new(tokio::sync::Mutex::new(())),
+        build_write: Arc::new(tokio::sync::Mutex::new(())),
         bound_port,
         allowed_hosts: Arc::new(allowed_hosts.clone()),
     };
@@ -340,6 +352,7 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::Models => routes::models().await,
             ApiRoute::Templates => routes::templates().await,
             ApiRoute::GetBuild(id) => routes::get_build(&id).await,
+            ApiRoute::SaveBuildEdits(id) => routes::save_build_edits(req, &id, &state).await,
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
             ApiRoute::Cost => routes::cost(req).await,
@@ -422,6 +435,7 @@ fn requires_json_body(route: &ApiRoute) -> bool {
             | ApiRoute::Render
             | ApiRoute::PutDataset
             | ApiRoute::CreateBuild
+            | ApiRoute::SaveBuildEdits(_)
             | ApiRoute::FetchJd
     )
 }
@@ -492,6 +506,7 @@ enum ApiRoute {
     Models,
     Templates,
     GetBuild(String),
+    SaveBuildEdits(String),
     GetBuildFile(String, String),
     FetchJd,
     Cost,
@@ -527,6 +542,7 @@ fn match_route(method: &Method, path: &str) -> Match {
             ("GET", ["models"]) => Some(ApiRoute::Models),
             ("GET", ["templates"]) => Some(ApiRoute::Templates),
             ("GET", ["builds", id]) => Some(ApiRoute::GetBuild((*id).to_string())),
+            ("POST", ["builds", id, "edits"]) => Some(ApiRoute::SaveBuildEdits((*id).to_string())),
             ("GET", ["builds", id, "files", name]) => Some(ApiRoute::GetBuildFile(
                 (*id).to_string(),
                 (*name).to_string(),
@@ -722,6 +738,10 @@ mod tests {
             Match::Api(ApiRoute::GetBuild("041".into()))
         );
         assert_eq!(
+            route("POST", "/api/builds/041/edits"),
+            Match::Api(ApiRoute::SaveBuildEdits("041".into()))
+        );
+        assert_eq!(
             route("GET", "/api/builds/041/files/resume.ats.pdf"),
             Match::Api(ApiRoute::GetBuildFile(
                 "041".into(),
@@ -790,6 +810,7 @@ mod tests {
         let state = AppState {
             static_root: Some(Arc::new(root)),
             dataset_write: Arc::new(tokio::sync::Mutex::new(())),
+            build_write: Arc::new(tokio::sync::Mutex::new(())),
             bound_port: addr.port(),
             allowed_hosts: Arc::new(Vec::new()),
         };
@@ -906,6 +927,7 @@ mod tests {
         let state = AppState {
             static_root: None,
             dataset_write: Arc::new(tokio::sync::Mutex::new(())),
+            build_write: Arc::new(tokio::sync::Mutex::new(())),
             bound_port: addr.port(),
             allowed_hosts: Arc::new(Vec::new()),
         };

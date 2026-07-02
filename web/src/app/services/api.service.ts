@@ -60,6 +60,23 @@ export class ApiService {
     return this.http.post<{ id: string }>(`${this.base}/builds`, body);
   }
 
+  /** `POST /api/builds/:id/edits` — save the workspace's local edits INTO the
+   *  stored build: the server applies them to the canonical draft under the
+   *  never-fabricate guards, re-renders both PDFs, and appends each to the
+   *  build's on-disk edit log (for cross-session undo). `target` is `'summary'`
+   *  or `'bullet:<source_id>'` — the caller translates its positional preview
+   *  keys to canonical ids before sending. Returns how many landed and the new
+   *  log length. */
+  saveBuildEdits(
+    id: string,
+    edits: Array<{ target: string; text: string }>,
+  ): Observable<{ saved: number; log_len: number }> {
+    return this.http.post<{ saved: number; log_len: number }>(
+      `${this.base}/builds/${encodeURIComponent(id)}/edits`,
+      { edits },
+    );
+  }
+
   /** `GET /api/builds/:id/files/:name` — a stored rendered PDF, as a blob. */
   getBuildFile(id: string, name: string): Observable<Blob> {
     return this.http.get(

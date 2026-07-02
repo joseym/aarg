@@ -47,11 +47,23 @@ import {
   type PreviewModel,
 } from './workspace.model';
 
-/** `BuildDetail` (models/build.ts) does not yet type a human `VariantPayload`;
- *  the serve bundle carries one on disk. Read it defensively and flag the gap
- *  rather than editing the shared model. */
+/** One entry in a build's on-disk `edit_log.json`: a workspace edit saved into
+ *  the build. `prev`/`next` are the text before/after; a Revert re-posts `prev`
+ *  as an inverse edit (which appends its own entry — the log is an audit trail,
+ *  never rewritten). Mirrors the server's `EditLogEntry`. */
+interface EditLogEntry {
+  at: string;
+  target: string;
+  prev: string;
+  next: string;
+}
+
+/** `BuildDetail` (models/build.ts) does not yet type a human `VariantPayload`
+ *  or the edit log; the serve bundle carries both on disk. Read them defensively
+ *  and flag the gap rather than editing the shared model. */
 interface BuildBundle extends BuildDetail {
   human_payload?: VariantPayload;
+  edit_log?: EditLogEntry[];
 }
 
 type ClaimState = 'ok' | 'checking' | 'flag';
@@ -258,8 +270,48 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                     >
                       {{ recording() ? 'Recording…' : 'Record ' + editCount() + ' edit' + (editCount() === 1 ? '' : 's') + ' in your dataset' }}
                     </button>
+                    <button
+                      class="btn btn-sm btn-save"
+                      type="button"
+                      title="Bake these edits into this build's canonical draft and re-render its PDFs"
+                      (click)="saveEdits()"
+                      [disabled]="saving()"
+                    >
+                      {{ saving() ? 'Saving…' : 'Save ' + editCount() + ' edit' + (editCount() === 1 ? '' : 's') + ' to this build' }}
+                    </button>
                   }
                 </div>
+
+                <!-- Cross-session undo: the build's on-disk edit log. Each entry
+                     can be reverted (posts the inverse edit to the same endpoint). -->
+                @if (editLog().length > 0) {
+                  <details class="edit-log">
+                    <summary>Edit history ({{ editLog().length }})</summary>
+                    <ul>
+                      @for (entry of editLog(); track $index) {
+                        <li>
+                          <div class="el-row">
+                            <span class="el-target">{{ editTargetLabel(entry.target) }}</span>
+                            <span class="el-time">{{ editEntryTime(entry.at) }}</span>
+                            <button
+                              class="btn btn-sm el-revert"
+                              type="button"
+                              (click)="revertEdit(entry)"
+                              [disabled]="saving()"
+                            >
+                              Revert
+                            </button>
+                          </div>
+                          <div class="el-diff">
+                            <span class="el-prev">{{ truncate(entry.prev) }}</span>
+                            <span class="el-arrow" aria-hidden="true">→</span>
+                            <span class="el-next">{{ truncate(entry.next) }}</span>
+                          </div>
+                        </li>
+                      }
+                    </ul>
+                  </details>
+                }
               } @else {
                 <div class="panel muted">This build has no résumé payload to preview.</div>
               }
@@ -370,6 +422,22 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     .fidelity .tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; }
     .btn-record { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); color: var(--accent); background: var(--accent-soft); }
     .btn-record:hover:not(:disabled) { border-color: var(--accent); }
+    .btn-save { border-color: var(--accent); color: oklch(97% 0.02 40); background: var(--accent); }
+    .btn-save:hover:not(:disabled) { background: var(--accent-2); border-color: var(--accent-2); }
+
+    .edit-log { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); font-size: 12.5px; }
+    .edit-log > summary { cursor: pointer; padding: 9px 12px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); list-style: none; }
+    .edit-log > summary::-webkit-details-marker { display: none; }
+    .edit-log ul { list-style: none; margin: 0; padding: 4px 0; max-height: 260px; overflow-y: auto; }
+    .edit-log li { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+    .edit-log li + li { border-top: 1px solid color-mix(in oklch, var(--border) 55%, transparent); }
+    .el-row { display: flex; align-items: center; gap: 10px; }
+    .el-target { font-weight: 600; color: var(--fg); }
+    .el-time { color: var(--faint); font-family: var(--font-mono); font-size: 11px; }
+    .el-revert { margin-left: auto; height: 24px; padding: 0 9px; font-size: 12px; }
+    .el-diff { display: flex; align-items: baseline; gap: 7px; color: var(--muted); flex-wrap: wrap; }
+    .el-prev { text-decoration: line-through; color: var(--faint); }
+    .el-next { color: var(--fg); }
 
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 22px; max-width: 62ch; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
     .muted { color: var(--muted); }
@@ -453,6 +521,8 @@ export class TailoringWorkspace {
   protected readonly drawer = signal<ObjectionVM | null>(null);
   protected readonly downloading = signal(false);
   protected readonly recording = signal(false);
+  /** A save-into-build or revert is in flight (both POST `/builds/:id/edits`). */
+  protected readonly saving = signal(false);
   private readonly claimChecking = signal(false);
   private readonly _toast = signal<string | null>(null);
   protected readonly toast = this._toast.asReadonly();
@@ -467,6 +537,8 @@ export class TailoringWorkspace {
   protected readonly jd = computed<JobRequirements | null>(() => this.bundle()?.jd ?? null);
   protected readonly report = computed<AdversarialReport | null>(() => this.bundle()?.adversarial_report ?? null);
   protected readonly coverage = computed(() => this.coverageReport());
+  /** The build's on-disk edit history (empty until an edit is saved into it). */
+  protected readonly editLog = computed<EditLogEntry[]>(() => this.bundle()?.edit_log ?? []);
 
   protected readonly jobTitle = computed(
     () => this.jd()?.title ?? this.bundle()?.canonical?.target_title ?? 'Untitled build',
@@ -893,6 +965,155 @@ export class TailoringWorkspace {
     } finally {
       this.recording.set(false);
     }
+  }
+
+  /** Save the current pending edits INTO this stored build. Unlike
+   *  {@link recordEdits} (which writes them to the DATASET as future evidence),
+   *  this bakes them into THIS build's canonical draft: the server applies each
+   *  under the never-fabricate guards, re-renders both PDFs, and appends them to
+   *  the build's on-disk edit log. Only summary and bullet edits are savable —
+   *  skill chips aren't traceable canonical lines, so they're excluded and noted.
+   *  Targets are canonical ids (`summary`, `bullet:<source_id>`), never the
+   *  preview's positional keys. On success the saved keys are cleared (they live
+   *  in the build now) and the bundle is reloaded so preview / pixel-perfect /
+   *  provenance all reflect the new stored truth. A 422 claim-divergence (or any
+   *  other failure) surfaces via {@link errMessage}. */
+  protected async saveEdits(): Promise<void> {
+    const editMap = this.edits();
+    const recordedSet = this.recordedKeys();
+    const payload = this.previewPayload();
+    // Same set the button counts: pending (not already recorded to the dataset).
+    const pendingKeys = Object.keys(editMap).filter((k) => !recordedSet.has(k));
+    if (pendingKeys.length === 0) return;
+
+    // Translate positional preview keys → canonical targets the server accepts.
+    const targets: Array<{ key: string; target: string; text: string }> = [];
+    let skippedSkills = 0;
+    for (const key of pendingKeys) {
+      if (key === 'summary') {
+        targets.push({ key, target: 'summary', text: editMap[key] });
+      } else if (key.startsWith('bullet:')) {
+        const sourceId = resolveBulletSourceId(key, payload);
+        if (sourceId) targets.push({ key, target: `bullet:${sourceId}`, text: editMap[key] });
+      } else if (key.startsWith('skill:')) {
+        skippedSkills += 1; // skills aren't canonical lines — never savable
+      }
+    }
+
+    if (targets.length === 0) {
+      this.showToast(
+        skippedSkills > 0
+          ? 'Only summary and bullet edits can be saved into a build — skill edits stay local.'
+          : 'Nothing to save — these edits don’t map to a build line.',
+      );
+      return;
+    }
+
+    this.saving.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.api.saveBuildEdits(
+          this.id(),
+          targets.map((t) => ({ target: t.target, text: t.text })),
+        ),
+      );
+      let msg = `Saved ${plural(res.saved, 'edit')} into build ${this.id()} — PDFs re-rendered.`;
+      if (skippedSkills > 0) {
+        msg += ` ${plural(skippedSkills, 'skill edit')} skipped — skills aren’t savable to a build.`;
+      }
+      this.showToast(msg);
+      // Baked into the build now — drop the saved keys from the local overlay,
+      // the recorded set, and the undo history so they can't double-apply, then
+      // reload the changed artifacts.
+      const savedKeys = new Set(targets.map((t) => t.key));
+      this.edits.update((m) => {
+        const next = { ...m };
+        for (const k of savedKeys) delete next[k];
+        return next;
+      });
+      this.recordedKeys.update((s) => {
+        const next = new Set(s);
+        for (const k of savedKeys) next.delete(k);
+        return next;
+      });
+      this.editHistory.update((h) => h.filter((e) => !savedKeys.has(e.key)));
+      this.reloadBundle();
+    } catch (err) {
+      this.showToast(errMessage(err));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  /** Revert one stored edit by posting its INVERSE (`{target, text: prev}`) to
+   *  the same endpoint — an honest audit trail: the revert is appended to the
+   *  log rather than erasing history.
+   *
+   *  Pending (unsaved) local edits are BLOCKED first: the preview renders the
+   *  local `edits` overlay ON TOP of the bundle, so a pending edit would keep
+   *  showing its pre-revert text over the correctly-reverted disk. On success
+   *  the whole overlay is dropped (any remaining keys were recorded to the
+   *  DATASET, which a build revert never touches — their text is safe there)
+   *  and the bundle reloaded, so preview / pixel-perfect / provenance / the
+   *  Edit history (now carrying this revert's inverse entry) all show the new
+   *  stored truth. */
+  protected async revertEdit(entry: EditLogEntry): Promise<void> {
+    if (this.editCount() > 0) {
+      this.showToast('Undo or save your pending edits first (skill edits can only be undone), then revert.');
+      return;
+    }
+    this.saving.set(true);
+    try {
+      await firstValueFrom(
+        this.api.saveBuildEdits(this.id(), [{ target: entry.target, text: entry.prev }]),
+      );
+      // Drop the local overlay so the reloaded bundle is what the preview
+      // shows — a leftover recorded-key overlay would mask the reverted line.
+      this.edits.set({});
+      this.recordedKeys.set(new Set());
+      this.editHistory.set([]);
+      this.showToast(`Reverted ${this.editTargetLabel(entry.target).toLowerCase()} — PDFs re-rendered.`);
+      this.reloadBundle();
+    } catch (err) {
+      this.showToast(errMessage(err));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  /** Re-fetch this build's artifact bundle after its stored files changed (a
+   *  save or revert baked edits into the canonical and re-rendered the PDFs) so
+   *  the preview, pixel-perfect PDF, provenance, and edit history reflect the new
+   *  stored truth. Lighter than the initial load — the dataset is unchanged, so
+   *  only the bundle is refetched and the deterministic checks re-run. */
+  private reloadBundle(): void {
+    this.api.getBuild(this.id()).subscribe({
+      next: (d) => {
+        // Discard any layout-copilot projection: previewPayload prefers
+        // `refinedHuman` over the bundle, so leaving it set would mask the
+        // reloaded stored truth (a just-saved edit visually vanishes, and
+        // recompute would spuriously claim-flag the stale payload against the
+        // edited canonical). It was a projection of a canonical that just
+        // changed — semantically it must not outlive this reload.
+        this.refinedHuman.set(null);
+        this.bundle.set(d as BuildBundle);
+        void this.recompute();
+      },
+      error: (err: unknown) => this.showToast(`Couldn’t reload the build: ${errMessage(err)}`),
+    });
+  }
+
+  /** Template helpers for the edit-history disclosure. */
+  protected editEntryTime(iso: string): string {
+    return formatStamp(iso);
+  }
+  protected editTargetLabel(target: string): string {
+    if (target === 'summary') return 'Summary';
+    if (target.startsWith('bullet:')) return 'Bullet';
+    return target;
+  }
+  protected truncate(text: string, max = 64): string {
+    return text.length > max ? `${text.slice(0, max - 1)}…` : text;
   }
 
   /** Confirm a single unrecorded line as the user's own evidence, straight from
