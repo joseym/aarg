@@ -17,6 +17,7 @@ import { CopilotHost } from '../../shared/copilot-host';
 import type {
   AdversarialReport,
   BuildDetail,
+  Bullet,
   GapReport,
   JobRequirements,
   ProvenanceReport,
@@ -165,6 +166,16 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                 <span class="tag">HTML · editing</span>
                 <span>Live in-browser preview — edit any line. Facts stay identical to the</span>
                 <button class="btn btn-sm" type="button" (click)="downloadPdf()">pixel-perfect PDF ↓</button>
+                @if (editCount() > 0) {
+                  <button
+                    class="btn btn-sm btn-record"
+                    type="button"
+                    (click)="recordEdits()"
+                    [disabled]="recording()"
+                  >
+                    {{ recording() ? 'Recording…' : 'Record ' + editCount() + ' edit' + (editCount() === 1 ? '' : 's') + ' in your dataset' }}
+                  </button>
+                }
               </div>
             } @else {
               <div class="panel muted">This build has no résumé payload to preview.</div>
@@ -259,6 +270,8 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 
     .fidelity { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
     .fidelity .tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; }
+    .btn-record { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); color: var(--accent); background: var(--accent-soft); }
+    .btn-record:hover:not(:disabled) { border-color: var(--accent); }
 
     .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 22px; max-width: 62ch; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
     .muted { color: var(--muted); }
@@ -307,11 +320,13 @@ export class TailoringWorkspace {
   protected readonly busy = signal<string | null>(null);
   protected readonly drawer = signal<ObjectionVM | null>(null);
   protected readonly downloading = signal(false);
+  protected readonly recording = signal(false);
   private readonly claimChecking = signal(false);
   private readonly _toast = signal<string | null>(null);
   protected readonly toast = this._toast.asReadonly();
 
   // ── derived view state ───────────────────────────────────────────────
+  protected readonly editCount = computed(() => Object.keys(this.edits()).length);
   protected readonly jd = computed<JobRequirements | null>(() => this.bundle()?.jd ?? null);
   protected readonly report = computed<AdversarialReport | null>(() => this.bundle()?.adversarial_report ?? null);
   protected readonly coverage = computed(() => this.coverageReport());
@@ -519,6 +534,94 @@ export class TailoringWorkspace {
     // rebuild an edited canonical so the core can re-check the changed line too.
     void this.recompute();
     this.showToast('Edit kept locally — not yet saved to your dataset.');
+  }
+
+  /** Record the current free edits back into the dataset as evidence. Only the
+   *  summary and role bullets are free prose we can trace to a dataset item;
+   *  skill chips are skipped (they aren't free prose). Deterministic — no LLM.
+   *  The PUT is validate-gated exactly like {@link onAccept}: a 422 surfaces the
+   *  findings and leaves the edits intact so nothing is silently lost. */
+  protected async recordEdits(): Promise<void> {
+    const ds = this.dataset();
+    const editMap = this.edits();
+    const keys = Object.keys(editMap);
+    if (!ds || keys.length === 0) return;
+
+    const payload = this.previewPayload();
+    const next = structuredClone(ds) as ResumeDataset;
+
+    const recorded: string[] = []; // keys we actually wrote into `next`
+    const skippedSkills: string[] = [];
+    const unresolved: string[] = [];
+
+    for (const key of keys) {
+      const text = editMap[key];
+      if (key === 'summary') {
+        next.summary = text;
+        recorded.push(key);
+      } else if (key.startsWith('bullet:')) {
+        // bullet:${payloadRoleId}:${bulletIndex} → payload role.bullets[i].source_id
+        // → the dataset bullet with that id. Any broken link is skipped, not fatal.
+        const sourceId = resolveBulletSourceId(key, payload);
+        const target = sourceId ? findDatasetBullet(next, sourceId) : null;
+        if (!target) {
+          unresolved.push(key);
+          continue;
+        }
+        target.text = text;
+        recorded.push(key);
+      } else if (key.startsWith('skill:')) {
+        skippedSkills.push(key);
+      } else {
+        unresolved.push(key);
+      }
+    }
+
+    if (recorded.length === 0) {
+      this.showToast(
+        skippedSkills.length > 0
+          ? 'Only summary and bullet edits can be recorded yet — skill edits stay local.'
+          : 'Nothing to record — these edits don’t map to a dataset item.',
+      );
+      return;
+    }
+
+    this.recording.set(true);
+    try {
+      const saved = await firstValueFrom(this.api.putDataset(next));
+      this.dataset.set(saved);
+      // Drop the now-saved keys; anything skipped/unresolved stays a local edit.
+      this.edits.update((m) => {
+        const copy = { ...m };
+        for (const k of recorded) delete copy[k];
+        return copy;
+      });
+      // Re-run the deterministic checks against the enriched dataset.
+      await this.recompute();
+
+      // Never-fabricate honesty: a recorded line may still not trace (e.g. the
+      // edit diverged from every evidence phrase). Warn, but never block the save.
+      const provMap = provenanceIndex(this.provReport());
+      const stillUnrecorded = recorded.filter((k) => provMap.get(k)?.status === 'unrecorded');
+
+      let msg =
+        stillUnrecorded.length > 0
+          ? `Recorded, but ${plural(stillUnrecorded.length, 'line')} no longer trace to your evidence — review them.`
+          : `Recorded ${plural(recorded.length, 'edit')} to your dataset.`;
+      if (skippedSkills.length > 0) {
+        msg += ` ${plural(skippedSkills.length, 'skill edit')} skipped — skills aren’t recordable yet.`;
+      }
+      this.showToast(msg);
+    } catch (err) {
+      // Same 422 path as onAccept: surface validation findings, keep the edits.
+      const msg =
+        err instanceof HttpErrorResponse && err.status === 422
+          ? `Validation blocked the save: ${findings(err)}`
+          : errMessage(err);
+      this.showToast(msg);
+    } finally {
+      this.recording.set(false);
+    }
   }
 
   // ── claim check ──────────────────────────────────────────────────────
@@ -767,6 +870,31 @@ function refineSummaryText(kind: CopilotKind, r: RefineResult): string | null {
     case 'layout':
       return null;
   }
+}
+
+/** Resolve a `bullet:${payloadRoleId}:${index}` preview key to the dataset
+ *  bullet id it projects: find the payload role by `id`, take that bullet's
+ *  `source_id` (which is the dataset bullet id). Role ids may themselves contain
+ *  colons, so the index is split off the end. Returns null if unresolvable. */
+function resolveBulletSourceId(key: string, payload: VariantPayload | null): string | null {
+  const rest = key.slice('bullet:'.length);
+  const lastColon = rest.lastIndexOf(':');
+  if (lastColon < 0) return null;
+  const roleId = rest.slice(0, lastColon);
+  const index = Number(rest.slice(lastColon + 1));
+  if (!Number.isInteger(index) || index < 0) return null;
+  const role = payload?.roles?.find((r) => r.id === roleId);
+  return role?.bullets?.[index]?.source_id ?? null;
+}
+
+/** Find the dataset bullet with the given id across all roles. */
+function findDatasetBullet(ds: ResumeDataset, sourceId: string): Bullet | null {
+  for (const role of ds.roles ?? []) {
+    for (const b of role.bullets ?? []) {
+      if (b.id === sourceId) return b;
+    }
+  }
+  return null;
 }
 
 function keyOf(l: ProvenanceReport['lines'][number]): string {
