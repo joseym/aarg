@@ -133,20 +133,35 @@ async function main() {
       await page.close();
     }
 
-    // --- coverage.png : the Coverage-map requirements table -------------
+    // --- coverage.png : the Coverage-map on a PHONE, its card layout --------
+    // The README pairs this beside mobile.png at width 300, where the old
+    // desktop-width table shrank to an unreadable strip. Recaptured at the
+    // phone viewport, each requirement renders as a distinct state-railed card
+    // (coverage-map's `max-width: 1080px` rules), so the "on a phone, too"
+    // pairing is both honest and legible.
     {
-      const page = await deskCtx.newPage();
+      const covCtx = await browser.newContext({
+        viewport: { width: 430, height: 932 },
+        deviceScaleFactor: 2,
+      });
+      const page = await covCtx.newPage();
       const errors = watchErrors(page, 'coverage');
       await page.goto(BASE, { waitUntil: 'networkidle' });
       await waitForPreview(page);
       await page.locator('.segmented button', { hasText: 'Coverage map' }).click();
       await page.waitForSelector('.cov-map .req-row', { timeout: 15_000 });
       await page.waitForTimeout(500);
-      // Element screenshot of the coverage map (the requirements table).
-      const map = page.locator('.cov-map').first();
-      await map.screenshot({ path: `${SHOTS}/coverage.png` });
+      // Scroll the first requirement card near the top so 2–3 cards fill the
+      // frame (each is tall on mobile), then shoot the full phone viewport.
+      await page.locator('.cov-map .req-row').first().evaluate((el) => {
+        el.scrollIntoView({ block: 'start' });
+        window.scrollBy(0, -70); // a little breathing room above the top card
+      });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: `${SHOTS}/coverage.png` });
+      pageTexts.push(await snapText(page));
       allErrors.push(...errors);
-      await page.close();
+      await covCtx.close();
     }
 
     // --- pixel.png : the real Typst PDF in the Final-preview pane -----------
@@ -166,10 +181,26 @@ async function main() {
         timeout: 40_000,
       });
       await page.waitForTimeout(1500); // let the PDF paint inside the iframe
-      // Frame the preview pane itself: the view toggle, the fidelity sub-toggle
-      // + template picker, and the rendered Typst PDF beneath — one clean shot
-      // of the "Pixel-perfect" feature rather than the whole workspace.
-      await page.locator('section.col-preview').screenshot({ path: `${SHOTS}/pixel.png` });
+      await page.waitForTimeout(800); // + a beat for PDFium to apply #view=FitH
+      // Frame the fidelity sub-toggle (Editing | Pixel-perfect) + template
+      // picker down through the rendered Typst PDF, which — now that the blob
+      // URL hides the viewer's toolbar and nav pane (#toolbar=0&navpanes=0) —
+      // fills the frame as a document with no dark viewer dead space. Clip from
+      // the sub-toggle's top-left to the iframe's bottom rather than element-
+      // shooting the whole column, so the shot is the feature, not the pane.
+      const sub = await page.locator('.pv-sub').boundingBox();
+      const frame = await page
+        .locator('app-pdf-preview:not(.hide) iframe.pdf')
+        .boundingBox();
+      const vp = page.viewportSize();
+      const x = Math.max(0, Math.floor(sub.x));
+      const y = Math.max(0, Math.floor(sub.y));
+      const right = Math.min(vp.width, Math.ceil(Math.max(sub.x + sub.width, frame.x + frame.width)));
+      const bottom = Math.min(vp.height, Math.ceil(frame.y + frame.height));
+      await page.screenshot({
+        path: `${SHOTS}/pixel.png`,
+        clip: { x, y, width: right - x, height: bottom - y },
+      });
       pageTexts.push(await snapText(page));
       allErrors.push(...errors);
       await page.close();
@@ -191,7 +222,20 @@ async function main() {
       }, { kind: 'text', prompt: 'Roughly how many shipments did the tracking service handle per day?' });
       await page.waitForSelector('app-copilot-overlay .modal[role="dialog"]', { timeout: 10_000 });
       await page.waitForTimeout(500);
-      await page.screenshot({ path: `${SHOTS}/copilot.png` });
+      // Crop tight around the modal: its bounding box + ~90px of margin on all
+      // sides, so a hint of the blurred workspace frames it rather than a whole
+      // page of dead backdrop. Clamped to the viewport so the clip stays valid.
+      const box = await page.locator('app-copilot-overlay .modal[role="dialog"]').boundingBox();
+      const M = 90;
+      const cvp = page.viewportSize();
+      const cx = Math.max(0, Math.floor(box.x - M));
+      const cy = Math.max(0, Math.floor(box.y - M));
+      const cRight = Math.min(cvp.width, Math.ceil(box.x + box.width + M));
+      const cBottom = Math.min(cvp.height, Math.ceil(box.y + box.height + M));
+      await page.screenshot({
+        path: `${SHOTS}/copilot.png`,
+        clip: { x: cx, y: cy, width: cRight - cx, height: cBottom - cy },
+      });
       pageTexts.push(await snapText(page));
       await page.evaluate(() => globalThis.__copilotHost.cancel()); // settle + close
       allErrors.push(...errors);
