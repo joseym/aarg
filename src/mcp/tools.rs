@@ -164,7 +164,7 @@ async fn list_builds() -> Result<CallToolResult, CliError> {
             json!({
                 "id": b.id,
                 "created_at": b.created_at,
-                "target": b.target,
+                "target": b.target(),
                 "model": b.model,
                 "score": b.score,
                 "review_score": b.review_score,
@@ -326,7 +326,7 @@ async fn tailor(arguments: Value, client: &McpClient) -> Result<CallToolResult, 
 
     let mut obj = Map::new();
     obj.insert("build_id".into(), json!(summary.id));
-    obj.insert("target".into(), json!(summary.target));
+    obj.insert("target".into(), json!(summary.target()));
     obj.insert("model".into(), json!(summary.model));
     obj.insert("score".into(), json!(summary.score));
     obj.insert("review_score".into(), json!(summary.review_score));
@@ -615,7 +615,7 @@ pub(super) fn list_resources() -> Vec<Resource> {
             };
             resources.push(Resource {
                 uri: format!("aarg://build/{}/{}", build.id, name),
-                name: format!("build {} · {} · {}", build.id, name, build.target),
+                name: format!("build {} · {} · {}", build.id, name, build.target()),
                 description: None,
                 mime_type: Some("application/pdf".to_string()),
             });

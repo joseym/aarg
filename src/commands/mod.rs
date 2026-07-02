@@ -576,7 +576,11 @@ pub(crate) async fn pick_build(prompt: &str, example: &str) -> Result<Option<Str
         .map(|b| {
             format!(
                 "{}  {:.2}  {}  {} · {} obj",
-                b.id, b.score, b.target, b.created_at, b.objections
+                b.id,
+                b.score,
+                b.target(),
+                b.created_at,
+                b.objections
             )
         })
         .collect();

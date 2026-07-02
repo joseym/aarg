@@ -273,6 +273,7 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::GetBuild(id) => routes::get_build(&id).await,
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
+            ApiRoute::Cost => routes::cost(req).await,
         },
         Match::Static => statics::serve(&state, &path),
         Match::NotFound => {
@@ -397,6 +398,7 @@ enum ApiRoute {
     GetBuild(String),
     GetBuildFile(String, String),
     FetchJd,
+    Cost,
 }
 
 /// What a `(method, path)` resolved to.
@@ -431,6 +433,7 @@ fn match_route(method: &Method, path: &str) -> Match {
                 (*name).to_string(),
             )),
             ("POST", ["fetch-jd"]) => Some(ApiRoute::FetchJd),
+            ("GET", ["cost"]) => Some(ApiRoute::Cost),
             _ => None,
         };
         return route.map(Match::Api).unwrap_or(Match::NotFound);
@@ -621,6 +624,9 @@ mod tests {
             route("POST", "/api/fetch-jd"),
             Match::Api(ApiRoute::FetchJd)
         );
+        // The query string isn't part of the path `match_route` sees (hyper
+        // splits it off), so a `?model=...` suffix still resolves.
+        assert_eq!(route("GET", "/api/cost"), Match::Api(ApiRoute::Cost));
     }
 
     #[test]

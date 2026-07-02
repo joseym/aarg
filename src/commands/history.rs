@@ -81,7 +81,7 @@ fn build_row(b: &BuildSummary, cost_cell: &str, width: usize) -> Vec<String> {
     let cost = style::dim(format!("{cost_cell:>7}"));
 
     let trailer = style::dim(format!("{} · {} obj", b.created_at, b.objections));
-    let one_line = format!("  {id}  {score}  {cost}  {}  {trailer}", b.target);
+    let one_line = format!("  {id}  {score}  {cost}  {}  {trailer}", b.target());
     if style::display_width(&one_line) <= width {
         return vec![one_line];
     }
@@ -90,7 +90,7 @@ fn build_row(b: &BuildSummary, cost_cell: &str, width: usize) -> Vec<String> {
     let meta = style::dim(format!("· {:>2} obj  {}", b.objections, b.created_at));
     vec![
         format!("  {id}  {score}  {cost}  {meta}"),
-        format!("      {}", b.target),
+        format!("      {}", b.target()),
     ]
 }
 
@@ -223,7 +223,7 @@ pub async fn remove(ids: Vec<String>) -> Result<(), CliError> {
         }
         let options: Vec<String> = builds
             .iter()
-            .map(|b| format!("{}  {:.2}  {}  {}", b.id, b.score, b.target, b.created_at))
+            .map(|b| format!("{}  {:.2}  {}  {}", b.id, b.score, b.target(), b.created_at))
             .collect();
         match user
             .ask(Question::MultiSelect {
@@ -287,10 +287,19 @@ mod tests {
     use super::*;
 
     fn sample(target: &str, score: f32) -> BuildSummary {
+        // `target` here is the pre-split `"title @ company"` form these tests
+        // were already written with; split it back apart so `BuildSummary`
+        // round-trips through `.target()` to the exact same string.
+        let (title, company) = target
+            .split_once(" @ ")
+            .map(|(t, c)| (t.to_string(), c.to_string()))
+            .unwrap_or_else(|| (target.to_string(), String::new()));
         BuildSummary {
             id: "029".into(),
             created_at: "2026-06-16 17:19".into(),
-            target: target.into(),
+            title,
+            company,
+            template: "ats/classic".into(),
             model: "claude-sonnet-4-6".into(),
             score,
             review_score: score,

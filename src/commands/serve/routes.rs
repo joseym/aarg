@@ -24,7 +24,8 @@ use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
 use crate::dataset::validate;
 use crate::fetch::{self, FetchError};
-use crate::llm::{CompletionRequest, LlmClient, LlmError};
+use crate::llm::{CompletionRequest, LlmClient, LlmError, TokenUsage};
+use crate::pricing;
 use crate::render::{self, RenderError};
 use crate::templates;
 use crate::variant::{Variant, VariantPayload};
@@ -302,7 +303,10 @@ pub(super) async fn list_builds() -> Resp {
             json!({
                 "id": b.id,
                 "created_at": b.created_at,
-                "target": b.target,
+                "target": b.target(),
+                "title": b.title,
+                "company": b.company,
+                "template": b.template,
                 "model": b.model,
                 "score": b.score,
                 "review_score": b.review_score,
@@ -475,6 +479,146 @@ pub(super) async fn fetch_jd(req: Request<Incoming>) -> Resp {
     }
 }
 
+// ---------------------------------------------------------------------
+// GET /api/cost — turn a build's token usage into a dollar estimate
+// ---------------------------------------------------------------------
+
+/// The `GET /api/cost` query parameters: which model, and how many input/
+/// output tokens to price.
+struct CostQuery {
+    model: String,
+    input: u64,
+    output: u64,
+}
+
+/// Turn token usage into a dollar estimate — the browser's only way to reach
+/// [`pricing::cost_usd`], which lives in this native crate (it needs the
+/// config's price-override table) and which the wasm build has no way to
+/// call. A plain `GET` with query params rather than a JSON body: this is a
+/// pure calculation with no side effect, so there's nothing for the
+/// `Content-Type` gate to protect.
+///
+/// Mirrors `aarg history`'s own cost column
+/// ([`crate::commands::history::cost_cell`]) exactly: a model absent from the
+/// price table prices as `usd: null` rather than an error, and — the same
+/// way a subscription run shows `plan` instead of a dollar figure in that
+/// column — an active subscription credential suppresses `usd` in favor of a
+/// `subscription_note`, because the run's cost is covered by the flat fee and
+/// a dollar figure would mislead.
+///
+/// Deliberately does **not** call [`configured_client`] (the `/api/llm` route's
+/// credential resolver): that function fetches the *actual secret* — a
+/// keychain read, possibly an OS permission prompt, or (for a `Cli`-delegated
+/// credential) a subprocess spawn — none of which this pure calculation
+/// needs or should pay for just to answer "would this be free." Whether the
+/// active credential is a subscription is knowable from `Config` alone (see
+/// [`is_subscription_configured`]), so this route only ever touches the
+/// config file, never the keychain.
+pub(super) async fn cost(req: Request<Incoming>) -> Resp {
+    let query = match parse_cost_query(req.uri().query().unwrap_or("")) {
+        Ok(query) => query,
+        Err(message) => return error_response(400, "bad_request", message),
+    };
+
+    // A config that fails to load isn't this pure calculation's problem to
+    // surface as an error — treat it as "no config, no subscription, no
+    // price overrides" and still answer off the built-in family rates.
+    let config = Config::load().unwrap_or_default();
+    let subscription = is_subscription_configured(&config);
+
+    json_response(200, &cost_body(&query, subscription, &config.prices))
+}
+
+/// Whether the credential `aarg` would use *right now* is a Claude
+/// plan/subscription credential (`AuthKind::Oauth`, or `AuthKind::Cli` —
+/// `configured_client` always resolves a `Cli`-delegated label to an OAuth
+/// token, so it's a subscription too), without ever fetching the secret
+/// itself. Mirrors `configured_client`'s resolution order (env override
+/// first, then the configured active label) far enough to answer just this
+/// one question.
+fn is_subscription_configured(config: &Config) -> bool {
+    if env_var_set(config.anthropic.auth_token_env()) {
+        return true; // The OAuth/subscription env var is always a plan token.
+    }
+    if env_var_set(config.anthropic.api_key_env()) {
+        return false; // The API-key env var is never a plan token.
+    }
+    let override_label = std::env::var("AARG_KEY").ok();
+    let label = override_label
+        .as_deref()
+        .unwrap_or_else(|| config.anthropic.active_label());
+    matches!(
+        config.anthropic.kind_for(label),
+        crate::config::AuthKind::Oauth | crate::config::AuthKind::Cli
+    )
+}
+
+/// Whether an environment variable is set to a non-empty value — the same
+/// "unset or blank means absent" rule `configured_client`'s own
+/// `env_credential` uses, duplicated here (rather than reached for across a
+/// module boundary) because it's a one-line check.
+fn env_var_set(var: &str) -> bool {
+    std::env::var(var).is_ok_and(|value| !value.is_empty())
+}
+
+/// Build the `{"usd": ..., "subscription_note": ...}` body: `usd` is `null`
+/// either when the model isn't in the price table (an unpriced model is
+/// never guessed at) or when `subscription` is true, in which case
+/// `subscription_note` explains why — the run's cost is covered by the flat
+/// fee, the same reasoning `aarg history`'s `plan` cost-column marker uses.
+/// Split out from [`cost`] so the calculation is unit-testable without a
+/// keychain or a config file on disk.
+fn cost_body(
+    query: &CostQuery,
+    subscription: bool,
+    prices: &std::collections::BTreeMap<String, pricing::Price>,
+) -> Value {
+    if subscription {
+        return json!({ "usd": Value::Null, "subscription_note": "covered by your Claude plan" });
+    }
+    let usage = TokenUsage {
+        input_tokens: query.input,
+        output_tokens: query.output,
+    };
+    let usd = pricing::cost_usd(&query.model, &usage, prices);
+    json!({ "usd": usd, "subscription_note": Value::Null })
+}
+
+/// Parse `model`/`input`/`output` out of a raw query string (the part of the
+/// URI after `?`, or `""` when there is none). Hand-rolled, matching this
+/// module's no-framework style, rather than pulling in a URL-parsing crate
+/// for three plain params: model ids and token counts are never
+/// percent-encoded, so a `key=value` split on `&` and `=` is exactly as
+/// correct here as a general decoder would be.
+fn parse_cost_query(query: &str) -> Result<CostQuery, String> {
+    let mut model = None;
+    let mut input = None;
+    let mut output = None;
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match key {
+            "model" => model = Some(value.to_string()),
+            "input" => input = value.parse::<u64>().ok(),
+            "output" => output = value.parse::<u64>().ok(),
+            _ => {}
+        }
+    }
+    let model = model
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| "missing required query param `model`".to_string())?;
+    let input = input.ok_or_else(|| {
+        "missing or invalid query param `input` (expected a non-negative integer)".to_string()
+    })?;
+    let output = output.ok_or_else(|| {
+        "missing or invalid query param `output` (expected a non-negative integer)".to_string()
+    })?;
+    Ok(CostQuery {
+        model,
+        input,
+        output,
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -558,5 +702,67 @@ mod tests {
     async fn get_build_file_rejects_a_bad_filename_before_touching_disk() {
         let resp = get_build_file("041", "../../secret").await;
         assert_eq!(resp.status(), 400);
+    }
+
+    #[test]
+    fn parse_cost_query_reads_the_three_params_and_rejects_what_it_must() {
+        let query = parse_cost_query("model=claude-opus-4-8&input=1000&output=500").unwrap();
+        assert_eq!(query.model, "claude-opus-4-8");
+        assert_eq!(query.input, 1000);
+        assert_eq!(query.output, 500);
+
+        // Order doesn't matter, and an unrelated param is just ignored.
+        let query = parse_cost_query("output=1&extra=x&input=2&model=m").unwrap();
+        assert_eq!(query.model, "m");
+        assert_eq!(query.input, 2);
+        assert_eq!(query.output, 1);
+
+        assert!(parse_cost_query("input=1&output=2").is_err()); // no model
+        assert!(parse_cost_query("model=m&output=2").is_err()); // no input
+        assert!(parse_cost_query("model=m&input=1").is_err()); // no output
+        assert!(parse_cost_query("model=m&input=nope&output=2").is_err()); // unparseable
+    }
+
+    #[test]
+    fn cost_body_prices_a_known_model_and_nulls_an_unknown_one() {
+        let prices = std::collections::BTreeMap::new();
+
+        // A known model family (Opus: $15/$75 per Mtok) prices exactly, the
+        // same figure `pricing::cost_usd` itself is tested against.
+        let known = CostQuery {
+            model: "claude-opus-4-8".to_string(),
+            input: 1000,
+            output: 500,
+        };
+        let body = cost_body(&known, false, &prices);
+        let usd = body["usd"].as_f64().unwrap();
+        assert!((usd - (1000.0 / 1_000_000.0 * 15.0 + 500.0 / 1_000_000.0 * 75.0)).abs() < 1e-9);
+        assert!(body["subscription_note"].is_null());
+
+        // A model absent from the price table (built-in or override) prices
+        // as null, never a guess.
+        let unknown = CostQuery {
+            model: "some-local-llama".to_string(),
+            input: 1000,
+            output: 500,
+        };
+        let body = cost_body(&unknown, false, &prices);
+        assert!(body["usd"].is_null());
+        assert!(body["subscription_note"].is_null());
+    }
+
+    #[test]
+    fn cost_body_on_a_subscription_nulls_usd_and_explains_why() {
+        let prices = std::collections::BTreeMap::new();
+        // Even a perfectly priceable model is suppressed once `subscription`
+        // is true — the run's cost is covered by the flat fee.
+        let query = CostQuery {
+            model: "claude-opus-4-8".to_string(),
+            input: 1000,
+            output: 500,
+        };
+        let body = cost_body(&query, true, &prices);
+        assert!(body["usd"].is_null());
+        assert_eq!(body["subscription_note"], "covered by your Claude plan");
     }
 }
