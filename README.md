@@ -15,7 +15,7 @@ in three places rather than promised in one.
 You can drive it two ways. There's a command-line tool, and there's a local
 browser workspace where the **same Rust runs in the page** via WebAssembly and a
 small companion server (`aarg serve`) does only the handful of things a browser
-page genuinely can't — hold your API key, run Typst, and touch your workspace on
+page genuinely can't: hold your API key, run Typst, and touch your workspace on
 disk. Same facts, same guards, two front doors.
 
 > **Status:** working end to end, from a command line or a local browser
@@ -74,15 +74,15 @@ together:
 - **One score language.** Weighted coverage, the reviewer's verdict, ATS keyword
   coverage, and the list-ranking score sit in one band, each explained in plain
   words, instead of clashing across the screen.
-- **A coverage map** of the posting's requirements against your dataset — exact
-  match, semantic match, or gap — with a per-requirement **Refine**,
+- **A coverage map** of the posting's requirements against your dataset (exact
+  match, semantic match, or gap), with a per-requirement **Refine**,
   **Strengthen**, or **Fill the gap** that drops you into the right copilot.
 - **An editable, provenance-checked preview.** Every line of the draft is
   free-editable and labelled by where it traces: **verbatim** from a bullet,
   **grounded** in your evidence, or **unrecorded**. An unrecorded line carries a
   claim badge and a confirm-as-evidence button, so nothing reaches the page as
   fact until it points at something real.
-- **Interactive copilots** — the strengthen, metric, summary, and skills
+- **Interactive copilots.** The strengthen, metric, summary, and skills
   interviews from the CLI, run through a Q&A modal, plus a layout copilot for
   presentation-only objections. It's the browser mirror of the CLI's
   `UserHandle`: the agent asks the same questions either way.
@@ -97,7 +97,7 @@ together:
 
 The honest architecture sentence: the whole domain pipeline is compiled to
 WebAssembly and runs in the page, and `aarg serve` is a small native companion
-that does only what a page can't — proxy one model completion through your
+that does only what a page can't: proxy one model completion through your
 keychain-held key, shell out to Typst, read and write your workspace on disk, and
 fetch a cross-origin posting. It binds to loopback by default; opt into `--bind`
 and `--allow-host` to reach it from a phone on a network you trust.
@@ -143,8 +143,8 @@ evidence, no skill on the page.
 The same guards hold in the browser, because it's the same code: the
 evidence checks and the claim-divergence lint are compiled into the WebAssembly
 and run client-side as you edit. But the server doesn't take the browser's word
-for any of it. Every draft or edit a page submits — `POST /api/builds`,
-`POST /api/builds/:id/edits` — is re-checked server-side against the same
+for any of it. Every draft or edit a page submits (`POST /api/builds`,
+`POST /api/builds/:id/edits`) is re-checked server-side against the same
 deterministic divergence guard before anything is written, and a saved dataset is
 re-validated the way `aarg dataset validate` would; a variant that claims more
 than the canonical draft is rejected with a `422`. The browser enforces the rule
@@ -172,9 +172,9 @@ Beyond the core loop:
 - **Flexible input.** Ingest a résumé from text, Markdown, or a PDF, including
   scanned ones read with the model's vision. Give a posting as a file, a
   Greenhouse/Lever URL, stdin, or a paste.
-- **A browser workspace.** `aarg serve` runs the whole build screen locally — the
-  loop, the coverage map, the provenance-checked editor, and the copilots — with
-  the domain compiled to WebAssembly. See [The browser workspace](#the-browser-workspace).
+- **A browser workspace.** `aarg serve` runs the whole build screen locally,
+  with the domain compiled to WebAssembly: the loop, the coverage map, the
+  provenance-checked editor, and the copilots. See [The browser workspace](#the-browser-workspace).
 - **Use it from Claude.** Run AARG as an MCP server and drive it by chatting with
   Claude Desktop or Claude Code, on this machine or over SSH, with the copilots as
   in-chat prompts and the PDFs exposed as resources. See [docs/mcp.md](docs/mcp.md).
@@ -218,7 +218,7 @@ paste a posting in or reuse one you've already entered.
 
 Prefer a UI? Once you have a dataset, `aarg serve --dir <the built web app>`
 starts the companion server on `http://127.0.0.1:8787`, and everything in
-[The browser workspace](#the-browser-workspace) runs from the page — the loop
+[The browser workspace](#the-browser-workspace) runs from the page, the loop
 included. It stays on loopback unless you ask otherwise.
 
 ## Authentication
@@ -271,7 +271,7 @@ your own to render the human variant however you like.
 
 `aarg serve` takes `--port` (default `8787`) and `--dir` (the built web app to
 serve at `/`; omit it to expose the JSON API alone). It binds `127.0.0.1` by
-default; `--bind 0.0.0.0` reaches it from another device on a trusted network —
+default; `--bind 0.0.0.0` reaches it from another device on a trusted network,
 which also exposes your dataset and the key-spending model proxy to that network,
 so `--allow-host` lets you name the hostnames it should answer to. On loopback the
 `Host` allowlist and a JSON content-type gate defend it against DNS-rebinding and
@@ -325,7 +325,7 @@ flowchart TB
 
 There's no agent framework underneath, and no web framework either: the Anthropic
 client is written directly against the HTTP API behind a small trait with a
-scripted mock, and `aarg serve` is written directly against `hyper` — the same
+scripted mock, and `aarg serve` is written directly against `hyper`, the same
 by-hand move as the MCP server, one tokio task per connection, so the whole thing
 tests without a network or a key. In the browser, `aarg-core`'s `LlmClient` is
 answered by a JS callback across a small `Send`-preserving channel bridge, so the
@@ -375,7 +375,7 @@ model tiers are already in place for it to slot into); an experimental vision pa
 that reads the rendered layout the way a recruiter skims it; streamed (SSE) model
 responses in the browser, which today waits for a whole completion; and reaching
 the workspace safely past loopback (single-user, local-first is the design for
-now — `--bind` past localhost is opt-in and unauthenticated).
+now; `--bind` past localhost is opt-in and unauthenticated).
 
 ## Documentation
 
