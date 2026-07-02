@@ -496,6 +496,8 @@ enum CreateBuildError {
     Ats(#[from] ats::AtsError),
     #[error(transparent)]
     Dataset(#[from] store::DatasetError),
+    #[error(transparent)]
+    ClaimDivergence(#[from] variant::ClaimDivergence),
 }
 
 /// Persist a build the browser's wasm loop produced, mirroring `aarg tailor`'s
@@ -642,6 +644,12 @@ fn persist_build_in(
     if let Some(mut human) = request.human_payload.take()
         && let Some(chosen) = human_chosen
     {
+        // Never-fabricate, enforced server-side (not just browser-side): a
+        // variant may differ from the canonical in presentation, never in
+        // claims. Re-run the deterministic divergence check the CLI runs before
+        // rendering, so a tampered or buggy client can't persist a human PDF
+        // that says more than the canonical draft. A divergence is a 422.
+        variant::check_claims(&request.canonical, &human)?;
         human.template = TemplateId(chosen.id.clone());
         render::render(&build.dir, &human, &chosen.template)?;
     }
@@ -673,6 +681,9 @@ fn create_build_error_response(error: CreateBuildError) -> Resp {
         CreateBuildError::Dataset(error) => error_response(500, "dataset_error", error.to_string()),
         CreateBuildError::Ats(error) => error_response(500, "ats_error", error.to_string()),
         CreateBuildError::Build(error) => error_response(500, "build_error", error.to_string()),
+        CreateBuildError::ClaimDivergence(error) => {
+            error_response(422, "claim_divergence", error.to_string())
+        }
     }
 }
 
