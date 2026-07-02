@@ -748,6 +748,30 @@ struct CostQuery {
 /// active credential is a subscription is knowable from `Config` alone (see
 /// [`is_subscription_configured`]), so this route only ever touches the
 /// config file, never the keychain.
+/// `GET /api/models` — the model tiers the browser should send with its
+/// in-browser LLM work, read from the same `Config` the CLI resolves against.
+/// Returning the three *resolved* tiers (not one hardcoded model) lets a
+/// browser build spend the cheap tier where the CLI does and reserve the smart
+/// model for the reviewer/tailor — so an in-browser build costs and reads like
+/// a terminal one instead of running everything on the priciest model. Config
+/// only; no keychain, no key spend.
+pub(super) async fn models() -> Resp {
+    use crate::agent::{ModelResolver, ModelTier};
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => return error_response(500, "config_error", error.to_string()),
+    };
+    let anthropic = &config.anthropic;
+    json_response(
+        200,
+        &json!({
+            "cheap": anthropic.resolve("", ModelTier::Cheap),
+            "mid": anthropic.resolve("", ModelTier::Mid),
+            "smart": anthropic.resolve("", ModelTier::Smart),
+        }),
+    )
+}
+
 pub(super) async fn cost(req: Request<Incoming>) -> Resp {
     let query = match parse_cost_query(req.uri().query().unwrap_or("")) {
         Ok(query) => query,
