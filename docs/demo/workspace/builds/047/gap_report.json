@@ -1,0 +1,210 @@
+{
+  "matched": [
+    {
+      "jd_skill": {
+        "name": "Engineering team leadership and management",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "Lead a high-performing team of engineers while remaining a hands-on technical contributor",
+          "2+ years leading and managing engineering teams",
+          "manage, develop, and hire strong engineers"
+        ]
+      },
+      "skill_id": "skill-87",
+      "dataset_name": "Engineering team leadership and management",
+      "semantic": false
+    },
+    {
+      "jd_skill": {
+        "name": "Cross-functional collaboration",
+        "category": "soft",
+        "importance": "required",
+        "context_phrases": [
+          "Excellent communication skills: able to work effectively with engineers, cross-functional partners, and senior leadership",
+          "Partner with Product, ML, QA, and DevOps leadership"
+        ]
+      },
+      "skill_id": "skill-9",
+      "dataset_name": "Cross-functional collaboration",
+      "semantic": false
+    },
+    {
+      "jd_skill": {
+        "name": "Backend systems development",
+        "category": "hard",
+        "importance": "critical",
+        "context_phrases": [
+          "Strong technical depth in backend systems built with Python, Go, or Rust"
+        ]
+      },
+      "skill_id": "skill-36",
+      "dataset_name": "backend engineering",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Python",
+        "category": "language",
+        "importance": "critical",
+        "context_phrases": [
+          "Strong technical depth in backend systems built with Python, Go, or Rust"
+        ]
+      },
+      "skill_id": "skill-77",
+      "dataset_name": "Typescript/Python",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Engineering excellence and standards",
+        "category": "soft",
+        "importance": "required",
+        "context_phrases": [
+          "Proven ability to drive engineering excellence across an engineering team",
+          "Establish and uphold engineering standards, best practices, and coding quality across the team"
+        ]
+      },
+      "skill_id": "skill-43",
+      "dataset_name": "engineering excellence",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Systems design and architecture",
+        "category": "hard",
+        "importance": "required",
+        "context_phrases": [
+          "designing systems, writing code, and leading implementation on critical platform initiatives",
+          "lead design reviews, providing authoritative technical guidance on major features and cross-cutting changes"
+        ]
+      },
+      "skill_id": "skill-17",
+      "dataset_name": "System architecture principles",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Team hiring and talent development",
+        "category": "soft",
+        "importance": "required",
+        "context_phrases": [
+          "Own hiring for your team: define roles, assess candidates, and build a diverse, high-performing engineering organization",
+          "Drive the career development of your engineers through regular 1:1s, meaningful feedback, and clear growth plans"
+        ]
+      },
+      "skill_id": "skill-3",
+      "dataset_name": "Talent acquisition and development",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Cloud-native platform development",
+        "category": "hard",
+        "importance": "preferred",
+        "context_phrases": [
+          "Experience building or managing teams that deliver cloud-native platforms for enterprise customers"
+        ]
+      },
+      "skill_id": "skill-18",
+      "dataset_name": "Cloud infrastructure management",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "AI coding assistants and developer tooling",
+        "category": "tool",
+        "importance": "preferred",
+        "context_phrases": [
+          "Familiarity with AI coding assistants and the developer tooling ecosystem"
+        ]
+      },
+      "skill_id": "skill-75",
+      "dataset_name": "Cursor/Anthropic Claude",
+      "semantic": true
+    }
+  ],
+  "weak": [],
+  "unknown": [
+    {
+      "name": "Kubernetes",
+      "category": "tool",
+      "importance": "critical",
+      "context_phrases": [
+        "Solid understanding of Kubernetes, distributed systems principles, and building scalable, reliable services"
+      ]
+    },
+    {
+      "name": "Distributed systems",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Solid understanding of Kubernetes, distributed systems principles, and building scalable, reliable services"
+      ]
+    },
+    {
+      "name": "Go",
+      "category": "language",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong technical depth in backend systems built with Python, Go, or Rust"
+      ]
+    },
+    {
+      "name": "Rust",
+      "category": "language",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong technical depth in backend systems built with Python, Go, or Rust"
+      ]
+    },
+    {
+      "name": "AI inference serving and orchestration",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Familiarity with AI inference serving, orchestration, and the infrastructure challenges of LLM workloads at production scale"
+      ]
+    },
+    {
+      "name": "Kubernetes ecosystem tooling",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience with Kubernetes ecosystem tooling, including Operators and Helm Charts"
+      ]
+    },
+    {
+      "name": "Helm Charts",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience with Kubernetes ecosystem tooling, including Operators and Helm Charts"
+      ]
+    },
+    {
+      "name": "Kubernetes Operators",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience with Kubernetes ecosystem tooling, including Operators and Helm Charts"
+      ]
+    },
+    {
+      "name": "ML application optimization and productionization",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Background in ML application optimization and productionization"
+      ]
+    },
+    {
+      "name": "AI infrastructure company experience",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience at a high-growth AI infrastructure company"
+      ]
+    }
+  ]
+}

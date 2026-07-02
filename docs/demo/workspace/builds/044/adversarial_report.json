@@ -1,0 +1,118 @@
+{
+  "objections": [
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "Closing line 'where team development and delivery excellence are priorities' is filler that could end any director resume.",
+      "suggestion": "Cut the closing clause or replace it with the specific JD hook (distributed systems / technical strategy across multiple teams)."
+    },
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Summary is one dense run-on paragraph; the impressive regulatory-first detail gets buried mid-sentence.",
+      "suggestion": "Break into two or three tighter sentences so the regulatory-first the platform achievement stands on its own."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "The JD emphasizes 'large-scale distributed systems' with scalability/reliability/performance. This bullet says 'microservices' and 'scaled... to a 20+ person team' — but that's team size, not system scale. There's no traffic, transaction volume, uptime, or data-scale figure anywhere to support a distributed-systems-at-scale claim.",
+      "suggestion": "If real scale numbers (requests/sec, transaction volume, uptime) exist in your work history, lead with them; if they don't, soften the implied scale rather than relying on team headcount as a proxy."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Repeats the '20+ person team across backend, DevOps, and QA' phrasing already stated in bullet-1 and the summary; team size is now stated four times.",
+      "suggestion": "Drop the team-size clause here and keep this bullet focused on the architecture."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Good metric ('3x faster', '5+ milestones'), but the bullet tries to do three jobs at once (cadence, planning, regulatory milestones) and gets crowded.",
+      "suggestion": "Split or tighten so the bi-weekly-cadence-3x-faster result reads cleanly."
+    },
+    {
+      "target": {
+        "bullet": "bullet-50"
+      },
+      "severity": "major",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "JD explicitly calls out 'Manage complex technical debt and guide system modernization.' This bullet asserts tech-debt cleanup 'every sprint' and 'kept the codebase stable' but offers no evidence of outcome — stability, incident reduction, or modernization shipped.",
+      "suggestion": "If you have any concrete outcome (fewer incidents, faster onboarding, a modernization delivered), attach it; otherwise this overlaps heavily with bullet-28 and one of the two should be cut."
+    },
+    {
+      "target": {
+        "bullet": "bullet-28"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Near-duplicate of bullet-50 — both are 'wrote standards/processes from scratch as founding engineer, codebase grew 1 to 20+, regulatory-regulated.' Two bullets saying the same thing weakens both.",
+      "suggestion": "Merge bullet-28 and bullet-50 into one stronger standards-and-tech-debt bullet."
+    },
+    {
+      "target": {
+        "bullet": "bullet-8"
+      },
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "Titled 'Director of Product Development' but the bullet explicitly says 'as an IC' — the title oversells the role for a Director/VP search where people leadership is the headline.",
+      "suggestion": "Keep the honest IC framing but consider whether this title helps or muddies the leadership narrative built at Meridian Logistics."
+    },
+    {
+      "target": {
+        "bullet": "bullet-13"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Direct duplicate of bullet-14 — both claim onboarding cut from ~2 weeks to ~3 days via Docker automation.",
+      "suggestion": "Delete bullet-13 and keep the more detailed bullet-14."
+    },
+    {
+      "target": {
+        "bullet": "bullet-17"
+      },
+      "severity": "minor",
+      "kind": "vague_verb",
+      "scope": "canonical",
+      "message": "'Led engineering on mid-sized client projects' — 'mid-sized' is undefined and the bullet overlaps with bullet-34 (also client delivery, requirements, timelines).",
+      "suggestion": "Merge with bullet-34 or quantify 'mid-sized' if any project value/team size is known."
+    },
+    {
+      "target": "skills_section",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "JD requires 'Strong foundation in Go, Python, or Java.' Skills lists 'Typescript/Python' and the summary foregrounds Node.js/TypeScript. Python appears almost as an afterthought and Go/Java are absent. This is the clearest gap against the posting.",
+      "suggestion": "If your Python experience is genuine and substantial, elevate it and back it with a project in the work history; do not invent Go/Java. If Python is thin, be honest about that gap rather than burying it in a slash."
+    },
+    {
+      "target": "skills_section",
+      "severity": "minor",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "The skills list is bloated and redundant: 'CI/CD' and 'Continuous integration and delivery' are listed separately, as are several near-identical architecture entries (microservices, software architecture, system architecture, platform architecture).",
+      "suggestion": "Dedupe and consolidate to a tighter, scannable list aligned to the JD's named skills."
+    }
+  ],
+  "overall_score": 0.72,
+  "persona_notes": "Strong candidate for this role: clear leadership progression, founder-to-Director arc, and the JD's emphasis on people leadership, microservices, CI/CD, and Docker is well covered. Two real concerns: the programming language stack doesn't match (JD wants Go/Python/Java; resume leans Node/TS), and the resume leans heavily on the same '1 to 20+' phrasing in nearly every bullet, which reads as padding. The distributed-systems-at-scale claim is asserted but not demonstrated with scale numbers."
+}

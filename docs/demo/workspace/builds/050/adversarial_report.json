@@ -1,0 +1,70 @@
+{
+  "objections": [
+    {
+      "target": "summary",
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'led the engineering and compliance work across a 7-year regulatory build-out' compresses one tenure into a sweeping leadership claim. It reads as self-aggrandizing without the bullets clearly substantiating sole 'compliance work' ownership.",
+      "suggestion": "Tie the claim directly to the audit-coordination and remediation bullets so it reads as supported rather than asserted."
+    },
+    {
+      "target": {
+        "bullet": "bullet-41"
+      },
+      "severity": "major",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "'partnering with product and stakeholders to translate business priorities into standardized sprint and epic planning' is process boilerplate that any EM could write. The regulated-milestone delivery (regulatory approval, custody, clearing/settlement) is the differentiator and it's tacked on at the end.",
+      "suggestion": "Cut the generic scrum-process language and lead with the regulated delivery milestones, which demonstrate delivery under audit-grade constraints."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "This bullet is overloaded — it crams backend framework design, PostgreSQL schemas, Docker, CI/CD, regulatory auditability, engineering standards, code review, AND team scaling into one run-on sentence. The auditability and data-schema points (most relevant to billing data-store design) get lost in the pile.",
+      "suggestion": "Split into two bullets: one on the data-store/schema/auditability design (lead with this for relevance), one on engineering standards and team scaling. Stop repeating 'one engineer to 20+' across multiple bullets."
+    },
+    {
+      "target": {
+        "bullet": "bullet-50"
+      },
+      "severity": "minor",
+      "kind": "generic_phrasing",
+      "scope": "canonical",
+      "message": "Tech-debt-in-every-sprint is a near-universal claim, and the third repetition of 'grew from 1 to 20+ engineers / regulatory-regulated where shortcuts carried compliance risk' is fatiguing. The repeated scale/regulatory framing dilutes its impact.",
+      "suggestion": "Either cut this bullet or merge it into the standards bullet, and stop re-stating the team-size and compliance-risk framing in every line."
+    },
+    {
+      "target": {
+        "bullet": "bullet-11"
+      },
+      "severity": "minor",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "'balancing customer needs, business objectives, and technical constraints' is pure resume boilerplate with no outcome attached.",
+      "suggestion": "Cut or fold into bullet-8; it adds nothing distinguishing."
+    },
+    {
+      "target": "skills_section",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The skills list includes 'GraphQL API design' but omits everything the JD emphasizes on the data side: distributed data systems, stream/batch processing, multi-tenant data modeling, data correctness/idempotency. 'data correctness' appears but is buried mid-list. There is no Kafka/Flink/Spark or pipeline tooling — understandable if you lack it, but the skills section reads misaligned with the target role.",
+      "suggestion": "Reorder to surface data correctness, auditability, and regulatory compliance up front. Do not list distributed-data tooling you haven't used; instead let the list honestly reflect your transferable strengths."
+    },
+    {
+      "target": "skills_section",
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Inconsistent capitalization throughout the skills list ('Cross-functional collaboration', 'operational excellence', 'data correctness', 'backend engineering') signals carelessness on a resume that otherwise reads polished.",
+      "suggestion": "Normalize capitalization across all skill entries."
+    }
+  ],
+  "overall_score": 0.58,
+  "persona_notes": "Strong builder with real regulated-environment depth and genuine end-to-end ownership, which maps reasonably to a revenue-trust billing platform. But the resume leans heavily on a single 7-year tenure, badly underplays the data-systems and billing/metering dimensions this role lives and dies on, and never once mentions billing, metering, reconciliation, or distributed data pipelines. The compliance/audit angle is the best transferable asset and it's buried. I'd interview cautiously, not enthusiastically."
+}

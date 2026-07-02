@@ -1,0 +1,206 @@
+{
+  "company": "Northwind Labs",
+  "title": "Engineering Manager, Billing Platform",
+  "seniority": "manager",
+  "location": "New York, NY",
+  "remote": "unspecified",
+  "domain_keywords": [
+    "billing systems",
+    "revenue systems",
+    "metering platforms",
+    "meter-to-cash",
+    "financial controls",
+    "cloud infrastructure",
+    "SaaS",
+    "consumption models",
+    "GPU infrastructure"
+  ],
+  "required_skills": [
+    {
+      "name": "engineering management",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "1-3 years as an engineering manager with people-lead responsibilities",
+        "Hire, onboard, mentor, and develop engineers with clear expectations, feedback, and career growth paths"
+      ]
+    },
+    {
+      "name": "distributed data systems",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong understanding of distributed data systems: ingestion, stream/batch processing, schema evolution, exactly-once semantics, and replays"
+      ]
+    },
+    {
+      "name": "billing systems design",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Proven experience leading teams that build and ship production data- or revenue-critical backend systems at scale - metering, billing, payments, financial reporting, large-scale data pipelines, or close adjacencies"
+      ]
+    },
+    {
+      "name": "multi-tenant data modeling",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Strong understanding of multi-tenant data modeling, including org/project hierarchies, contracts, entitlements, and usage attribution"
+      ]
+    },
+    {
+      "name": "API design",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Experience designing APIs and data contracts consumed by downstream product surfaces and internal teams"
+      ]
+    },
+    {
+      "name": "data correctness and auditability",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Strong grasp of correctness, idempotency, and auditability as first-order design constraints"
+      ]
+    },
+    {
+      "name": "production systems operations",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Experience owning end-to-end delivery for production services, including planning, execution, quality, and operational health"
+      ]
+    },
+    {
+      "name": "cross-functional stakeholder alignment",
+      "category": "soft",
+      "importance": "required",
+      "context_phrases": [
+        "Strong written and verbal communication skills; able to align engineering, product, finance, and compliance stakeholders around priorities and tradeoffs"
+      ]
+    },
+    {
+      "name": "cloud providers",
+      "category": "tool",
+      "importance": "required",
+      "context_phrases": [
+        "Familiarity with the major cloud providers (Northwind Labs, AWS, GCP, Azure)"
+      ]
+    },
+    {
+      "name": "software engineering",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "4+ years of professional software engineering experience"
+      ]
+    }
+  ],
+  "preferred_skills": [
+    {
+      "name": "cloud/SaaS metering platforms",
+      "category": "hard",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience building or operating cloud/SaaS metering or billing platforms - usage ingestion, rating, invoicing, or reconciliation"
+      ]
+    },
+    {
+      "name": "Kafka",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "Flink",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "Spark",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "Apache Beam",
+      "category": "tool",
+      "importance": "preferred",
+      "context_phrases": [
+        "Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable)"
+      ]
+    },
+    {
+      "name": "meter-to-cash platforms",
+      "category": "hard",
+      "importance": "preferred",
+      "context_phrases": [
+        "Familiarity with meter-to-cash platforms as integration partners or systems of record"
+      ]
+    },
+    {
+      "name": "SOX compliance",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Experience operating in SOX or other financial-controls environments - audit trails, change management, controls testing"
+      ]
+    },
+    {
+      "name": "GPU infrastructure",
+      "category": "domain",
+      "importance": "preferred",
+      "context_phrases": [
+        "Exposure to GPU/cloud infrastructure concepts and consumption models (on-demand, reserved, spot, flex)"
+      ]
+    },
+    {
+      "name": "platform engineering leadership",
+      "category": "soft",
+      "importance": "preferred",
+      "context_phrases": [
+        "Prior experience leading platform engineering through product expansion or team re-structure"
+      ]
+    }
+  ],
+  "responsibilities": [
+    "Lead a team spanning Northwind Labs's billing pipeline and the consumption models that power every product launch",
+    "Own metering pipeline health, data-store design, and the rating and metering path from raw usage to billable events",
+    "Own utilization integrity - the engineering rigor required for monthly close, audit, and reconciliation against vendor and internal systems of record",
+    "Partner with Billing-Product on data contracts and consumption-model interfaces so customer-facing surfaces have trustworthy inputs",
+    "Partner with Finance and Compliance on controls and audit-grade change management",
+    "Lead the platform work behind product launches - new consumption models, new meters, and new SKUs",
+    "Establish and enforce SLAs/SLOs for data completeness, accuracy, and freshness; instrument the pipeline so violations are detectable before they hit invoices",
+    "Drive roadmap execution across the two billing sub-teams, balancing platform investments, new launches, compliance work, and technical debt",
+    "Hire, onboard, mentor, and develop engineers with clear expectations, feedback, and career growth paths",
+    "Participate in on-call and incident response for metering pipeline health, month-end-close, and invoice generation"
+  ],
+  "ats_phrases": [
+    "Engineering Manager, Billing Platform",
+    "billing pipeline",
+    "metering pipelines",
+    "distributed data systems",
+    "multi-tenant data modeling",
+    "meter-to-cash",
+    "data correctness",
+    "idempotency",
+    "auditability",
+    "stream/batch processing",
+    "cloud/SaaS metering",
+    "meter-to-cash platforms",
+    "SOX compliance",
+    "financial-controls environments",
+    "GPU infrastructure consumption models"
+  ],
+  "raw_text": "Engineering Manager, Billing Platform\nNew York, NY\n\nApply\n\nNorthwind Labs is The Essential Cloud for AI™. Built for pioneers by pioneers, Northwind Labs delivers a platform of technology, tools, and teams that enables innovators to build and scale AI with confidence. Trusted by leading AI labs, startups, and global enterprises, Northwind Labs's combined superior infrastructure performance with deep technical expertise to accelerate breakthroughs and turn compute into capability. Founded in 2017, Northwind Labs became a publicly traded company (Nasdaq: NWND) in 2025. Learn more at www.northwind-labs.com.\n\nWhat You'll Do:\n\nThe Cloud Platform organization at Northwind Labs owns the infrastructure, services, and revenue systems that turn capacity and commercial commitments into a trusted, auditable, and self-serve cloud experience. Within Cloud Platform, the Billing function is evolving from a month-end invoicing engine into a broader revenue trust function, translating commercial and capacity commitments into clearer provisioning, operating an auditable and scalable meter-to-cash platform, and delivering customer-facing usage, cost, contract, and invoice experiences that let customers and internal teams self-serve with confidence.\n\nBilling is organized into two sub-teams. Billing-Platform owns the backend metering pipelines, capitalization models, utilization integrity, reconciliation and audit, and compliance-relevant controls that the rest of billing (and every customer-visible product launch) depend upon. Billing-Product owns the customer- and internal-facing surfaces built on top of that foundation.\n\nAbout the Role:\n\nAs an Engineering Manager, Billing Platform, you will lead a team of backend and data engineers responsible for the foundation of monetization at Northwind Labs: metering pipelines, the billing data store, consumption models, rating and attribution, reconciliation and audit against vendor and internal systems of record, usage integrity, and the platform engineering work behind new product launches. You will own technical direction, delivery, and operational health for your team, partnering closely with the Billing-Product sub-team, Product, Finance, Compliance, and DataEngineering.\n\nIn this role, you will:\n\n- Lead a team spanning Northwind Labs's billing pipeline and the consumption models that power every product launch.\n- Own greater health, data-store design, and the rating and metering path from raw usage to billable events.\n- Own utilization integrity - the engineering rigor required for monthly close, audit, and reconciliation against vendor and internal systems of record.\n- Partner with Billing-Product on data contracts and consumption-model interfaces so customer-facing surfaces have trustworthy inputs.\n- Partner with Finance and Compliance on controls and audit-grade change management.\n- Lead the platform work behind product launches - new consumption models, new meters, and new SKUs.\n- Establish and enforce SLAs/SLOs for data completeness, accuracy, and freshness; instrument the pipeline so violations are detectable before they hit invoices.\n- Drive roadmap execution across the two billing sub-teams, balancing platform investments, new launches, compliance work, and technical debt.\n- Hire, onboard, mentor, and develop engineers with clear expectations, feedback, and career growth paths.\n- Participate in on-call and incident response for metering pipeline health, month-end-close, and invoice generation.\n\nWho You Are:\n\n- 4+ years of professional software engineering experience, including 1-3 years as an engineering manager with people-lead responsibilities.\n- Proven experience leading teams that build and ship production data- or revenue-critical backend systems at scale - metering, billing, payments, financial reporting, large-scale data pipelines, or close adjacencies.\n- Strong understanding of distributed data systems: ingestion, stream/batch processing, schema evolution, exactly-once semantics, and replays.\n- Strong understanding of multi-tenant data modeling, including org/project hierarchies, contracts, entitlements, and usage attribution.\n- Experience designing APIs and data contracts consumed by downstream product surfaces and internal teams.\n- Strong grasp of correctness, idempotency, and auditability as first-order design constraints.\n- Experience owning end-to-end delivery for production services, including planning, execution, quality, and operational health.\n- Strong written and verbal communication skills; able to align engineering, product, finance, and compliance stakeholders around priorities and tradeoffs.\n- Familiarity with the major cloud providers (Northwind Labs Science or a related field.\n- Bachelor's degree in Computer Science or a related field.\n\nPreferred (if applicable):\n\n- Experience building or operating cloud/SaaS metering or billing platforms - usage ingestion, rating, invoicing, or reconciliation.\n- Hands-on experience with stream/batch data tooling (Kafka, Flink, Spark, Beam, or comparable) and the operational discipline they require.\n- Familiarity with meter-to-cash platforms as integration partners or systems of record.\n- Experience operating in SOX or other financial-controls environments - audit trails, change management, controls testing.\n- Exposure to GPU/cloud infrastructure concepts and consumption models (on-demand, reserved, spot, flex).\n- Prior experience leading platform engineering through product expansion or team re-structure.\n\nWondering if you're a good fit?\n\nWe believe in investing in our people and value candidates who bring diverse experiences - even if you don't meet every requirement. You might be a great fit if:\n\n- You care deeply about data integrity and revenue trust - the engineering discipline that lets a company close the month and pass an audit.\n- You have strong opinions (lightly held) about how to design metering pipelines that survive late-arriving data, replays, schema change, and audit.\n- You enjoy coaching engineers on system design, correctness, and the rigor required for revenue-adjacent backends.\n- You're energized by laying the foundation the rest of billing depends on - and by seeing every product launch ship on top of work your team owns.\n- You're comfortable operating amid ambiguity while balancing short-term delivery with long-term architectural and data-integrity investments.\n\nWhy Northwind Labs?\n\nAt Northwind Labs, we work hard, have fun, and move fast. We're in an exciting stage of hyper-growth and are constantly learning as we scale. Our team cares deeply about how we build our product and how we work together, guided by our core values:\n\n- Be Curious at Your Core\n- Act Like an Owner\n- Empower Employees\n- Deliver Best-in-Class Client Experiences\n- Achieve More Together\n\nWe foster an environment that encourages collaboration, independent thinking, and innovative solutions to complex problems. As Northwind Labs continues to grow, opportunities for impact and career development expand alongside it. You'll work with some of the best talent in the industry - and they'll want to learn from you, too. Come join us.\n\nThe base salary range for this role is $182,000 to $242,000. The starting salary will be determined based on job-related knowledge, skills, experience, and market location. We strive for both market alignment and internal equity when determining compensation. In addition to base salary, our total rewards package includes a discretionary bonus, equity awards, and a comprehensive benefits program (all based on eligibility).\n\nWhat We Offer\n\nThe range we've posted represents the typical compensation range for this role. To determine actual compensation, we review the market rate for each candidate which can include a variety of factors. These include qualifications, experience, interview performance, and location.\n\nIn addition to a competitive salary, we offer a variety of benefits to support your needs, including:\n\n- Medical, dental, and vision insurance - 100% paid for by Northwind Labs\n- Company-paid Life Insurance\n- Voluntary supplemental life insurance\n- Short and long-term disability insurance\n- Flexible Spending Account\n- Health Savings Account\n- Tuition Reimbursement\n- Mental Wellness Benefits through Spring Health\n- Family-forming support provided by Maven\n- Paid Parental Leave\n- Flexible, full-service childcare support with CareBridge\n- 401(k) with a generous employer match\n- Flexible PTO\n- Catered lunch each day in our office and data center locations\n- A casual work environment\n- A work culture focused on innovative disruption\n\nCalifornia Applicants\n\nCalifornia Consumer Privacy Act\n\nEqual Opportunity & Accommodations\n\nNorthwind Labs is an equal opportunity employer, committed to fostering an inclusive and supportive workplace. All qualified applicants and candidates will receive consideration for employment without regard to race, color, religion, sex, disability, age, sexual orientation, gender identity, national origin, veteran status, or genetic information.\n\nAs part of this commitment and consistent with the Americans with Disabilities Act (ADA), Northwind Labs will ensure that qualified applicants and candidates with disabilities are provided reasonable accommodations for the hiring process, unless such accommodation would cause an undue hardship. If reasonable accommodation is needed, please contact careers@northwind-labs.com.\n\nExport Control Compliance\n\nThis position requires access to export controlled information. To conform to U.S. Government export regulations applicable to that information, applicant must either be a U.S. person, defined as a (i) U.S. citizen or national, (ii) U.S. lawful permanent resident (green card holder), (iii) refugee under 8 U.S.C. § 1157, or (iv) asylee under 8 U.S.C. § 1158, OR eligible to access the export controlled information without a required export authorization, or (ii) eligible and reasonably likely to obtain the required export authorization from the applicable U.S. government agency. Northwind Labs may, for legitimate business reasons, decline to pursue any export licensing process.",
+  "source_url": null
+}

@@ -1,0 +1,171 @@
+{
+  "matched": [
+    {
+      "jd_skill": {
+        "name": "Software Engineering Leadership",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "10+ years in software engineering with 5+ years managing teams (managing through managers)",
+          "lead, scale, and inspire a distributed team of engineers"
+        ]
+      },
+      "skill_id": "skill-45",
+      "dataset_name": "engineering leadership experience",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Cross-functional Stakeholder Alignment",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "Proven ability to influence and align cross-functional stakeholders across distributed teams in Australia, North America, and Europe"
+        ]
+      },
+      "skill_id": "skill-9",
+      "dataset_name": "Cross-functional collaboration",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Complex Initiative Execution",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "Demonstrated track record of driving complex, ambiguous initiatives from conception through production"
+        ]
+      },
+      "skill_id": "skill-66",
+      "dataset_name": "roadmap and execution",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Cloud-Native Architecture",
+        "category": "hard",
+        "importance": "critical",
+        "context_phrases": [
+          "Expertise in the architecture, operation, and evolution of large-scale, cloud-native SaaS infrastructure",
+          "Drive our continued evolution toward cloud-native, containerized, and highly orchestrated environments"
+        ]
+      },
+      "skill_id": "skill-18",
+      "dataset_name": "Cloud infrastructure management",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Containerization",
+        "category": "hard",
+        "importance": "required",
+        "context_phrases": [
+          "Proficient with containerization, orchestration (e.g., Kubernetes), and infrastructure-as-code"
+        ]
+      },
+      "skill_id": "skill-81",
+      "dataset_name": "Docker",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Systems Engineering",
+        "category": "hard",
+        "importance": "critical",
+        "context_phrases": [
+          "A strong technical foundation building at scale. Ability to evaluate system design tradeoffs, conduct high-level code reviews, and identify application weaknesses"
+        ]
+      },
+      "skill_id": "skill-17",
+      "dataset_name": "System architecture principles",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Distributed Systems",
+        "category": "hard",
+        "importance": "required",
+        "context_phrases": [
+          "Ensure our core data and messaging layers are optimized for global scale"
+        ]
+      },
+      "skill_id": "skill-82",
+      "dataset_name": "microservices architecture",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Developer Productivity Engineering",
+        "category": "hard",
+        "importance": "required",
+        "context_phrases": [
+          "Lead developer productivity engineering to drastically reduce cycle times across build, test, deploy, and observability workflows"
+        ]
+      },
+      "skill_id": "skill-48",
+      "dataset_name": "internal platforms",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Talent Acquisition and Retention",
+        "category": "soft",
+        "importance": "required",
+        "context_phrases": [
+          "Drive hiring strategies to attract, retain, and diverse top-tier engineering talent"
+        ]
+      },
+      "skill_id": "skill-3",
+      "dataset_name": "Talent acquisition and development",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Team Coaching and Mentoring",
+        "category": "soft",
+        "importance": "required",
+        "context_phrases": [
+          "Coach, mentor, and elevate engineering managers and technical leaders, building a sustainable leadership pipeline"
+        ]
+      },
+      "skill_id": "skill-2",
+      "dataset_name": "Team leadership and mentorship",
+      "semantic": true
+    }
+  ],
+  "weak": [],
+  "unknown": [
+    {
+      "name": "Kubernetes",
+      "category": "tool",
+      "importance": "critical",
+      "context_phrases": [
+        "Proficient with containerization, orchestration (e.g., Kubernetes), and infrastructure-as-code"
+      ]
+    },
+    {
+      "name": "Infrastructure-as-Code",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Proficient with containerization, orchestration (e.g., Kubernetes), and infrastructure-as-code"
+      ]
+    },
+    {
+      "name": "Edge Infrastructure",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Hands-on experience optimizing global performance and security using modern edge platforms like Cloudflare"
+      ]
+    },
+    {
+      "name": "Cloudflare",
+      "category": "tool",
+      "importance": "required",
+      "context_phrases": [
+        "Hands-on experience optimizing global performance and security using modern edge platforms like Cloudflare"
+      ]
+    }
+  ]
+}

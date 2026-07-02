@@ -1,0 +1,127 @@
+{
+  "matched": [
+    {
+      "jd_skill": {
+        "name": "Microservices Architecture",
+        "category": "hard",
+        "importance": "critical",
+        "context_phrases": [
+          "Deep expertise of hands-on experience with distributed systems, microservices architecture, and cloud-native technologies"
+        ]
+      },
+      "skill_id": "skill-82",
+      "dataset_name": "microservices architecture",
+      "semantic": false
+    },
+    {
+      "jd_skill": {
+        "name": "CI/CD",
+        "category": "tool",
+        "importance": "required",
+        "context_phrases": [
+          "Supporting active development workflows, including CI/CD integration and modern automation",
+          "Proficiency with modern development practices, CI/CD, and Docker technologies"
+        ]
+      },
+      "skill_id": "skill-83",
+      "dataset_name": "CI/CD",
+      "semantic": false
+    },
+    {
+      "jd_skill": {
+        "name": "Docker",
+        "category": "tool",
+        "importance": "required",
+        "context_phrases": [
+          "Proficiency with modern development practices, CI/CD, and Docker technologies"
+        ]
+      },
+      "skill_id": "skill-81",
+      "dataset_name": "Docker",
+      "semantic": false
+    },
+    {
+      "jd_skill": {
+        "name": "People Leadership",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "3+ years in a people leadership role",
+          "Lead senior engineers, fostering a culture of technical excellence"
+        ]
+      },
+      "skill_id": "skill-45",
+      "dataset_name": "engineering leadership experience",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Distributed Systems Architecture",
+        "category": "hard",
+        "importance": "critical",
+        "context_phrases": [
+          "Deep expertise of hands-on experience with distributed systems, microservices architecture, and cloud-native technologies",
+          "Drive architectural decisions for large-scale distributed systems"
+        ]
+      },
+      "skill_id": "skill-82",
+      "dataset_name": "microservices architecture",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Cloud-Native Technologies",
+        "category": "hard",
+        "importance": "critical",
+        "context_phrases": [
+          "Deep expertise of hands-on experience with distributed systems, microservices architecture, and cloud-native technologies"
+        ]
+      },
+      "skill_id": "skill-18",
+      "dataset_name": "Cloud infrastructure management",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Strategic Leadership",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "strategic and experienced Director of Engineering",
+          "Define and execute technical strategy across multiple engineering teams"
+        ]
+      },
+      "skill_id": "skill-46",
+      "dataset_name": "managing senior technical leaders",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Technical Strategy",
+        "category": "soft",
+        "importance": "critical",
+        "context_phrases": [
+          "Define and execute technical strategy across multiple engineering teams, driving initiatives and supporting our platform's evolution"
+        ]
+      },
+      "skill_id": "skill-47",
+      "dataset_name": "translate ambiguous business requirements into clear technical strategies",
+      "semantic": true
+    },
+    {
+      "jd_skill": {
+        "name": "Programming (Go, Python, or Java)",
+        "category": "language",
+        "importance": "required",
+        "context_phrases": [
+          "Strong foundation in programming languages such as Go, Python, or Java"
+        ]
+      },
+      "skill_id": "skill-77",
+      "dataset_name": "Typescript/Python",
+      "semantic": true
+    }
+  ],
+  "weak": [],
+  "unknown": []
+}
