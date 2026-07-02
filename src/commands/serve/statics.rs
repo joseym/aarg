@@ -47,7 +47,14 @@ pub(super) fn serve(state: &AppState, path: &str) -> Resp {
     };
 
     match std::fs::read(&file) {
-        Ok(bytes) => bytes_response(200, content_type_for(&file), bytes),
+        Ok(bytes) => {
+            let mut resp = bytes_response(200, content_type_for(&file), bytes);
+            if let Ok(value) = hyper::header::HeaderValue::from_str(cache_control_for(&file)) {
+                resp.headers_mut()
+                    .insert(hyper::header::CACHE_CONTROL, value);
+            }
+            resp
+        }
         // Resolve already confirmed it's a file under the root, so a read error
         // here is a genuine IO fault, not a missing/forbidden path.
         Err(error) => error_response(500, "internal", format!("could not read the file: {error}")),
@@ -93,6 +100,20 @@ fn is_spa_route(path: &str) -> bool {
     !last.contains('.')
 }
 
+/// The `Cache-Control` for a served file. Angular fingerprints its JS/CSS with a
+/// content hash in the filename, so those are safe to cache forever — a content
+/// change changes the name, so a stale copy is never requested. Everything else
+/// — `index.html` (the unhashed entry that names the current hashed chunks) and
+/// the unhashed `aarg_wasm_bg.wasm` — must be revalidated every load, or a
+/// browser holding a stale entry would ask for chunk hashes that no longer exist
+/// after a rebuild and the app would break.
+fn cache_control_for(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("js" | "css") => "public, max-age=31536000, immutable",
+        _ => "no-cache",
+    }
+}
+
 /// The `Content-Type` for a file, by extension. Covers the web-app kinds a
 /// browser cares about — `.wasm` especially, which needs `application/wasm`
 /// for streaming compilation — and falls back to a generic binary type for
@@ -124,6 +145,27 @@ pub(super) fn content_type_for(path: &Path) -> &'static str {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_control_caches_hashed_assets_and_revalidates_the_rest() {
+        // Angular's content-hashed JS/CSS can cache forever.
+        assert_eq!(
+            cache_control_for(Path::new("main-A1B2C3.js")),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for(Path::new("styles-XYZ.css")),
+            "public, max-age=31536000, immutable"
+        );
+        // The unhashed entry point and the unhashed wasm must revalidate, or a
+        // rebuild leaves a browser asking for chunk hashes that no longer exist.
+        assert_eq!(cache_control_for(Path::new("index.html")), "no-cache");
+        assert_eq!(
+            cache_control_for(Path::new("aarg_wasm_bg.wasm")),
+            "no-cache"
+        );
+        assert_eq!(cache_control_for(Path::new("favicon.ico")), "no-cache");
+    }
 
     #[test]
     fn spa_routes_fall_back_but_missing_assets_do_not() {
