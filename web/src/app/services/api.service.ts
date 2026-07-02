@@ -10,7 +10,26 @@ import type {
   CompletionRequest,
   CompletionResponse,
   CostEstimate,
+  JobRequirements,
+  GapReport,
+  TailoredResume,
+  AdversarialReport,
+  TokenUsage,
 } from '../models';
+
+/** The `POST /api/builds` body: everything the browser's wasm tailor loop
+ *  produced that the server needs to persist a numbered build. The ATS variant
+ *  is re-projected server-side from `canonical`, so only the LLM-reworded
+ *  `human_payload` is sent (and it's optional — a run may render ATS only). */
+export interface CreateBuildRequest {
+  jd: JobRequirements;
+  gap_report: GapReport;
+  canonical: TailoredResume;
+  adversarial_report: AdversarialReport;
+  human_payload?: VariantPayload;
+  model: string;
+  usage: TokenUsage;
+}
 
 /** Typed client for `aarg serve`'s HTTP API.
  *
@@ -33,6 +52,12 @@ export class ApiService {
   /** `GET /api/builds/:id` — one build's full artifact bundle. */
   getBuild(id: string): Observable<BuildDetail> {
     return this.http.get<BuildDetail>(`${this.base}/builds/${encodeURIComponent(id)}`);
+  }
+
+  /** `POST /api/builds` — persist a browser-run build (the wasm tailor loop's
+   *  output) the way `aarg tailor` does, returning the new numbered build id. */
+  createBuild(body: CreateBuildRequest): Observable<{ id: string }> {
+    return this.http.post<{ id: string }>(`${this.base}/builds`, body);
   }
 
   /** `GET /api/builds/:id/files/:name` — a stored rendered PDF, as a blob. */

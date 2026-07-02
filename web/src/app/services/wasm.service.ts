@@ -184,9 +184,30 @@ export class WasmService {
       const mod = (await import('../../wasm/pkg/aarg_wasm.js')) as unknown as WasmExports;
       await mod.default();
       this.mod = mod;
+      await this.loadModels();
       return mod;
     })();
     return this.loading;
+  }
+
+  /** Adopt the server's configured model tiers (`GET /api/models`), so an
+   *  in-browser build spends the same cheap/mid/smart mix the CLI does instead
+   *  of running every call on one hardcoded model. Best-effort: if the endpoint
+   *  is unreachable the built-in default stands, and any real credential/LLM
+   *  problem still surfaces on the first `/api/llm` call. */
+  private async loadModels(): Promise<void> {
+    try {
+      const res = await fetch('/api/models');
+      if (!res.ok) return;
+      const t = (await res.json()) as { cheap?: string; mid?: string; smart?: string };
+      if (t.cheap && t.mid && t.smart) {
+        // `model` mirrors the smart tier — the "headline" model the cost
+        // estimate and the saved build's meta record.
+        this.models = { cheap: t.cheap, mid: t.mid, smart: t.smart, model: t.smart };
+      }
+    } catch {
+      // Keep the default; the LLM path will report a genuine failure itself.
+    }
   }
 
   /** JSON callback bound to the LLM proxy. Posts the `CompletionRequest` string

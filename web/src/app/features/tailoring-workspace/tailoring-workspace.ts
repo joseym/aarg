@@ -105,7 +105,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
       <button class="btn" type="button" (click)="downloadPdf()" [disabled]="downloading()">
         {{ downloading() ? 'Rendering…' : 'Download PDF' }}
       </button>
-      <a class="btn btn-primary" routerLink="/">New Build</a>
+      <a class="btn btn-primary" routerLink="/new">New Build</a>
     </div>
 
     <!-- ── weighted-coverage score (same treatment as the build overview) ── -->

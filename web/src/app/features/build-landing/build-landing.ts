@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject } from '@angular/core';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 
 import { BuildsStore } from '../../services/builds-store';
 
@@ -10,6 +10,7 @@ import { BuildsStore } from '../../services/builds-store';
 @Component({
   selector: 'app-build-landing',
   standalone: true,
+  imports: [RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (store.loading()) {
@@ -23,7 +24,7 @@ import { BuildsStore } from '../../services/builds-store';
       <div class="panel first-run">
         <h2>No builds yet</h2>
         <p class="muted">
-          Start one with <b>New Build</b> to tailor a résumé to a job description.
+          Start one with <a routerLink="/new">New Build</a> to tailor a résumé to a job description.
         </p>
       </div>
     }

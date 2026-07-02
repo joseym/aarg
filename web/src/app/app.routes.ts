@@ -11,6 +11,11 @@ export const routes: Routes = [
       import('./features/build-landing/build-landing').then((m) => m.BuildLanding),
   },
   {
+    path: 'new',
+    title: 'AARG — New Build',
+    loadComponent: () => import('./features/new-build/new-build').then((m) => m.NewBuild),
+  },
+  {
     path: 'build/:id/tailor',
     title: 'AARG — Tailoring',
     loadComponent: () =>
