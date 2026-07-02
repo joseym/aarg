@@ -29,11 +29,14 @@ export type LineStatus = 'verbatim' | 'grounded' | 'unrecorded' | 'edited';
 /** A stable string key for a rendered line, shared by the provenance report and
  *  the rendered payload so a line's status can be looked up positionally. */
 export function locationKey(loc: LineLocation): string {
-  if (loc === 'summary') return 'summary';
-  if ('role_bullet' in loc) {
-    return `bullet:${loc.role_bullet.role_id}:${loc.role_bullet.bullet_index}`;
+  switch (loc.kind) {
+    case 'summary':
+      return 'summary';
+    case 'role_bullet':
+      return `bullet:${loc.role_id}:${loc.bullet_index}`;
+    case 'skill':
+      return `skill:${loc.index}`;
   }
-  return `skill:${loc.skill.index}`;
 }
 
 /** Index a provenance report by line key for O(1) lookup while rendering. */
@@ -49,20 +52,22 @@ export function provenanceIndex(report: ProvenanceReport | null): Map<string, Li
  *  `textContent`-safe strings only — the caller renders them via interpolation. */
 export function resolveSource(source: SourceRef | null, dataset: ResumeDataset | null): string {
   if (!source) return 'your recorded evidence';
-  if (source === 'summary') return 'your saved summary';
-  if ('bullet' in source) {
-    const id = source.bullet.id;
-    for (const role of dataset?.roles ?? []) {
-      for (const b of role.bullets) {
-        if (b.id === id) return `${role.company} · ${truncate(b.text, 80)}`;
+  switch (source.type) {
+    case 'summary':
+      return 'your saved summary';
+    case 'bullet': {
+      for (const role of dataset?.roles ?? []) {
+        for (const b of role.bullets) {
+          if (b.id === source.id) return `${role.company} · ${truncate(b.text, 80)}`;
+        }
       }
+      return `recorded bullet ${source.id}`;
     }
-    return `recorded bullet ${id}`;
+    case 'skill': {
+      const skill = dataset?.skills?.skills?.find((s) => s.id === source.id);
+      return skill ? skill.canonical_name : `recorded skill ${source.id}`;
+    }
   }
-  // skill
-  const id = source.skill.id;
-  const skill = dataset?.skills?.skills?.find((s) => s.id === id);
-  return skill ? skill.canonical_name : `recorded skill ${id}`;
 }
 
 function truncate(s: string, n: number): string {

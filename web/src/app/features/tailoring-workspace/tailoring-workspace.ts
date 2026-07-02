@@ -283,7 +283,16 @@ export class TailoringWorkspace {
   protected readonly previewModel = computed<PreviewModel | null>(() => {
     const payload = this.previewPayload();
     if (!payload) return null;
-    return buildPreviewModel(payload, provenanceIndex(this.provReport()), this.edits(), this.dataset());
+    // Guard the whole screen: this computed feeds the template, so a throw here
+    // (a payload/provenance shape the builder doesn't expect) would abort the
+    // render pass and blank the reviewer rail too. Degrade to the empty preview
+    // state and log, rather than take the page down.
+    try {
+      return buildPreviewModel(payload, provenanceIndex(this.provReport()), this.edits(), this.dataset());
+    } catch (e) {
+      console.error('failed to build the résumé preview', e);
+      return null;
+    }
   });
 
   protected readonly coverageRows = computed<CoverageRow[]>(() =>
@@ -539,9 +548,14 @@ interface DismissedObjection {
 
 function keyOf(l: ProvenanceReport['lines'][number]): string {
   const loc = l.location;
-  if (loc === 'summary') return 'summary';
-  if ('role_bullet' in loc) return `bullet:${loc.role_bullet.role_id}:${loc.role_bullet.bullet_index}`;
-  return `skill:${loc.skill.index}`;
+  switch (loc.kind) {
+    case 'summary':
+      return 'summary';
+    case 'role_bullet':
+      return `bullet:${loc.role_id}:${loc.bullet_index}`;
+    case 'skill':
+      return `skill:${loc.index}`;
+  }
 }
 
 function coverageChip(gap: GapReport, coverage01: number): { pct: number; band: string; matched: number; total: number } {
