@@ -38,10 +38,11 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
   },
 };
 
-/** A right-side drawer that, for this wave, names which copilot a Refine action
- *  would open. The interactive wasm exports (`strengthen_interactive`,
- *  `capture_metrics_interactive`, …) need user-callback modals that land in the
- *  next wave — this is the seam where they hook in.
+/** A right-side drawer that names which copilot a Refine action will run and
+ *  emits `run` when the user confirms. Stays presentational: the workspace owns
+ *  the dispatch to the interactive wasm exports (`strengthen_interactive`,
+ *  `capture_metrics_interactive`, …) and drives their user-callback modals
+ *  through {@link CopilotHost}.
  *
  *  Adds the a11y the raw export lacked: role="dialog", a focus trap, Escape to
  *  close, and focus restoration. */
@@ -78,15 +79,21 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
             <span class="dot" aria-hidden="true"></span>
             <div>{{ copy.blurb }}</div>
           </div>
-          <div class="stub-note">
-            <b>Copilot arrives next wave.</b> This will route to the
-            <code>{{ o.copilot }}</code> copilot, driving the interactive core
-            export through a user-callback modal. Nothing is changed yet.
+          <div class="honest-note">
+            @if (o.copilot === 'layout') {
+              <b>Presentation only.</b> This routes to the variant adapter and
+              updates the preview here — the canonical claims never change and
+              nothing is saved to this build.
+            } @else {
+              <b>This records evidence, not a rewrite.</b> Refining captures the
+              missing fact as evidence in your dataset; the current draft reflects
+              it on your <b>next build</b>. The visible line isn’t rewritten here.
+            }
           </div>
         </div>
         <div class="cp-foot">
           <button class="btn btn-ghost" type="button" (click)="close.emit()">Close</button>
-          <button class="btn" type="button" disabled>Open {{ o.copilot }} copilot →</button>
+          <button class="btn btn-primary" type="button" (click)="run.emit(o)">Run {{ o.copilot }} copilot →</button>
         </div>
       </div>
     }
@@ -113,8 +120,10 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
     .cp-line { font-family: var(--font-display); font-size: 14px; line-height: 1.4; padding: 10px 12px; border-left: 2px solid var(--border); background: var(--surface-2); border-radius: 0 6px 6px 0; margin-bottom: 16px; }
     .assist { display: flex; gap: 9px; align-items: flex-start; padding: 11px 13px; border-radius: 9px; background: var(--accent-soft); font-size: 13px; color: var(--fg); line-height: 1.5; margin-bottom: 16px; }
     .assist .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-top: 5px; flex-shrink: 0; }
-    .stub-note { font-size: 12.5px; color: var(--muted); line-height: 1.55; border: 1px dashed var(--border); border-radius: 9px; padding: 12px 14px; }
-    .stub-note code { font-family: var(--font-mono); color: var(--accent); }
+    .honest-note { font-size: 12.5px; color: var(--muted); line-height: 1.55; border: 1px dashed var(--border); border-radius: 9px; padding: 12px 14px; }
+    .honest-note b { color: var(--fg); font-weight: 600; }
+    .btn-primary { background: var(--accent); color: oklch(97% 0.02 40); border-color: var(--accent); }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-2); border-color: var(--accent-2); }
     .btn { display: inline-flex; align-items: center; height: 34px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 14px; color: inherit; cursor: pointer; }
     .btn:hover:not(:disabled) { border-color: var(--fg); }
     .btn:disabled { opacity: 0.55; cursor: default; }
@@ -126,6 +135,7 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
 export class RefineDrawer {
   readonly objection = input<ObjectionVM | null>(null);
   readonly close = output<void>();
+  readonly run = output<ObjectionVM>();
 
   private readonly panel = viewChild<ElementRef<HTMLElement>>('panel');
   private readonly closeBtn = viewChild<ElementRef<HTMLButtonElement>>('closeBtn');

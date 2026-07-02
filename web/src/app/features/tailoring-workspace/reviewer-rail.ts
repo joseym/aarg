@@ -4,7 +4,7 @@ import type { AdversarialReport } from '../../models';
 import type { ObjectionVM, TriageStatus } from './workspace.model';
 import { band, pct } from './workspace.model';
 
-type StatusFilter = 'open' | 'accepted' | 'left';
+type StatusFilter = 'open' | 'accepted' | 'refined' | 'left';
 type TypeFilter = ObjectionVM['type'];
 
 /** The right rail: the reviewer's verdict (persona notes + the overall score as
@@ -77,6 +77,11 @@ type TypeFilter = ObjectionVM['type'];
                 {{ busy() === o.id ? 'Saving…' : 'Accept as intentional' }}
               </button>
               <button class="btn btn-ghost btn-sm" (click)="leave.emit(o)">Leave it</button>
+            </div>
+          } @else if (statusOf(o.id) === 'refined') {
+            <div class="c-resolved refined">
+              <span class="rmark">✓</span>
+              <span>Refined — evidence recorded · reflects on your next build</span>
             </div>
           } @else {
             <div class="c-resolved" [class.left]="statusOf(o.id) === 'left'">
@@ -160,8 +165,10 @@ type TypeFilter = ObjectionVM['type'];
 export class ReviewerRail {
   readonly report = input.required<AdversarialReport>();
   readonly objections = input.required<ObjectionVM[]>();
-  /** Ids accepted (persisted) and left (session-only), owned by the container. */
+  /** Ids accepted (persisted), refined (evidence recorded this session), and
+   *  left (session-only), owned by the container. */
   readonly accepted = input<ReadonlySet<string>>(new Set());
+  readonly refined = input<ReadonlySet<string>>(new Set());
   readonly left = input<ReadonlySet<string>>(new Set());
   /** The id currently being persisted, to disable its Accept button. */
   readonly busy = input<string | null>(null);
@@ -183,6 +190,7 @@ export class ReviewerRail {
 
   protected statusOf(id: string): TriageStatus {
     if (this.accepted().has(id)) return 'accepted';
+    if (this.refined().has(id)) return 'refined';
     if (this.left().has(id)) return 'left';
     return 'open';
   }
@@ -197,6 +205,7 @@ export class ReviewerRail {
     return [
       { value: 'open' as const, label: 'Open', count: objs.filter((o) => this.statusOf(o.id) === 'open').length },
       { value: 'accepted' as const, label: 'Accepted', count: objs.filter((o) => this.statusOf(o.id) === 'accepted').length },
+      { value: 'refined' as const, label: 'Refined', count: objs.filter((o) => this.statusOf(o.id) === 'refined').length },
       { value: 'left' as const, label: 'Left', count: objs.filter((o) => this.statusOf(o.id) === 'left').length },
     ];
   });

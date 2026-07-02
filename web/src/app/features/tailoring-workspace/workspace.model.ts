@@ -163,7 +163,7 @@ function contactLine(payload: VariantPayload): string {
 
 export type ObjectionType = 'unsupported' | 'metric' | 'weak' | 'skills' | 'layout' | 'overall';
 export type CopilotKind = 'strengthen' | 'metric' | 'summary' | 'skills' | 'layout';
-export type TriageStatus = 'open' | 'accepted' | 'left';
+export type TriageStatus = 'open' | 'accepted' | 'refined' | 'left';
 
 export interface ObjectionVM {
   /** Stable id derived from `(target, kind)` — Objection has none on the wire. */
@@ -250,9 +250,20 @@ function flaggedText(
   return null;
 }
 
-/** Prefer a layout copilot when the objection is variant-only presentation. */
-function copilotForScope(scope: ObjectionScope, fallback: CopilotKind): CopilotKind {
-  return typeof scope === 'object' ? 'layout' : fallback;
+/** Which copilot can actually act on an objection. The *target* decides first:
+ *  the summary and skills copilots operate on those sections, and only bullets
+ *  can be strengthened or given a metric — so kind alone (e.g. an
+ *  `unsupported_claim` on the summary) would route to a copilot with nothing to
+ *  act on. Variant-only (presentation) scope is always the layout copilot. */
+function copilotFor(o: Objection): CopilotKind {
+  if (typeof o.scope === 'object') return 'layout';
+  const t = o.target;
+  if (t === 'summary') return 'summary';
+  if (t === 'skills_section') return 'skills';
+  if (t === 'layout') return 'layout';
+  // A bullet (or `overall`) is handled by the line copilots, chosen by kind:
+  // a missing number is the metric interview, everything else is a strengthen.
+  return o.kind === 'no_metric' ? 'metric' : 'strengthen';
 }
 
 export function buildObjectionVMs(
@@ -261,7 +272,7 @@ export function buildObjectionVMs(
   dataset: ResumeDataset | null,
 ): ObjectionVM[] {
   return objections.map((o) => {
-    const { type, copilot } = classifyKind(o.kind);
+    const { type } = classifyKind(o.kind);
     return {
       id: objectionId(o),
       objection: o,
@@ -272,7 +283,7 @@ export function buildObjectionVMs(
       message: o.message,
       suggestion: o.suggestion,
       severity: o.severity,
-      copilot: copilotForScope(o.scope, copilot),
+      copilot: copilotFor(o),
     };
   });
 }

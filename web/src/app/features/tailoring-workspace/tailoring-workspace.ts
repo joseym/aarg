@@ -9,9 +9,11 @@ import {
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
 import { WasmService } from '../../services/wasm.service';
+import { CopilotHost } from '../../shared/copilot-host';
 import type {
   AdversarialReport,
   BuildDetail,
@@ -36,6 +38,7 @@ import {
   pct,
   provenanceIndex,
   targetKey,
+  type CopilotKind,
   type ObjectionVM,
   type PreviewModel,
 } from './workspace.model';
@@ -182,6 +185,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
               [report]="rep"
               [objections]="objectionVMs()"
               [accepted]="accepted()"
+              [refined]="refinedIds()"
               [left]="leftIds()"
               [busy]="busy()"
               (refine)="onRefine($event)"
@@ -196,7 +200,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
       </div>
     }
 
-    <app-refine-drawer [objection]="drawer()" (close)="drawer.set(null)" />
+    <app-refine-drawer [objection]="drawer()" (close)="drawer.set(null)" (run)="runCopilot($event)" />
 
     @if (toast(); as t) {
       <div class="toast on" role="status">{{ t }}</div>
@@ -275,6 +279,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 export class TailoringWorkspace {
   private readonly api = inject(ApiService);
   private readonly wasm = inject(WasmService);
+  private readonly copilot = inject(CopilotHost);
 
   readonly id = input.required<string>();
 
@@ -294,7 +299,11 @@ export class TailoringWorkspace {
   protected readonly infoOpen = signal(false);
   protected readonly edits = signal<Record<string, string>>({});
   protected readonly accepted = signal<ReadonlySet<string>>(new Set());
+  /** Objections whose refine copilot recorded evidence this session. */
+  protected readonly refinedIds = signal<ReadonlySet<string>>(new Set());
   protected readonly leftIds = signal<ReadonlySet<string>>(new Set());
+  /** A layout copilot's refined human payload, previewed but not saved. */
+  private readonly refinedHuman = signal<VariantPayload | null>(null);
   protected readonly busy = signal<string | null>(null);
   protected readonly drawer = signal<ObjectionVM | null>(null);
   protected readonly downloading = signal(false);
@@ -346,7 +355,7 @@ export class TailoringWorkspace {
   // ATS payload — it's the same shape, so the preview builder works on either.
   // Only when neither exists is there nothing to show.
   private readonly previewPayload = computed<VariantPayload | null>(
-    () => this.bundle()?.human_payload ?? this.bundle()?.ats_payload ?? null,
+    () => this.refinedHuman() ?? this.bundle()?.human_payload ?? this.bundle()?.ats_payload ?? null,
   );
 
   protected readonly previewModel = computed<PreviewModel | null>(() => {
@@ -425,7 +434,9 @@ export class TailoringWorkspace {
     this.claimsFlagged.set(false);
     this.edits.set({});
     this.accepted.set(new Set());
+    this.refinedIds.set(new Set());
     this.leftIds.set(new Set());
+    this.refinedHuman.set(null);
     this.drawer.set(null);
     this.view.set('preview');
   }
@@ -531,6 +542,96 @@ export class TailoringWorkspace {
     this.drawer.set(o);
   }
 
+  /** Run the copilot behind an objection through {@link CopilotHost} (which shows
+   *  the busy/progress overlay and drives the Q&A modal). Dataset-enriching
+   *  copilots record evidence and PUT the dataset; the layout copilot returns a
+   *  projected human payload we preview in-session only. Everything is guarded so
+   *  a thrown export or a cancelled interview surfaces a toast, never wedges. */
+  protected async runCopilot(o: ObjectionVM): Promise<void> {
+    const ds = this.dataset();
+    if (!ds) {
+      this.showToast('Dataset unavailable — cannot run a copilot.');
+      return;
+    }
+    // A single-objection report keeps the copilot's work surgical.
+    const rep = this.report();
+    const single: AdversarialReport = {
+      objections: [o.objection],
+      overall_score: rep?.overall_score ?? 0,
+      persona_notes: rep?.persona_notes ?? '',
+    };
+    this.drawer.set(null);
+
+    try {
+      const result = await this.copilot.runWithUi(`${o.copilot} copilot`, (): Promise<unknown> => {
+        switch (o.copilot) {
+          case 'strengthen':
+            return this.wasm.strengthen(ds, single);
+          case 'metric':
+            return this.wasm.captureMetrics(ds, single);
+          case 'summary':
+            return this.wasm.refineSummary(ds, o.objection.message);
+          case 'skills': {
+            const jd = this.jd();
+            const gap = this.bundle()?.gap_report;
+            if (!jd || !gap) {
+              throw new Error('This build has no JD or gap report to run the skill check against.');
+            }
+            return this.wasm.verifySkills(ds, jd, gap);
+          }
+          case 'layout': {
+            const jd = this.jd();
+            const canonical = this.bundle()?.canonical;
+            if (!jd || !canonical) {
+              throw new Error('This build has no canonical draft to refine the layout from.');
+            }
+            return this.wasm.refineLayout(canonical, ds, jd, o.objection);
+          }
+        }
+      });
+
+      if (o.copilot === 'layout') {
+        // Layout is presentation-only: preview the refined variant, never touch
+        // the canonical claims or the saved build.
+        this.refinedHuman.set(result as VariantPayload);
+        this.showToast('Layout refined — preview updated (not saved to this build).');
+        return;
+      }
+
+      await this.applyDatasetRefine(o, result);
+    } catch (err) {
+      this.showToast(errMessage(err));
+    }
+  }
+
+  /** Apply a dataset-enriching copilot's result: PUT the enriched dataset
+   *  (validate-gated, 422 surfaces findings), re-run the deterministic checks,
+   *  mark the objection refined, and toast a plain summary. A copilot the user
+   *  skipped through (no counts) records nothing and stays open. */
+  private async applyDatasetRefine(o: ObjectionVM, result: unknown): Promise<void> {
+    const r = (result ?? {}) as RefineResult;
+    const summary = refineSummaryText(o.copilot, r);
+    if (!summary || !r.dataset) {
+      this.showToast('No changes recorded.');
+      return;
+    }
+    try {
+      const saved = await firstValueFrom(this.api.putDataset(r.dataset));
+      this.dataset.set(saved);
+      // Provenance may now trace a previously-unrecorded line.
+      void this.recompute();
+      this.refinedIds.update((s) => withAdded(s, o.id));
+      this.leftIds.update((s) => withRemoved(s, o.id));
+      this.showToast(summary);
+    } catch (err) {
+      const msg =
+        err instanceof HttpErrorResponse && err.status === 422
+          ? `Validation blocked the save: ${findings(err)}`
+          : errMessage(err);
+      this.showToast(msg);
+    }
+  }
+
   /** A coverage-map row's action. If an open objection already targets this
    *  requirement, open its refine drawer; otherwise flag that targeted refine
    *  for a bare requirement lands in the interactive pass (rather than fabricate
@@ -627,6 +728,45 @@ export class TailoringWorkspace {
 interface DismissedObjection {
   target: ObjectionVM['objection']['target'];
   kind: ObjectionVM['objection']['kind'];
+}
+
+/** The union of shapes the dataset-enriching copilots return (all fields
+ *  optional; each copilot populates the counts relevant to it). */
+interface RefineResult {
+  dataset?: ResumeDataset;
+  changed?: boolean;
+  added?: number;
+  verified?: number;
+  removed?: number;
+  skipped?: number;
+  bullets_added?: number;
+  declined?: number;
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** A plain human summary from a copilot's counts, or null if it recorded nothing
+ *  (the user skipped every prompt). Layout never reaches here. */
+function refineSummaryText(kind: CopilotKind, r: RefineResult): string | null {
+  switch (kind) {
+    case 'strengthen':
+      return r.changed ? 'Recorded a stronger line as evidence — it lands on your next build.' : null;
+    case 'summary':
+      return r.changed ? 'Updated summary saved to your dataset.' : null;
+    case 'metric':
+      return (r.added ?? 0) > 0 ? `Recorded ${plural(r.added ?? 0, 'metric')} as evidence.` : null;
+    case 'skills': {
+      const parts: string[] = [];
+      if (r.verified) parts.push(`verified ${plural(r.verified, 'skill')}`);
+      if (r.bullets_added) parts.push(`added ${plural(r.bullets_added, 'bullet')}`);
+      if (r.removed) parts.push(`removed ${plural(r.removed, 'skill')}`);
+      if (parts.length === 0) return null;
+      const s = parts.join(', ');
+      return `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
+    }
+    case 'layout':
+      return null;
+  }
 }
 
 function keyOf(l: ProvenanceReport['lines'][number]): string {
