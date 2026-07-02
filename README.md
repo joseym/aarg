@@ -12,9 +12,16 @@ It runs on your machine, against your own career data, and it will not invent
 experience you don't have. That last part is the whole point, and it's enforced
 in three places rather than promised in one.
 
-> **Status:** working end to end. Ingest, tailoring, the adversarial loop, both
-> résumé variants, history/diff, and an interactive shell all work today.
-> Anthropic is the supported model provider; a fully-local one is on the
+You can drive it two ways. There's a command-line tool, and there's a local
+browser workspace where the **same Rust runs in the page** via WebAssembly and a
+small companion server (`aarg serve`) does only the handful of things a browser
+page genuinely can't — hold your API key, run Typst, and touch your workspace on
+disk. Same facts, same guards, two front doors.
+
+> **Status:** working end to end, from a command line or a local browser
+> workspace. Ingest, tailoring, the adversarial loop, both résumé variants,
+> history/diff, an interactive shell, and the in-browser build screen all work
+> today. Anthropic is the supported model provider; a fully-local one is on the
 > roadmap, not in the box yet.
 
 ## Demo
@@ -35,9 +42,10 @@ before rendering both PDFs and exporting them under friendly names.
 2. `tailor <job>` parses the posting, runs a **gap analysis** against your
    dataset, and writes a first draft that mirrors the posting's language without
    overstating what you've actually done.
-3. The **adversarial reviewer** scores the draft on content and on deterministic
-   keyword coverage, then files objections: no metric, vague verb, unsupported
-   claim, and so on.
+3. The **adversarial reviewer** scores the draft's content and files
+   objections: no metric, vague verb, unsupported claim, and so on. The loop's
+   evaluator blends that verdict with deterministic keyword coverage computed
+   by pure code.
 4. The tailoring agent **revises** against those objections and re-scores. A
    revision that doesn't improve the score is discarded and the loop stops; the
    build keeps the best draft it ever saw.
@@ -52,6 +60,57 @@ machine revises what it can revise honestly; you supply the facts it is
 forbidden to invent.
 
 The full write-up is in [docs/design/adversarial-loop.md](docs/design/adversarial-loop.md).
+
+## The browser workspace
+
+The same loop, and everything around it, is also a browser app. Run `aarg serve`
+and open the page, and you get a single build screen that pulls the pieces
+together:
+
+<p align="center">
+  <img src="docs/screenshots/desktop.png" alt="The browser workspace: recent builds on the left, the tailored résumé in the centre with per-line provenance, the reviewer's verdict and objection cards on the right" width="860">
+</p>
+
+- **One score language.** Weighted coverage, the reviewer's verdict, ATS keyword
+  coverage, and the list-ranking score sit in one band, each explained in plain
+  words, instead of clashing across the screen.
+- **A coverage map** of the posting's requirements against your dataset — exact
+  match, semantic match, or gap — with a per-requirement **Refine**,
+  **Strengthen**, or **Fill the gap** that drops you into the right copilot.
+- **An editable, provenance-checked preview.** Every line of the draft is
+  free-editable and labelled by where it traces: **verbatim** from a bullet,
+  **grounded** in your evidence, or **unrecorded**. An unrecorded line carries a
+  claim badge and a confirm-as-evidence button, so nothing reaches the page as
+  fact until it points at something real.
+- **Interactive copilots** — the strengthen, metric, summary, and skills
+  interviews from the CLI, run through a Q&A modal, plus a layout copilot for
+  presentation-only objections. It's the browser mirror of the CLI's
+  `UserHandle`: the agent asks the same questions either way.
+- **New Build and Retailor**, both running the full adversarial loop *in the
+  page* with live iteration, score, and cost, and a **Stop** button that keeps
+  the best draft so far. Start from a pasted posting, a URL, or a previous
+  build's parsed JD.
+- **Pixel-perfect PDF preview** from real Typst renders, with a template picker.
+- **Edit persistence:** save your edits into the build behind the same
+  claim-divergence guard, with an append-only edit log, history, and revert. A
+  sticky pending-edits bar (with `Cmd`/`Ctrl+S`) keeps the save action in reach.
+
+The honest architecture sentence: the whole domain pipeline is compiled to
+WebAssembly and runs in the page, and `aarg serve` is a small native companion
+that does only what a page can't — proxy one model completion through your
+keychain-held key, shell out to Typst, read and write your workspace on disk, and
+fetch a cross-origin posting. It binds to loopback by default; opt into `--bind`
+and `--allow-host` to reach it from a phone on a network you trust.
+
+The screenshots on this page use a bundled fictional demo dataset (a candidate
+named Sam Rivera), so there's no real résumé data in them. The workspace holds up
+on a phone, too:
+
+<p align="center">
+  <img src="docs/screenshots/mobile.png" alt="The same build screen on a narrow phone viewport" width="300">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/coverage.png" alt="The coverage map: each posting requirement marked exact match, semantic match, or gap, with a per-requirement action" width="300">
+</p>
 
 ## It won't make things up
 
@@ -81,6 +140,17 @@ you point at a real role and say what you actually did, and that one sentence is
 polished into résumé wording, never inflated, before it becomes the evidence. No
 evidence, no skill on the page.
 
+The same guards hold in the browser, because it's the same code: the
+evidence checks and the claim-divergence lint are compiled into the WebAssembly
+and run client-side as you edit. But the server doesn't take the browser's word
+for any of it. Every draft or edit a page submits — `POST /api/builds`,
+`POST /api/builds/:id/edits` — is re-checked server-side against the same
+deterministic divergence guard before anything is written, and a saved dataset is
+re-validated the way `aarg dataset validate` would; a variant that claims more
+than the canonical draft is rejected with a `422`. The browser enforces the rule
+for a good experience; the server enforces it because it's the one that owns the
+disk and the key.
+
 ## Features
 
 Beyond the core loop:
@@ -102,6 +172,9 @@ Beyond the core loop:
 - **Flexible input.** Ingest a résumé from text, Markdown, or a PDF, including
   scanned ones read with the model's vision. Give a posting as a file, a
   Greenhouse/Lever URL, stdin, or a paste.
+- **A browser workspace.** `aarg serve` runs the whole build screen locally — the
+  loop, the coverage map, the provenance-checked editor, and the copilots — with
+  the domain compiled to WebAssembly. See [The browser workspace](#the-browser-workspace).
 - **Use it from Claude.** Run AARG as an MCP server and drive it by chatting with
   Claude Desktop or Claude Code, on this machine or over SSH, with the copilots as
   in-chat prompts and the PDFs exposed as resources. See [docs/mcp.md](docs/mcp.md).
@@ -142,6 +215,11 @@ takes the same commands without the prefix.
 You don't have to keep job postings in files. `tailor` and `gap` also accept a
 Greenhouse/Lever URL or `-` for stdin, and with no argument at all they let you
 paste a posting in or reuse one you've already entered.
+
+Prefer a UI? Once you have a dataset, `aarg serve --dir <the built web app>`
+starts the companion server on `http://127.0.0.1:8787`, and everything in
+[The browser workspace](#the-browser-workspace) runs from the page — the loop
+included. It stays on loopback unless you ask otherwise.
 
 ## Authentication
 
@@ -185,40 +263,78 @@ names conflict with another tool, point AARG at private ones with `api_key_env`
 | `aarg templates list \| use <name>` | choose a résumé template |
 | `aarg trace last \| show <id>` | inspect recorded agent runs |
 | `aarg mcp` | run as an MCP server for Claude Desktop, Claude Code, and other clients ([docs](docs/mcp.md)) |
+| `aarg serve` | run the companion server for the browser workspace |
 
 Two ATS templates (`classic`, `minimal`) and three human ones (`modern`,
 `technical`, `editorial`) ship built-in; point `tailor --template <file.typ>` at
 your own to render the human variant however you like.
 
+`aarg serve` takes `--port` (default `8787`) and `--dir` (the built web app to
+serve at `/`; omit it to expose the JSON API alone). It binds `127.0.0.1` by
+default; `--bind 0.0.0.0` reaches it from another device on a trusted network —
+which also exposes your dataset and the key-spending model proxy to that network,
+so `--allow-host` lets you name the hostnames it should answer to. On loopback the
+`Host` allowlist and a JSON content-type gate defend it against DNS-rebinding and
+drive-by cross-origin `POST`s; it sends no CORS headers, so only the page it
+serves can talk to it.
+
 ## How it's built
 
-**AARG** is a Rust workspace: an `aarg` binary over an `aarg-core` library. The
-library is the agent runtime, and it's the part of this repo most worth reading.
+**AARG** is a Rust workspace in four crates: `aarg-core` (the agent runtime),
+`aarg-domain` (the résumé pipeline, pure code that transforms data and calls out
+through the runtime), `aarg-wasm` (a thin wasm-bindgen wrapper that exports the
+pipeline to the page), and the `aarg` binary (the CLI, the REPL, the MCP server,
+and `serve`). The browser front end is an Angular app, and the trick that keeps
+it honest is that it doesn't reimplement any of the pipeline: `aarg-domain` and
+its runtime compile to WebAssembly and run in the page. Two front ends, one
+domain core.
 
 ```mermaid
 flowchart TB
-    subgraph bin["aarg · binary"]
+    subgraph cli["CLI · the aarg binary"]
         direction TB
-        CLI["CLI frontend<br/>clap commands · reedline REPL · inquire prompts"]
-        ORCH["Orchestrator<br/>routes commands · human-in-the-loop · drives the adversarial loop"]
-        AGENTS["Agents<br/>jd parser · gap · tailor · adversarial reviewer<br/>variant adapter · voice · skill / role / metric interviews"]
-        SERVICES["Services · deterministic, no LLM<br/>dataset store · Typst renderer · ATS coverage · readability · history / diff"]
-        CLI --> ORCH
-        ORCH --> AGENTS
-        ORCH --> SERVICES
+        CLIF["clap commands · reedline REPL · inquire prompts"]
+        ORCH["Orchestrator<br/>routes commands · human-in-the-loop · drives the loop"]
+        CLIF --> ORCH
     end
-    subgraph core["aarg-core · library · the agent runtime"]
+    subgraph web["Browser workspace"]
         direction TB
-        RUNTIME["trait Agent · AgentContext · Tool · Tracer<br/>validation-retry · cost accounting · cancellation"]
+        NG["Angular UI · runs the loop in the page"]
+        WASM["aarg-domain + runtime, compiled to WebAssembly"]
+        SERVE["aarg serve · native companion<br/>API key · Typst · workspace disk · cross-origin JD fetch"]
+        NG --> WASM
+        NG --> SERVE
+    end
+    subgraph domain["aarg-domain · the résumé pipeline · pure"]
+        direction TB
+        AGENTS["Agents<br/>jd parser · gap · tailor · adversarial reviewer<br/>variant adapter · voice · skill / role / metric interviews"]
+        SERVICES["Services · deterministic, no LLM<br/>coverage · readability · provenance · claim-divergence lint"]
+    end
+    subgraph core["aarg-core · the agent runtime"]
+        direction TB
+        RUNTIME["trait Agent · AgentContext · Tool · Tracer<br/>validation-retry · token accounting"]
         CLIENTS["LLM clients<br/>Anthropic + scripted Mock, hand-rolled on reqwest<br/>behind a two-method LlmClient trait · Ollama planned"]
         RUNTIME --> CLIENTS
     end
+    ORCH --> AGENTS
+    ORCH --> SERVICES
+    WASM --> AGENTS
+    WASM --> SERVICES
     AGENTS --> RUNTIME
 ```
 
-There's no agent framework underneath. The Anthropic client is written directly
-against the HTTP API, behind a small trait with a scripted mock, so the whole
-thing tests without a network or a key.
+There's no agent framework underneath, and no web framework either: the Anthropic
+client is written directly against the HTTP API behind a small trait with a
+scripted mock, and `aarg serve` is written directly against `hyper` — the same
+by-hand move as the MCP server, one tokio task per connection, so the whole thing
+tests without a network or a key. In the browser, `aarg-core`'s `LlmClient` is
+answered by a JS callback across a small `Send`-preserving channel bridge, so the
+real domain agents run unchanged over the browser's own model calls.
+
+One honest seam: the in-browser loop's improve-or-stop gate scores on the
+reviewer's verdict alone, where the CLI blends in deterministic ATS keyword
+coverage. Same agents, same drafts; the browser weighs a revision slightly
+differently.
 
 ### The runtime was extracted, not designed up front
 
@@ -248,15 +364,18 @@ claim-divergence lint, gap analysis, the skills/roles/metric interviews, voice
 rewriting, cover-letter generation (`aarg cover` or `tailor --cover`), history and
 diff, templates, résumé ingestion from text-layer PDFs, an interactive Q&A about a
 posting (`aarg chat`), exporting finished PDFs under friendly company names
-(`aarg export`), the REPL, experimental subscription auth, and an MCP server
-(`aarg mcp`) that lets Claude Desktop and other MCP clients drive AARG by chat,
-on the same machine or over SSH, with the copilots as in-chat prompts and the
-PDFs exposed as resources ([docs/mcp.md](docs/mcp.md)).
+(`aarg export`), the REPL, experimental subscription auth, an MCP server
+(`aarg mcp`) that lets Claude Desktop and other MCP clients drive AARG by chat
+([docs/mcp.md](docs/mcp.md)), and the **browser workspace** (`aarg serve`) with
+the domain pipeline compiled to WebAssembly and the loop, coverage map, provenance
+editor, and copilots all running in the page.
 
-**Not there yet**: a fully-local model provider (the client trait and
-per-agent model tiers are already in place for it to slot into), and an
-experimental vision pass that reads the rendered layout the way a recruiter
-skims it.
+**Not there yet**: a fully-local model provider (the client trait and per-agent
+model tiers are already in place for it to slot into); an experimental vision pass
+that reads the rendered layout the way a recruiter skims it; streamed (SSE) model
+responses in the browser, which today waits for a whole completion; and reaching
+the workspace safely past loopback (single-user, local-first is the design for
+now — `--bind` past localhost is opt-in and unauthenticated).
 
 ## Documentation
 
