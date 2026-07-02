@@ -94,7 +94,7 @@ import type { PreviewLine, PreviewModel } from './workspace.model';
     :host { display: block; position: relative; }
     .paper {
       background: oklch(99% 0.004 96); border: 1px solid var(--border); border-radius: 6px;
-      padding: 44px 48px 48px; margin-top: 18px; font-family: var(--font-display);
+      padding: 44px 48px 48px; margin: 18px auto 0; max-width: 860px; font-family: var(--font-display);
       box-shadow: 0 1px 0 var(--border), 0 20px 44px -30px color-mix(in oklch, var(--fg) 42%, transparent);
     }
     .p-name { font-size: 27px; letter-spacing: -0.01em; }

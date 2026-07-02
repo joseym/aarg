@@ -31,7 +31,7 @@ import { ReviewerRail } from './reviewer-rail';
 import { RefineDrawer } from './refine-drawer';
 import { CoverageMap } from '../../shared/coverage-map';
 import { ViewToggle } from '../../shared/view-toggle';
-import { CoverageScore } from '../../shared/coverage-score';
+import { ScorePanel } from '../../shared/score-panel';
 import {
   band,
   buildObjectionVMs,
@@ -61,7 +61,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 @Component({
   selector: 'app-tailoring-workspace',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, ResumePreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, CoverageScore],
+  imports: [RouterLink, ResumePreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel],
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
     <div class="ctxbar">
@@ -118,14 +118,15 @@ type ClaimState = 'ok' | 'checking' | 'flag';
       <a class="btn btn-primary" routerLink="/new">New Build</a>
     </div>
 
-    <!-- ── weighted-coverage score (same treatment as the build overview) ── -->
+    <!-- ── one score language: every build metric in a single explained panel ── -->
     @if (coverage(); as cov) {
-      <app-coverage-score
+      <app-score-panel
         class="ctx-score"
-        [score]="cov.pct / 100"
+        [weighted]="cov.pct / 100"
+        [verdict]="report()?.overall_score ?? null"
+        [ats]="bundle()?.ats_report?.coverage ?? null"
         [matched]="cov.matched"
         [total]="cov.total"
-        [compact]="true"
       />
     }
 
@@ -247,7 +248,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     .status-pill[data-status='Exported'] { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); background: color-mix(in oklch, var(--success) 8%, transparent); }
     .bh-prov { font-family: var(--font-mono); font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }
     .spacer { flex: 1; }
-    .ctx-score { display: block; margin: 12px 0 26px; }
+    .ctx-score { display: block; width: 100%; max-width: 720px; margin: 12px 0 26px; }
 
     .btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 14px; font-weight: 500; color: inherit; cursor: pointer; text-decoration: none; }
     .btn:hover:not(:disabled) { border-color: var(--fg); }
@@ -434,7 +435,7 @@ export class TailoringWorkspace {
         return 'Checking every line against your evidence…';
       case 'flag': {
         const n = this.flaggedCount();
-        return `${n || 1} line${n === 1 ? '' : 's'} need your confirmation before it lands`;
+        return `${n || 1} line${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} your confirmation before ${n === 1 ? 'it lands' : 'they land'}`;
       }
       default:
         return 'Every line traces to your evidence';
