@@ -60,6 +60,10 @@ use aarg_domain::tailor::{BuildId, Evaluation, Evaluator, JdId, LoopLimits, Loop
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::trace::Tracer;
 #[cfg(target_arch = "wasm32")]
+use aarg_domain::variant::{
+    HumanVariantAgent, HumanVariantInput, Variant, VariantAdapterAgent, VariantInput,
+};
+#[cfg(target_arch = "wasm32")]
 use bridge::{BridgeClient, BridgeUser, Models};
 
 /// Route a wasm panic's message and source location to the browser's
@@ -162,6 +166,104 @@ fn check_provenance_impl(canonical_json: &str, dataset_json: &str) -> Result<Str
     dump(&aarg_domain::provenance::check_provenance(&draft, &dataset))
 }
 
+/// How much a matched requirement counts toward coverage, by how hard the JD
+/// asks for it: a make-or-break `critical` skill is worth 3× a `preferred`
+/// nice-to-have. This is a *presentation* weighting — how loudly to celebrate
+/// a match in the headline — not a domain policy, so it lives in the binding.
+fn importance_weight(importance: aarg_domain::jd::Importance) -> u32 {
+    use aarg_domain::jd::Importance;
+    match importance {
+        Importance::Critical => 3,
+        Importance::Required => 2,
+        Importance::Preferred => 1,
+    }
+}
+
+/// Per-importance tally: how many requirements at this tier the dataset backs,
+/// out of how many the JD asks for.
+#[derive(Default, serde::Serialize)]
+struct TierCoverage {
+    matched: usize,
+    total: usize,
+}
+
+fn weighted_coverage_impl(gap_json: &str, jd_json: &str) -> Result<String, String> {
+    let gap: aarg_domain::gap::GapReport = parse(gap_json, "gap report")?;
+    let jd: JobRequirements = parse(jd_json, "job requirements")?;
+
+    // The denominator: every requirement the JD lists (required + preferred),
+    // each contributing its importance weight. Only *solidly matched*
+    // requirements (`gap.matched`) earn their weight — weak and unknown ones
+    // earn nothing, the same "usable evidence only" line the rest of the
+    // pipeline holds.
+    let mut critical = TierCoverage::default();
+    let mut required = TierCoverage::default();
+    let mut preferred = TierCoverage::default();
+    let mut total_weight: u32 = 0;
+    for skill in jd.required_skills.iter().chain(jd.preferred_skills.iter()) {
+        total_weight += importance_weight(skill.importance);
+        tier_of(
+            skill.importance,
+            &mut critical,
+            &mut required,
+            &mut preferred,
+        )
+        .total += 1;
+    }
+
+    let mut matched_weight: u32 = 0;
+    for m in &gap.matched {
+        matched_weight += importance_weight(m.jd_skill.importance);
+        tier_of(
+            m.jd_skill.importance,
+            &mut critical,
+            &mut required,
+            &mut preferred,
+        )
+        .matched += 1;
+    }
+
+    // `score` is a fraction in `0.0..=1.0` (the UI multiplies by 100 for a
+    // percent). A JD that lists no requirements has nothing to cover, so its
+    // coverage is vacuously 0 rather than a misleading 100% — there is no
+    // evidence either way. `min(1.0)` guards the theoretical case of a gap
+    // report carrying more matches than the JD has requirements.
+    let score = if total_weight == 0 {
+        0.0
+    } else {
+        (matched_weight as f32 / total_weight as f32).min(1.0)
+    };
+    let matched_count = critical.matched + required.matched + preferred.matched;
+    let total_count = critical.total + required.total + preferred.total;
+
+    dump(&serde_json::json!({
+        "score": score,
+        "matched": matched_count,
+        "total": total_count,
+        "by_importance": {
+            "critical": critical,
+            "required": required,
+            "preferred": preferred,
+        },
+    }))
+}
+
+/// Pick the tally bucket for an importance tier, so the two loops above route
+/// each requirement to the same place.
+fn tier_of<'a>(
+    importance: aarg_domain::jd::Importance,
+    critical: &'a mut TierCoverage,
+    required: &'a mut TierCoverage,
+    preferred: &'a mut TierCoverage,
+) -> &'a mut TierCoverage {
+    use aarg_domain::jd::Importance;
+    match importance {
+        Importance::Critical => critical,
+        Importance::Required => required,
+        Importance::Preferred => preferred,
+    }
+}
+
 /// Validate a dataset, returning a `ValidationReport` (problems + notes). The
 /// never-fabricate invariant starts here: a skill with no evidence is a
 /// problem the report flags.
@@ -251,6 +353,19 @@ pub fn keyword_key(name: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn check_provenance(canonical_json: &str, dataset_json: &str) -> Result<String, JsValue> {
     check_provenance_impl(canonical_json, dataset_json).map_err(|e| JsValue::from_str(&e))
+}
+
+/// The headline coverage number, weighted by how hard the JD asks for each
+/// skill: a matched `critical` requirement counts 3×, `required` 2×,
+/// `preferred` 1×; weak and unknown requirements earn nothing. `gap_json` is a
+/// `GapReport` (deterministic or full), `jd_json` the parsed `JobRequirements`.
+/// Returns `{ "score": f32 in 0.0..=1.0, "matched": <count>, "total":
+/// <count>, "by_importance": { "critical"|"required"|"preferred": { "matched",
+/// "total" } } }` — pure and deterministic, no model call. A JD with no
+/// requirements scores 0 (nothing to cover, so no evidence either way).
+#[wasm_bindgen]
+pub fn weighted_coverage(gap_json: &str, jd_json: &str) -> Result<String, JsValue> {
+    weighted_coverage_impl(gap_json, jd_json).map_err(|e| JsValue::from_str(&e))
 }
 
 // ---------------------------------------------------------------------
@@ -419,6 +534,154 @@ pub async fn review_draft(
         .await
         .map_err(|e| throw(e.to_string()))?;
     dump(&report).map_err(throw)
+}
+
+/// Project the canonical draft into the HUMAN variant payload (FR-5.1) by
+/// running the real `VariantAdapterAgent` over the JS `llm` callback — the
+/// model-driven reword the deterministic `project_ats` has no equivalent for.
+/// `dataset_json` supplies one bit the projection needs: whether the summary is
+/// user-confirmed (`summary_confirmed`), in which case it's kept verbatim in
+/// the human PDF too.
+///
+/// Never-fabricate holds structurally: `project_human` takes all
+/// role/company/date structure from the canonical draft, reverts any reworded
+/// line that gains a number its source lacks, and admits only canonical skills.
+/// On top of that, this binding runs the SAME two-stage backstop every CLI
+/// build does (which is why it takes the JD): `vet_human` re-reviews for
+/// non-numeric prose that inflates a claim without changing a number — the one
+/// thing the structural digit guard can't catch — then the claim-divergence
+/// lint (FR-5.3, `check_claims`) refuses (throws) any payload that diverges.
+///
+/// Before returning, the payload is scrubbed of AI-tell em/en dashes
+/// (`scrub_variant_text`, the same finalize the render path applies, since an
+/// LLM reword can reintroduce a dash the canonical draft was scrubbed of).
+/// Returns the human `VariantPayload` as JSON.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn project_human_llm(
+    canonical_json: String,
+    dataset_json: String,
+    jd_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+) -> Result<String, JsValue> {
+    let draft: TailoredResume = parse(&canonical_json, "canonical draft").map_err(throw)?;
+    let dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, rx) = BridgeClient::new();
+    bridge::spawn_pump(rx, llm);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+    let run = VariantAdapterAgent
+        .run(
+            &ctx,
+            VariantInput {
+                draft: draft.clone(),
+                variant: Variant::Human,
+                summary_locked: dataset.summary_confirmed,
+            },
+        )
+        .await
+        .map_err(|e| throw(e.to_string()))?;
+    // The reworded human variant runs the same two-stage never-fabricate
+    // backstop every CLI build does: `vet_human` reverts prose that inflates a
+    // claim without changing a number (which the digit guard alone can't catch),
+    // then `check_claims` refuses any payload that asserts more than canonical.
+    let (mut payload, _review_usage) =
+        aarg_domain::variant::vet_human(&ctx, &draft, run.output, &jd, &dataset)
+            .await
+            .map_err(|e| throw(e.to_string()))?;
+    aarg_domain::variant::check_claims(&draft, &payload).map_err(|e| throw(e.to_string()))?;
+    aarg_domain::variant::scrub_variant_text(&mut payload);
+    dump(&payload).map_err(throw)
+}
+
+/// Re-project the HUMAN variant to address a *layout* objection (FR-5.4). A
+/// layout-scoped objection (`ObjectionScope::VariantOnly`, or an
+/// `ObjectionKind::LayoutDense` / `ObjectionTarget::Layout`) is a presentation
+/// problem, not a content one: the fix is re-running the human projection with
+/// the objection's guidance folded in as a directive, never editing a canonical
+/// claim. `objection_json` is one `Objection`; its formatted line
+/// (`format_objection`) becomes the layout note the `HumanVariantAgent` folds
+/// into its prompt.
+///
+/// Routed by scope like the CLI: this refuses any objection that isn't
+/// variant-scoped, since rewording away a *canonical* content objection would
+/// mask a claim problem the draft still has. It adds no content path — the
+/// re-projection runs the identical `project_human` assembly as
+/// [`project_human_llm`] (same digit guard, skills-subset rule, canonical
+/// structure), so a directive can only reshape presentation. Because the
+/// directive is free text derived from client-supplied objection JSON, it runs
+/// the full two-stage backstop — `vet_human` then `check_claims` — before
+/// returning, and the payload is dash-scrubbed. Returns the re-projected human
+/// `VariantPayload` as JSON.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn refine_layout_llm(
+    canonical_json: String,
+    dataset_json: String,
+    jd_json: String,
+    objection_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+) -> Result<String, JsValue> {
+    let draft: TailoredResume = parse(&canonical_json, "canonical draft").map_err(throw)?;
+    let dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
+    let objection: Objection = parse(&objection_json, "layout objection").map_err(throw)?;
+    // Route by scope, the way the CLI does: only a variant-scoped (presentation)
+    // objection belongs here. A canonical-scoped content objection reworded away
+    // would mask a claim problem the draft still has, so refuse it — it must be
+    // addressed on the canonical draft, not the variant.
+    if !matches!(
+        objection.scope,
+        aarg_domain::review::ObjectionScope::VariantOnly(_)
+    ) {
+        return Err(throw(
+            "refine_layout_llm expects a layout-scoped (variant-only) objection; \
+             a content objection must be addressed on the canonical draft"
+                .to_string(),
+        ));
+    }
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, rx) = BridgeClient::new();
+    bridge::spawn_pump(rx, llm);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+    // The objection's own formatted line is the layout guidance — the same
+    // "target (kind, severity): message · try: suggestion" every host feeds the
+    // model, here as a presentation directive.
+    let directive = aarg_domain::review::format_objection(&objection);
+    let run = HumanVariantAgent
+        .run(
+            &ctx,
+            HumanVariantInput {
+                draft: draft.clone(),
+                summary_locked: dataset.summary_confirmed,
+                directive: Some(directive),
+            },
+        )
+        .await
+        .map_err(|e| throw(e.to_string()))?;
+    // Same two-stage backstop as `project_human_llm`: the directive is free text
+    // derived from client-supplied objection JSON, so run `vet_human` (catches
+    // non-numeric prose inflation) before the `check_claims` lint.
+    let (mut payload, _review_usage) =
+        aarg_domain::variant::vet_human(&ctx, &draft, run.output, &jd, &dataset)
+            .await
+            .map_err(|e| throw(e.to_string()))?;
+    aarg_domain::variant::check_claims(&draft, &payload).map_err(|e| throw(e.to_string()))?;
+    aarg_domain::variant::scrub_variant_text(&mut payload);
+    dump(&payload).map_err(throw)
 }
 
 // ---------------------------------------------------------------------
@@ -929,18 +1192,42 @@ impl Evaluator for ReviewOnlyEvaluator {
 }
 
 /// The loop's host for the browser: it formats each objection into one plain
-/// revision-prompt line, and counts revision passes so the export can report
-/// how many ran. The narration hooks the CLI uses to stream progress to the
-/// terminal are deliberately left as no-ops — forwarding them to JS would need
-/// its own Send-preserving bridge (a `LoopObserver` must be `Send + Sync`, so it
-/// can't hold a `js_sys::Function`), which isn't worth it for progress text.
+/// revision-prompt line, counts revision passes, AND streams a small JSON
+/// progress event on every loop milestone so a UI can show a live iteration
+/// list and cost ticker (and react to a Stop button — see the cancellation note
+/// on [`tailor_loop`]).
+///
+/// Progress crosses to JS the same Send-preserving way the LLM bridge does: a
+/// `LoopObserver` must be `Send + Sync`, so it can't hold the `!Send`
+/// `js_sys::Function`. Instead it holds only a `Send` channel sender; each hook
+/// serializes its event and queues it (non-blocking, no await), and a separate
+/// `spawn_local` pump (`spawn_progress_pump`) owns the callback and calls it as
+/// events arrive — draining them while the loop is parked awaiting the model.
+///
+/// Each event is `{ "phase", "iteration"?, "score"?, "usage"?, "message" }`;
+/// `phase` is one of `revising` / `revision_drafted` / `evaluated` /
+/// `no_improvement` (plus `drafting` / `done`, emitted by the export itself for
+/// the iteration-0 milestones the loop's hooks don't cover).
 #[cfg(target_arch = "wasm32")]
-struct WasmLoopObserver {
+struct WasmProgressObserver {
     passes: std::sync::atomic::AtomicUsize,
+    progress: futures_channel::mpsc::UnboundedSender<String>,
 }
 
 #[cfg(target_arch = "wasm32")]
-impl LoopObserver<()> for WasmLoopObserver {
+impl WasmProgressObserver {
+    /// Queue one progress event for the JS callback. A closed channel (the pump
+    /// went away) is ignored — progress is best-effort narration, never
+    /// load-bearing to the loop's result.
+    fn emit(&self, event: serde_json::Value) {
+        if let Ok(text) = serde_json::to_string(&event) {
+            let _ = self.progress.unbounded_send(text);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl LoopObserver<()> for WasmProgressObserver {
     fn objection_line(&self, objection: &Objection) -> String {
         // The `target_label` prefix ("bullet-3", "summary", ...) is not
         // decoration — the revision pass doesn't hand the model the prior
@@ -952,11 +1239,64 @@ impl LoopObserver<()> for WasmLoopObserver {
         aarg_domain::review::format_objection(objection)
     }
 
-    fn evaluated(&self, iteration: usize, _eval: &Evaluation<()>) {
+    fn revising(&self, iteration: usize, objections: usize) {
+        self.emit(serde_json::json!({
+            "phase": "revising",
+            "iteration": iteration,
+            "message": format!("revising to address {objections} objection(s)"),
+        }));
+    }
+
+    fn revision_drafted(&self, iteration: usize) {
+        self.emit(serde_json::json!({
+            "phase": "revision_drafted",
+            "iteration": iteration,
+            "message": "revision drafted; scoring it",
+        }));
+    }
+
+    fn evaluated(&self, iteration: usize, eval: &Evaluation<()>) {
         // Record the highest pass number that produced a scored draft.
         self.passes
             .store(iteration, std::sync::atomic::Ordering::Relaxed);
+        self.emit(serde_json::json!({
+            "phase": "evaluated",
+            "iteration": iteration,
+            "score": eval.score,
+            "usage": {
+                "input_tokens": eval.review_usage.input_tokens,
+                "output_tokens": eval.review_usage.output_tokens,
+            },
+            "message": format!("scored {:.2}", eval.score),
+        }));
     }
+
+    fn no_improvement(&self) {
+        self.emit(serde_json::json!({
+            "phase": "no_improvement",
+            "message": "the revision didn't improve; keeping the best draft",
+        }));
+    }
+}
+
+/// Spawn the progress pump: the task that owns the JS `on_progress` callback and
+/// forwards each queued progress event to it. Like the LLM and user pumps this
+/// is the only place the `!Send` callback is touched, and it's a `spawn_local`
+/// task, so no `Send` bound applies. It runs whenever the loop is parked
+/// awaiting the model (single-threaded cooperative scheduling), draining events
+/// as they queue. When the observer (and its sender) drop, `rx.next()` yields
+/// `None` and the loop ends.
+#[cfg(target_arch = "wasm32")]
+fn spawn_progress_pump(
+    mut rx: futures_channel::mpsc::UnboundedReceiver<String>,
+    callback: js_sys::Function,
+) {
+    use futures_util::StreamExt;
+    wasm_bindgen_futures::spawn_local(async move {
+        while let Some(event) = rx.next().await {
+            let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&event));
+        }
+    });
 }
 
 /// The lenient wire shape for the loop's bounds: both keys optional, so a host
@@ -1002,6 +1342,23 @@ struct RawLoopParams {
 ///   review call, and every revision pass's tailor and review calls, summed.
 ///   As accurate as the values in scope allow: it's a true total of every
 ///   model call this export itself made, not an estimate.
+///
+/// `on_progress` is a JS callback invoked with a small JSON progress event on
+/// every loop milestone (`{ "phase", "iteration"?, "score"?, "usage"?,
+/// "message" }` — see [`WasmProgressObserver`]), so a UI can render a live
+/// iteration list and cost ticker instead of waiting for the single final
+/// result. Events are best-effort narration: a throwing callback never affects
+/// the loop's outcome.
+///
+/// **Cancellation is not wired here.** A clean Stop button (stop *before* the
+/// next revision spends tokens, and still return the best draft in hand) needs
+/// a per-iteration "should I continue?" seam in the loop's policy — and that
+/// policy lives in `run_loop`/`LoopObserver`, in the domain crate, which this
+/// binding must not restructure. The observer's hooks return `()`, so they
+/// can't signal a stop, and the export awaits `run_loop` as a single call, so
+/// it can't check between iterations either. The minimal additive seam that
+/// would enable it is documented alongside this export; until it lands, this is
+/// progress-only.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn tailor_loop(
@@ -1011,6 +1368,7 @@ pub async fn tailor_loop(
     params_json: String,
     models_json: String,
     llm: js_sys::Function,
+    on_progress: js_sys::Function,
 ) -> Result<String, JsValue> {
     let dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
     let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
@@ -1063,9 +1421,21 @@ pub async fn tailor_loop(
     let initial_tailor_usage = initial.usage;
 
     let evaluator = ReviewOnlyEvaluator;
-    let observer = WasmLoopObserver {
+    // The progress pump: a `spawn_local` task owns `on_progress` and forwards
+    // each queued event to it. The observer holds only the `Send` sender, so it
+    // still satisfies `LoopObserver: Send + Sync`; the pump drains events while
+    // the loop is parked awaiting the model.
+    let (progress_tx, progress_rx) = futures_channel::mpsc::unbounded();
+    spawn_progress_pump(progress_rx, on_progress);
+    let observer = WasmProgressObserver {
         passes: std::sync::atomic::AtomicUsize::new(0),
+        progress: progress_tx,
     };
+    observer.emit(serde_json::json!({
+        "phase": "drafting",
+        "iteration": 0,
+        "message": "first draft ready; scoring it",
+    }));
 
     // Score the first draft, then drive the loop from it.
     let initial_eval = evaluator
@@ -1075,6 +1445,19 @@ pub async fn tailor_loop(
     // Also `Copy`: the initial review call's token cost, taken before
     // `initial_eval` moves into `run_loop` below.
     let initial_review_usage = initial_eval.review_usage;
+    // The iteration-0 score, so the UI's ticker starts before any revision.
+    // `score` is `Copy`, so reading it here doesn't disturb the move into
+    // `run_loop`.
+    observer.emit(serde_json::json!({
+        "phase": "evaluated",
+        "iteration": 0,
+        "score": initial_eval.score,
+        "usage": {
+            "input_tokens": initial_review_usage.input_tokens,
+            "output_tokens": initial_review_usage.output_tokens,
+        },
+        "message": format!("scored {:.2}", initial_eval.score),
+    }));
     let outcome = aarg_domain::tailor::run_loop(
         &ctx,
         &evaluator,
@@ -1094,6 +1477,12 @@ pub async fn tailor_loop(
     // Punctuation-only finalize, the same one `tailor_draft` applies.
     aarg_domain::tailor::scrub_resume_text(&mut best.resume);
     let iterations = observer.passes.load(std::sync::atomic::Ordering::Relaxed);
+    observer.emit(serde_json::json!({
+        "phase": "done",
+        "iterations": iterations,
+        "score": best.score,
+        "message": "loop complete; returning the best draft",
+    }));
 
     // The flow's total token cost: the initial tailor call, the initial
     // review call, and every revision pass's tailor+review calls
@@ -1355,6 +1744,87 @@ mod tests {
         assert_eq!(lines[0]["status"], "verbatim");
         assert_eq!(lines[0]["best_match"]["source"]["type"], "summary");
         assert_eq!(lines[0]["best_match"]["score"], 1.0);
+    }
+
+    // A JD with one critical requirement and one preferred one, plus a gap
+    // report matching whichever names are passed — so a test can vary which
+    // tier is credited and read the weighting off the score.
+    fn jd_two_tiers_json() -> String {
+        serde_json::json!({
+            "company": "amplo", "title": "Staff Engineer", "seniority": "senior",
+            "location": null, "remote": "unspecified", "domain_keywords": [],
+            "required_skills": [
+                {"name": "Rust", "category": "language", "importance": "critical",
+                 "context_phrases": []}
+            ],
+            "preferred_skills": [
+                {"name": "Go", "category": "language", "importance": "preferred",
+                 "context_phrases": []}
+            ],
+            "responsibilities": [], "ats_phrases": [], "raw_text": "", "source_url": null
+        })
+        .to_string()
+    }
+
+    // A gap report whose `matched` credits the one named JD skill (name +
+    // importance), the only fields `weighted_coverage` reads off a match.
+    fn gap_matching_json(name: &str, importance: &str) -> String {
+        serde_json::json!({
+            "matched": [{
+                "jd_skill": {"name": name, "category": "language",
+                             "importance": importance, "context_phrases": []},
+                "skill_id": "skill-1", "dataset_name": name, "semantic": false
+            }],
+            "weak": [], "unknown": []
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn weighted_coverage_counts_a_critical_match_three_times_a_preferred() {
+        // Denominator is fixed at 3 (critical) + 1 (preferred) = 4.
+        let critical =
+            weighted_coverage_impl(&gap_matching_json("Rust", "critical"), &jd_two_tiers_json())
+                .expect("well-formed input");
+        let critical: serde_json::Value = serde_json::from_str(&critical).unwrap();
+        // A matched critical earns 3 of the 4 available weight.
+        assert_eq!(critical["score"], 0.75);
+        assert_eq!(critical["matched"], 1);
+        assert_eq!(critical["total"], 2);
+        assert_eq!(critical["by_importance"]["critical"]["matched"], 1);
+        assert_eq!(critical["by_importance"]["preferred"]["matched"], 0);
+
+        let preferred =
+            weighted_coverage_impl(&gap_matching_json("Go", "preferred"), &jd_two_tiers_json())
+                .expect("well-formed input");
+        let preferred: serde_json::Value = serde_json::from_str(&preferred).unwrap();
+        // A matched preferred earns 1 of the same 4 — exactly a third of the
+        // critical's contribution.
+        assert_eq!(preferred["score"], 0.25);
+        assert_eq!(preferred["by_importance"]["preferred"]["matched"], 1);
+        assert_eq!(preferred["by_importance"]["critical"]["matched"], 0);
+    }
+
+    #[test]
+    fn weighted_coverage_of_a_jd_with_no_requirements_is_zero() {
+        let empty_jd = serde_json::json!({
+            "company": "x", "title": "y", "seniority": "mid", "location": null,
+            "remote": "unspecified", "domain_keywords": [], "required_skills": [],
+            "preferred_skills": [], "responsibilities": [], "ats_phrases": [],
+            "raw_text": "", "source_url": null
+        })
+        .to_string();
+        let empty_gap = serde_json::json!({"matched": [], "weak": [], "unknown": []}).to_string();
+        let out = weighted_coverage_impl(&empty_gap, &empty_jd).expect("well-formed input");
+        let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(report["score"], 0.0);
+        assert_eq!(report["total"], 0);
+    }
+
+    #[test]
+    fn weighted_coverage_rejects_malformed_json_without_panicking() {
+        let err = weighted_coverage_impl("{ not json", &jd_two_tiers_json()).unwrap_err();
+        assert!(err.contains("invalid gap report"), "got {err:?}");
     }
 
     #[test]
