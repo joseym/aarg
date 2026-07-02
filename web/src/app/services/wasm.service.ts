@@ -7,7 +7,7 @@ import type {
   VariantPayload,
   AdversarialReport,
   ProvenanceReport,
-  AtsReport,
+  WeightedCoverage,
   Objection,
   Models,
 } from '../models';
@@ -235,7 +235,7 @@ export class WasmService {
     return JSON.parse(m.check_provenance(JSON.stringify(canonical), JSON.stringify(dataset)));
   }
 
-  async weightedCoverage(gap: GapReport, jd: JobRequirements): Promise<AtsReport> {
+  async weightedCoverage(gap: GapReport, jd: JobRequirements): Promise<WeightedCoverage> {
     const m = await this.load();
     return JSON.parse(m.weighted_coverage(JSON.stringify(gap), JSON.stringify(jd)));
   }

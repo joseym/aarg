@@ -6,6 +6,27 @@
  *  `transparent` so they are plain strings over the wire. */
 
 import type { Contact } from './variant';
+import type { ObjectionTarget, ObjectionKind } from './review';
+
+/** An objection the user has accepted as intentional, so the reviewer stops
+ *  re-flagging it. Keyed by `(target, kind)` — the same signature the backend
+ *  dismissal uses. The objection-triage "Accept as intentional" action appends
+ *  one of these and `PUT`s the dataset. */
+export interface DismissedObjection {
+  target: ObjectionTarget;
+  kind: ObjectionKind;
+}
+
+/** `dataset.metadata`. Typed for the fields the UI reads/writes; the index
+ *  signature keeps forward-compatibility with fields the frontend ignores. */
+export interface DatasetMetadata {
+  created_at?: string;
+  updated_at?: string;
+  source_files?: string[];
+  declined_skills?: string[];
+  dismissed_objections?: DismissedObjection[];
+  [key: string]: unknown;
+}
 import type { SkillCategory } from './jd';
 
 export type Proficiency = 'expert' | 'advanced' | 'proficient' | 'familiar' | string;
@@ -74,5 +95,5 @@ export interface ResumeDataset {
   publications: unknown[];
   languages: unknown[];
   voice_samples: unknown[];
-  metadata: Record<string, unknown>;
+  metadata: DatasetMetadata;
 }

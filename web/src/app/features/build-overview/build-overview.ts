@@ -1,174 +1,341 @@
-import { Component, inject } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { Component, computed, effect, inject, signal } from '@angular/core';
+import { ActivatedRoute, RouterLink } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { map } from 'rxjs';
 
 import { BuildsStore } from '../../services/builds-store';
-import type { BuildSummary } from '../../models';
+import { ApiService } from '../../services/api.service';
+import { WasmService } from '../../services/wasm.service';
+import type {
+  BuildDetail,
+  GapMatch,
+  GapReport,
+  JobRequirements,
+  SkillImportance,
+  VariantPayload,
+} from '../../models';
 
-/** Build overview (`/`): the landing panel. Lists every build from a live
- *  `GET /api/builds` (via the shared store) as cards. Placeholder for the full
- *  overview screen a later wave builds; here it proves routing + the shell + a
- *  real data call all render. */
+/** The shape `weighted_coverage` actually returns — a weighted fraction plus the
+ *  matched/total counts and a per-importance breakdown. (The `WasmService`
+ *  method is typed `AtsReport`, but the runtime export emits this instead, so we
+ *  cast to it here.) `score` is a 0..1 fraction; multiply by 100 for a percent. */
+interface TierCount {
+  matched: number;
+  total: number;
+}
+interface WeightedCoverage {
+  score: number;
+  matched: number;
+  total: number;
+  by_importance: { critical: TierCount; required: TierCount; preferred: TierCount };
+}
+
+type ReqState = 'exact' | 'semantic' | 'gap';
+
+/** One coverage-table row: a JD requirement paired with the dataset evidence (if
+ *  any) that backs it. `intent` is the deep-link hint the tailoring screen reads. */
+interface ReqRow {
+  name: string;
+  importance: SkillImportance;
+  category: string;
+  context: string;
+  state: ReqState;
+  mark: string;
+  tag: string;
+  evidence: string;
+  action: string;
+  intent: 'matched' | 'semantic' | 'gap';
+}
+
+type Tier = 'high' | 'mid' | 'low';
+type CovFilter = 'all' | 'exact' | 'semantic' | 'gap';
+
+const MONTHS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/** Build overview (`/`): the "Requirements coverage" build view. Loads one
+ *  build's artifact bundle (`GET /api/builds/:id`) — the newest by default, or a
+ *  `:id` route param when one is present — then renders the build header, the
+ *  weighted-coverage score (computed by the wasm core), and the requirement ↔
+ *  evidence coverage table, with a Coverage-map / Final-preview toggle. */
 @Component({
   selector: 'app-build-overview',
   imports: [RouterLink],
-  template: `
-    <header class="overview-head anim-up">
-      <div class="oh-kicker"><span class="dot"></span> Build Overview</div>
-      <h1>Your tailored resumes</h1>
-      <p class="oh-sub">
-        Every build AARG has produced, newest first. Pick one to open its
-        tailoring workspace.
-      </p>
-      <!-- Tailwind utilities (incl. theme-mapped bg-surface / text-muted) sit
-           alongside the component's own CSS, proving the token layer is
-           reachable both as utilities and as CSS custom properties. -->
-      <span
-        class="mt-4 inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-surface px-3 py-1 font-mono text-xs text-muted"
-      >
-        <span class="inline-block size-1.5 rounded-full bg-accent"></span>
-        {{ store.builds().length }} builds indexed
-      </span>
-    </header>
-
-    @if (store.loading()) {
-      <div class="panel muted">Loading builds…</div>
-    } @else if (store.error()) {
-      <div class="panel">
-        <b>Couldn't reach the API.</b>
-        <p class="muted">
-          Start the backend with <code>aarg serve</code> (listening on
-          <code>127.0.0.1:8787</code>), then reload. In dev, <code>/api</code>
-          is proxied there automatically.
-        </p>
-        <button class="btn btn-ghost" type="button" (click)="store.load()">Retry</button>
-      </div>
-    } @else if (store.filtered().length === 0) {
-      <div class="panel muted">
-        No builds match. Clear the filter, or start one with <b>New Build</b>.
-      </div>
-    } @else {
-      <div class="grid">
-        @for (b of store.filtered(); track b.id) {
-          <a class="card anim-up" [routerLink]="['/build', b.id, 'tailor']">
-            <div class="card-top">
-              <div>
-                <div class="card-title">{{ b.title }}</div>
-                @if (b.company) {
-                  <div class="card-co">{{ b.company }}</div>
-                }
-              </div>
-              <span class="score-badge" [attr.data-tier]="tier(b)">{{ pct(b.score) }}</span>
-            </div>
-
-            <div class="stats">
-              <div class="stat">
-                <span class="stat-num">{{ pct(b.coverage) }}<i>%</i></span>
-                <span class="stat-label">Coverage</span>
-              </div>
-              <div class="stat">
-                <span class="stat-num">{{ pct(b.review_score) }}</span>
-                <span class="stat-label">Review</span>
-              </div>
-              <div class="stat">
-                <span class="stat-num">{{ b.objections }}</span>
-                <span class="stat-label">Objections</span>
-              </div>
-            </div>
-
-            <div class="card-foot">
-              <span class="tmpl">{{ b.template }}</span>
-              <span class="date">{{ b.created_at }}</span>
-            </div>
-          </a>
-        }
-      </div>
-    }
-  `,
-  styles: `
-    :host { display: block; }
-    .overview-head { padding-bottom: 24px; border-bottom: 1.5px solid var(--border-ink); margin-bottom: 28px; }
-    .oh-kicker {
-      font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em;
-      text-transform: uppercase; color: var(--accent);
-      display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
-    }
-    .oh-kicker .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
-    h1 { font-size: clamp(28px, 3vw, 40px); line-height: 1.05; letter-spacing: -0.015em; }
-    .oh-sub { color: var(--muted); margin-top: 12px; max-width: 60ch; }
-
-    .grid {
-      display: grid; gap: 16px;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    }
-    .card {
-      display: flex; flex-direction: column; gap: 16px;
-      padding: 20px; text-decoration: none; color: inherit;
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      transition: border-color 0.15s, box-shadow 0.2s, transform 0.15s cubic-bezier(0.2, 0.7, 0.2, 1);
-    }
-    .card:hover {
-      border-color: color-mix(in oklch, var(--accent) 40%, var(--border));
-      transform: translateY(-2px);
-      box-shadow: 0 12px 40px -28px color-mix(in oklch, var(--fg) 70%, transparent);
-    }
-    .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-    .card-title { font-family: var(--font-display); font-size: 18px; line-height: 1.2; }
-    .card-co { color: var(--muted); font-size: 13px; margin-top: 2px; }
-
-    .score-badge {
-      flex-shrink: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-      font-size: 12.5px; font-weight: 600; padding: 3px 8px; border-radius: 6px;
-      border: 1px solid var(--border); color: var(--fg); background: var(--bg);
-    }
-    .score-badge[data-tier='high'] { color: var(--success); border-color: color-mix(in oklch, var(--success) 40%, var(--border)); }
-    .score-badge[data-tier='mid']  { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 40%, var(--border)); }
-    .score-badge[data-tier='low']  { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 40%, var(--border)); }
-
-    .stats { display: flex; gap: 22px; }
-    .stat { display: flex; flex-direction: column; gap: 2px; }
-    .stat-num {
-      font-family: var(--font-display); font-weight: 600; font-size: 24px;
-      letter-spacing: -0.02em; color: var(--fg);
-    }
-    .stat-num i { font-size: 0.55em; color: var(--muted); font-style: normal; margin-left: 1px; }
-    .stat-label {
-      font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em;
-      text-transform: uppercase; color: var(--faint);
-    }
-
-    .card-foot {
-      display: flex; align-items: center; justify-content: space-between;
-      padding-top: 14px; border-top: 1px solid var(--border);
-      font-family: var(--font-mono); font-size: 11.5px; color: var(--faint);
-    }
-    .tmpl { color: var(--muted); }
-
-    .panel {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius-lg); padding: 24px; max-width: 60ch;
-      display: flex; flex-direction: column; gap: 12px; align-items: flex-start;
-    }
-    .muted { color: var(--muted); }
-    code { font-family: var(--font-mono); font-size: 0.9em; color: var(--accent); }
-    .btn {
-      display: inline-flex; align-items: center; height: 34px; padding: 0 14px;
-      border-radius: var(--radius); border: 1px solid var(--border);
-      background: transparent; color: var(--fg); font: inherit; font-size: 14px; cursor: pointer;
-    }
-    .btn-ghost:hover { border-color: var(--fg); }
-  `,
+  templateUrl: './build-overview.html',
+  styleUrl: './build-overview.css',
 })
 export class BuildOverview {
+  private readonly route = inject(ActivatedRoute);
+  private readonly api = inject(ApiService);
+  private readonly wasm = inject(WasmService);
   protected readonly store = inject(BuildsStore);
 
-  protected pct(v: number): number {
-    return Math.round(v * 100);
+  /** An explicit `:id` from the route, or null at `/` (then we show the newest). */
+  private readonly routeId = toSignal(
+    this.route.paramMap.pipe(map((p) => p.get('id'))),
+    { initialValue: null as string | null },
+  );
+
+  /** Which build to show: the route's `:id`, else the newest indexed build. */
+  protected readonly targetId = computed(
+    () => this.routeId() ?? this.store.builds()[0]?.id ?? null,
+  );
+
+  protected readonly detail = signal<BuildDetail | null>(null);
+  protected readonly coverage = signal<WeightedCoverage | null>(null);
+  protected readonly rows = signal<ReqRow[]>([]);
+  protected readonly loading = signal(true);
+  protected readonly error = signal<string | null>(null);
+
+  /** Animated count-up value for the headline number (0..100, whole percent). */
+  protected readonly displayScore = signal(0);
+
+  protected readonly view = signal<'map' | 'preview'>('map');
+  protected readonly covFilter = signal<CovFilter>('all');
+
+  private readonly reduceMotion =
+    typeof matchMedia !== 'undefined' &&
+    matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /** Ignore responses from a build load that a newer one has superseded. */
+  private seq = 0;
+
+  constructor() {
+    effect(() => {
+      const id = this.targetId();
+      if (id) {
+        this.loadBuild(id);
+      } else if (!this.store.loading()) {
+        // The store settled with no builds — nothing to show.
+        this.loading.set(false);
+        this.detail.set(null);
+      }
+    });
   }
 
-  protected tier(b: BuildSummary): 'high' | 'mid' | 'low' {
-    if (b.score >= 0.8) return 'high';
-    if (b.score >= 0.6) return 'mid';
-    return 'low';
+  // ── derived view state ────────────────────────────────────────────────
+
+  /** No builds exist at all (store settled empty, and no explicit id was asked). */
+  protected readonly noBuilds = computed(
+    () =>
+      !this.store.loading() &&
+      this.store.builds().length === 0 &&
+      !this.routeId(),
+  );
+
+  protected readonly tier = computed<Tier>(() => bandTier(this.coverage()?.score ?? 0));
+
+  protected readonly counts = computed(() => {
+    const rows = this.rows();
+    return {
+      all: rows.length,
+      exact: rows.filter((r) => r.state === 'exact').length,
+      semantic: rows.filter((r) => r.state === 'semantic').length,
+      gap: rows.filter((r) => r.state === 'gap').length,
+    };
+  });
+
+  protected readonly visibleRows = computed(() => {
+    const f = this.covFilter();
+    const rows = this.rows();
+    if (f === 'all') return rows;
+    return rows.filter((r) => r.state === f);
+  });
+
+  protected readonly emptyFilterNote = computed(() =>
+    this.covFilter() === 'gap'
+      ? 'No gaps — every requirement is covered.'
+      : 'Nothing matches this filter.',
+  );
+
+  /** The human variant payload (or canonical draft) to project into the preview,
+   *  when the API returned one. `human_payload` isn't on the `BuildDetail` model
+   *  yet (see report), so we read it through a widened view. */
+  protected readonly previewDoc = computed<VariantPayload | null>(() => {
+    const d = this.detail() as (BuildDetail & { human_payload?: VariantPayload }) | null;
+    const doc = (d?.human_payload ?? d?.canonical) as VariantPayload | undefined;
+    if (!doc || !Array.isArray(doc.roles)) return null;
+    return doc;
+  });
+
+  protected readonly status = computed<'Tailored' | 'Exported'>(() =>
+    (this.detail()?.pdfs?.length ?? 0) > 0 ? 'Exported' : 'Tailored',
+  );
+
+  protected readonly provenance = computed(() => {
+    const d = this.detail();
+    const meta = d?.meta;
+    if (!meta) return null;
+    const tokens =
+      (meta.tailor_usage?.input_tokens ?? 0) + (meta.tailor_usage?.output_tokens ?? 0);
+    return {
+      created: formatStamp(meta.created_at),
+      model: meta.model,
+      tokens: tokens.toLocaleString(),
+      template: meta.template,
+    };
+  });
+
+  /** company · location/remote for the header meta line. */
+  protected readonly locationLine = computed(() => {
+    const jd = this.detail()?.jd;
+    if (!jd) return '';
+    if (jd.location) return jd.location;
+    if (jd.remote && jd.remote !== 'unspecified' && jd.remote !== 'onsite') {
+      return jd.remote === 'remote' ? 'Remote' : jd.remote;
+    }
+    return '';
+  });
+
+  // ── interactions ──────────────────────────────────────────────────────
+
+  protected setView(mode: 'map' | 'preview'): void {
+    this.view.set(mode);
   }
+
+  protected setFilter(f: CovFilter): void {
+    this.covFilter.set(f);
+  }
+
+  protected retry(): void {
+    const id = this.targetId();
+    if (id) this.loadBuild(id);
+  }
+
+  protected tailorLink(): unknown[] {
+    return ['/build', this.targetId(), 'tailor'];
+  }
+
+  // ── loading + coverage ────────────────────────────────────────────────
+
+  private loadBuild(id: string): void {
+    const token = ++this.seq;
+    this.loading.set(true);
+    this.error.set(null);
+    this.api.getBuild(id).subscribe({
+      next: (detail) => {
+        if (token !== this.seq) return;
+        this.detail.set(detail);
+        this.covFilter.set('all');
+        this.view.set('map');
+        this.computeCoverage(detail, token);
+        this.loading.set(false);
+      },
+      error: (err) => {
+        if (token !== this.seq) return;
+        this.error.set(err?.message ?? 'Could not load this build.');
+        this.loading.set(false);
+      },
+    });
+  }
+
+  private async computeCoverage(detail: BuildDetail, token: number): Promise<void> {
+    const jd = detail.jd;
+    const gap = detail.gap_report;
+    if (!jd || !gap) {
+      this.rows.set([]);
+      this.coverage.set(null);
+      this.displayScore.set(0);
+      return;
+    }
+    this.rows.set(buildRows(jd, gap));
+    try {
+      const cov = (await this.wasm.weightedCoverage(
+        gap,
+        jd,
+      )) as unknown as WeightedCoverage;
+      if (token !== this.seq) return;
+      this.coverage.set(cov);
+      this.animateScore(cov.score);
+    } catch {
+      if (token !== this.seq) return;
+      this.coverage.set(null);
+      this.displayScore.set(0);
+    }
+  }
+
+  private animateScore(score01: number): void {
+    const target = Math.round(score01 * 100);
+    if (this.reduceMotion) {
+      this.displayScore.set(target);
+      return;
+    }
+    const duration = 640;
+    const start = performance.now();
+    const ease = (p: number): number => 1 - Math.pow(1 - p, 3);
+    const step = (now: number): void => {
+      const p = Math.min(1, (now - start) / duration);
+      this.displayScore.set(Math.round(target * ease(p)));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // ── preview helpers (kept lightweight) ────────────────────────────────
+
+  protected fmtYM(ym: string | null | undefined): string {
+    if (!ym) return 'Present';
+    const [y, m] = ym.split('-');
+    const idx = Number(m) - 1;
+    return idx >= 0 && idx < 12 ? `${MONTHS[idx]} ${y}` : ym;
+  }
+
+  protected contactLine(p: VariantPayload): string {
+    const c = p.contact;
+    return [c.location, c.email, c.phone, ...(c.links ?? []).map((l) => l.url)]
+      .filter(Boolean)
+      .join('  ·  ');
+  }
+}
+
+/** Weighted-coverage colour band: green ≥ .8, amber ≥ .6, red below. */
+function bandTier(score01: number): Tier {
+  if (score01 >= 0.8) return 'high';
+  if (score01 >= 0.6) return 'mid';
+  return 'low';
+}
+
+/** Cross-reference every JD requirement against the gap report's matches. Solid
+ *  matches (`matched`) are exact (green) or semantic (amber); `weak` matches are
+ *  amber too; anything unmatched is a gap (red). Iteration order follows the JD
+ *  (required first, then preferred) so the table reads like the posting. */
+function buildRows(jd: JobRequirements, gap: GapReport): ReqRow[] {
+  const matched = new Map<string, GapMatch>();
+  for (const m of gap.matched ?? []) matched.set(m.jd_skill.name, m);
+  const weak = new Map<string, GapMatch>();
+  for (const w of gap.weak ?? []) weak.set(w.jd_skill.name, w);
+
+  const skills = [...(jd.required_skills ?? []), ...(jd.preferred_skills ?? [])];
+  return skills.map((s) => {
+    const m = matched.get(s.name);
+    const w = weak.get(s.name);
+    const base = {
+      name: s.name,
+      importance: s.importance,
+      category: s.category,
+      context: s.context_phrases?.[0] ?? '',
+    };
+    if (m && !m.semantic) {
+      return { ...base, state: 'exact' as const, mark: '✓', tag: 'exact match', evidence: m.dataset_name, action: 'Refine', intent: 'matched' as const };
+    }
+    if (m) {
+      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'semantic match', evidence: m.dataset_name, action: 'Strengthen', intent: 'semantic' as const };
+    }
+    if (w) {
+      return { ...base, state: 'semantic' as const, mark: '≈', tag: 'weak match', evidence: w.dataset_name, action: 'Strengthen', intent: 'semantic' as const };
+    }
+    return { ...base, state: 'gap' as const, mark: '✕', tag: `gap · ${s.category}`, evidence: 'No matching experience', action: 'Fill the gap', intent: 'gap' as const };
+  });
+}
+
+/** ISO timestamp → "Jun 25, 2026 · 14:22" (local time). Falls back to the raw
+ *  string if it can't be parsed. */
+function formatStamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${hh}:${mm}`;
 }

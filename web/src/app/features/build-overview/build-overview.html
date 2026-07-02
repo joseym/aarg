@@ -1,0 +1,276 @@
+@if (loading()) {
+  <!-- ── skeleton ── -->
+  <div class="bo-skeleton" aria-busy="true" aria-live="polite">
+    <span class="sr-only">Loading build…</span>
+    <div class="sk-head">
+      <div class="sk-col">
+        <div class="sk sk-kicker"></div>
+        <div class="sk sk-title"></div>
+        <div class="sk sk-line"></div>
+        <div class="sk sk-pill"></div>
+      </div>
+      <div class="sk sk-score"></div>
+    </div>
+    <div class="sk sk-section"></div>
+    <div class="sk sk-table"></div>
+  </div>
+} @else if (error()) {
+  <!-- ── error ── -->
+  <div class="panel">
+    <b>Couldn't load this build.</b>
+    <p class="muted">{{ error() }}</p>
+    <p class="muted">
+      Make sure the backend is running (<code>aarg serve</code> on
+      <code>127.0.0.1:8787</code>), then retry.
+    </p>
+    <button class="btn btn-ghost" type="button" (click)="retry()">Retry</button>
+  </div>
+} @else if (store.error() && !detail()) {
+  <!-- ── build list unreachable ── -->
+  <div class="panel">
+    <b>Couldn't reach the API.</b>
+    <p class="muted">
+      Start the backend with <code>aarg serve</code> (listening on
+      <code>127.0.0.1:8787</code>), then retry. In dev, <code>/api</code> is
+      proxied there automatically.
+    </p>
+    <button class="btn btn-ghost" type="button" (click)="store.load()">Retry</button>
+  </div>
+} @else if (noBuilds()) {
+  <!-- ── nothing built yet ── -->
+  <div class="panel muted">
+    No builds yet. Start one with <b>New Build</b> to tailor a résumé to a
+    posting.
+  </div>
+} @else if (detail(); as d) {
+  <!-- ── build header ── -->
+  <header class="build-head anim-up">
+    <div>
+      <div class="bh-kicker"><span class="dot"></span> Tailor job · complete</div>
+      <h1>{{ d.jd?.title ?? 'Untitled build' }}</h1>
+      <div class="bh-meta">
+        @if (d.jd?.company) {
+          <span class="co">{{ d.jd?.company }}</span>
+        }
+        @if (locationLine()) {
+          <span class="sep">·</span>
+          <span>{{ locationLine() }}</span>
+        }
+        @if (d.jd?.source_url) {
+          <span class="sep">·</span>
+          <a class="bh-src" [href]="d.jd?.source_url" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />
+              <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+            </svg>
+            Source posting
+          </a>
+        } @else {
+          <span class="sep">·</span>
+          <span class="bh-src plain">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M4 3h11l5 5v13H4z" /><path d="M15 3v5h5" />
+            </svg>
+            Pasted description
+          </span>
+        }
+      </div>
+
+      <span class="status-pill" [attr.data-status]="status()">
+        <span class="sp-dot"></span>{{ status() }}
+      </span>
+
+      @if (provenance(); as p) {
+        <p class="bh-prov">
+          Generated {{ p.created }} · {{ p.model }} · {{ p.tokens }} tokens ·
+          {{ p.template }} template
+        </p>
+      }
+
+      <a class="btn btn-primary bh-cta" [routerLink]="tailorLink()">
+        Refine &amp; tailor this build
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M5 12h14M13 6l6 6-6 6" />
+        </svg>
+      </a>
+    </div>
+
+    <!-- ── weighted-coverage score ── -->
+    @if (coverage(); as cov) {
+      <div class="coverage" [attr.data-tier]="tier()">
+        <div class="cov-num">
+          <span class="big num">{{ displayScore() }}</span><span class="pct">%</span>
+        </div>
+        <div class="cov-label">weighted coverage</div>
+        <div class="cov-meter"><i [style.width.%]="displayScore()"></i></div>
+        <div class="cov-sub">
+          <b>{{ cov.matched }}</b> of <b>{{ cov.total }}</b> requirements matched
+        </div>
+      </div>
+    }
+  </header>
+
+  <!-- ── section row + view toggle ── -->
+  <div class="section-row">
+    <div class="section-title">
+      <h3>{{ view() === 'map' ? 'Requirements coverage' : 'Final preview' }}</h3>
+      @if (view() === 'map' && coverage(); as cov) {
+        <span class="st-note">{{ cov.matched }}/{{ cov.total }} matched · weighted by importance</span>
+      }
+    </div>
+    <div class="segmented" role="tablist" aria-label="View mode">
+      <button
+        type="button"
+        role="tab"
+        [class.on]="view() === 'map'"
+        [attr.aria-selected]="view() === 'map'"
+        (click)="setView('map')"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M9 3H5a2 2 0 0 0-2 2v4M15 3h4a2 2 0 0 1 2 2v4M9 21H5a2 2 0 0 1-2-2v-4M15 21h4a2 2 0 0 0 2-2v-4" />
+        </svg>
+        Coverage map
+      </button>
+      <button
+        type="button"
+        role="tab"
+        [class.on]="view() === 'preview'"
+        [attr.aria-selected]="view() === 'preview'"
+        (click)="setView('preview')"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M4 3h11l5 5v13H4z" /><path d="M15 3v5h5M8 13h8M8 17h8" />
+        </svg>
+        Final preview
+      </button>
+    </div>
+  </div>
+
+  <!-- ── coverage map ── -->
+  @if (view() === 'map') {
+    @if (rows().length === 0) {
+      <div class="cov-map anim-fade">
+        <div class="cov-empty">
+          This build has no parsed requirements to map yet.
+        </div>
+      </div>
+    } @else {
+      <div class="cov-map anim-fade">
+        <div class="cm-head">
+          <div><span>Job requirement</span></div>
+          <div>
+            <span>Your background</span>
+            <span class="legend">
+              <span class="lg"><i style="background: var(--success)"></i>exact</span>
+              <span class="lg"><i style="background: var(--warn)"></i>semantic</span>
+              <span class="lg"><i style="background: var(--danger)"></i>gap</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="cov-filter" role="group" aria-label="Filter requirements">
+          <span class="fl-label">Filter</span>
+          <button type="button" class="cov-chip" [class.on]="covFilter() === 'all'" (click)="setFilter('all')">
+            All <span class="fl-n">{{ counts().all }}</span>
+          </button>
+          <button type="button" class="cov-chip" data-t="exact" [class.on]="covFilter() === 'exact'" (click)="setFilter('exact')">
+            <span class="fl-dot"></span>Matched <span class="fl-n">{{ counts().exact }}</span>
+          </button>
+          <button type="button" class="cov-chip" data-t="semantic" [class.on]="covFilter() === 'semantic'" (click)="setFilter('semantic')">
+            <span class="fl-dot"></span>Weak <span class="fl-n">{{ counts().semantic }}</span>
+          </button>
+          <button type="button" class="cov-chip" data-t="gap" [class.on]="covFilter() === 'gap'" (click)="setFilter('gap')">
+            <span class="fl-dot"></span>Gaps <span class="fl-n">{{ counts().gap }}</span>
+          </button>
+        </div>
+
+        @for (r of visibleRows(); track r.name) {
+          <div class="req-row" [class]="r.state" [attr.data-t]="r.state">
+            <div class="rq-left">
+              <div class="req-top">
+                <span class="req-name">{{ r.name }}</span>
+                <span class="imp" [attr.data-imp]="r.importance">{{ r.importance }}</span>
+              </div>
+              @if (r.context) {
+                <div class="req-ctx">{{ r.context }}</div>
+              }
+            </div>
+            <div class="rq-right">
+              <div class="ev">
+                <span class="ev-mark" aria-hidden="true">{{ r.mark }}</span>
+                <span class="ev-name">{{ r.evidence }}</span>
+              </div>
+              <div class="ev-tag">{{ r.tag }}</div>
+              <a
+                class="cov-act"
+                [routerLink]="tailorLink()"
+                [queryParams]="{ focus: r.name, intent: r.intent }"
+                [attr.title]="'Open targeted tailoring for ' + r.name"
+              >
+                {{ r.action }}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </a>
+            </div>
+          </div>
+        } @empty {
+          <div class="cov-empty">{{ emptyFilterNote() }}</div>
+        }
+
+        <div class="cm-foot">
+          <span style="color: var(--success)"><b style="color: var(--success)">{{ counts().exact }}</b> exact</span>
+          <span style="color: var(--warn)"><b style="color: var(--warn)">{{ counts().semantic }}</b> semantic</span>
+          <span style="color: var(--danger)"><b style="color: var(--danger)">{{ counts().gap }}</b> gaps</span>
+        </div>
+      </div>
+    }
+  } @else {
+    <!-- ── final preview ── -->
+    @if (previewDoc(); as p) {
+      <div class="preview-wrap anim-fade">
+        <div class="paper">
+          <div class="p-name">{{ p.contact.full_name }}</div>
+          <div class="p-target">{{ p.target_title }}</div>
+          <div class="p-contact">{{ contactLine(p) }}</div>
+          <hr class="p-rule" />
+          @if (p.summary) {
+            <h4>Summary</h4>
+            <p class="p-lede">{{ p.summary }}</p>
+          }
+          <h4>Experience</h4>
+          @for (role of p.roles; track role.id) {
+            <div class="p-role">
+              <b>{{ role.title }}</b>
+              <span class="p-when">{{ fmtYM(role.start) }} — {{ fmtYM(role.end) }}</span>
+            </div>
+            <div class="p-co">{{ role.company }}</div>
+            <ul>
+              @for (bullet of role.bullets; track $index) {
+                <li>{{ bullet.text }}</li>
+              }
+            </ul>
+          }
+          @if (p.skill_groups?.length) {
+            <h4>Skills</h4>
+            <div class="p-groups">
+              @for (g of p.skill_groups; track g.label) {
+                <div class="p-group">
+                  <b>{{ g.label }}</b>
+                  <div class="p-chips">{{ g.skills.join(' · ') }}</div>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      </div>
+    } @else {
+      <div class="cov-map anim-fade">
+        <div class="cov-empty">
+          No rendered variant yet — tailor and export this build to see its
+          final preview here.
+        </div>
+      </div>
+    }
+  }
+}

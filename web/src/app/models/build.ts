@@ -7,6 +7,7 @@ import type { JobRequirements } from './jd';
 import type { GapReport } from './gap';
 import type { AdversarialReport } from './review';
 import type { AtsReport } from './ats';
+import type { VariantPayload } from './variant';
 
 /** `meta.json`: how a build was produced. */
 export interface BuildMeta {
@@ -54,6 +55,11 @@ export interface BuildDetail {
   gap_report?: GapReport;
   adversarial_report?: AdversarialReport;
   canonical?: TailoredResume;
+  /** The rendered human variant payload — the preview shows this and re-renders
+   *  it via `POST /api/render`. */
+  human_payload?: VariantPayload;
+  /** The ATS variant payload (deterministic projection of the canonical draft). */
+  ats_payload?: VariantPayload;
   ats_report?: AtsReport;
   /** Rendered PDF filenames, fetch each via `GET /api/builds/:id/files/:name`. */
   pdfs: string[];

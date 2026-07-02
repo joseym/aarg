@@ -14,6 +14,16 @@ export interface GapMatch {
   semantic: boolean;
 }
 
+/** The importance-weighted coverage the overview screen shows as its headline,
+ *  returned by the `weighted_coverage` wasm export (critical=3/required=2/
+ *  preferred=1; `score` is 0..1). */
+export interface WeightedCoverage {
+  score: number;
+  matched: number;
+  total: number;
+  by_importance: Record<string, { matched: number; total: number }>;
+}
+
 export interface GapReport {
   matched: GapMatch[];
   weak: GapMatch[];
