@@ -12,10 +12,11 @@
 
 use std::path::PathBuf;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use hyper::body::Incoming;
 use hyper::{Request, StatusCode};
-use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{AppState, Resp, bytes_response, error_response, json_response, read_body};
@@ -398,6 +399,10 @@ pub(super) async fn get_build(id: &str) -> Resp {
         ("human_payload", "human_payload.json"),
         ("ats_payload", "ats_payload.json"),
         ("ats_report", "ats_report.json"),
+        // The on-disk edit log (workspace edits saved into this build). Present
+        // only once at least one edit has been saved; the browser reads it to
+        // render the cross-session undo history near the fidelity bar.
+        ("edit_log", "edit_log.json"),
     ] {
         if let Some(value) = read_json_artifact(&dir.join(file)) {
             obj.insert(key.into(), value);
@@ -719,6 +724,344 @@ fn create_build_error_response(error: CreateBuildError) -> Resp {
         CreateBuildError::ClaimDivergence(error) => {
             error_response(422, "claim_divergence", error.to_string())
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// POST /api/builds/:id/edits — save workspace edits into a stored build
+// ---------------------------------------------------------------------
+
+/// The `POST /api/builds/:id/edits` body: a batch of text edits to bake into a
+/// stored build's canonical draft. The client translates its positional preview
+/// keys to canonical ids *before* sending (`summary`, or `bullet:<source_id>`
+/// via the payload bullet's `source_id`), so there's no positional ambiguity to
+/// resolve server-side.
+#[derive(Deserialize)]
+struct SaveEditsRequest {
+    edits: Vec<EditItem>,
+}
+
+/// One edit: which line (`summary` or `bullet:<canonical-bullet-id>`) and the
+/// user's new text for it.
+#[derive(Deserialize)]
+struct EditItem {
+    target: String,
+    text: String,
+}
+
+/// The `POST /api/builds/:id/edits` success body.
+#[derive(Debug, Serialize)]
+struct SaveEditsResponse {
+    saved: usize,
+    log_len: usize,
+}
+
+/// One appended entry in a build's `edit_log.json`: when the edit landed, which
+/// line it touched, and the text before/after. The `prev` value is what makes
+/// cross-session undo honest — a revert re-posts it as an inverse edit, so the
+/// log is a complete audit trail rather than a lossy "current state".
+#[derive(Serialize, Deserialize)]
+struct EditLogEntry {
+    at: DateTime<Utc>,
+    target: String,
+    prev: String,
+    next: String,
+}
+
+/// Everything the save-edits step can fail with, kept as one typed enum so the
+/// blocking worker propagates with `?` and the async half maps each variant to
+/// its HTTP status in one place ([`save_edits_error_response`]).
+#[derive(Debug, thiserror::Error)]
+enum SaveEditsError {
+    #[error("this build is missing {0} and cannot be edited")]
+    MissingArtifact(&'static str),
+    #[error("unknown edit target {0:?}")]
+    UnknownTarget(String),
+    #[error("could not read {path}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Build(#[from] BuildError),
+    #[error(transparent)]
+    Render(#[from] RenderError),
+    #[error(transparent)]
+    Template(#[from] crate::templates::TemplateError),
+    #[error(transparent)]
+    ClaimDivergence(#[from] variant::ClaimDivergence),
+}
+
+/// Save a batch of workspace edits into a stored build: apply them to the
+/// canonical draft, re-project the ATS variant and replay them onto the human
+/// variant (both under the never-fabricate guards), re-render both PDFs, and
+/// append the edits to the build's on-disk log for cross-session undo. The disk
+/// writes, the `typst` subprocess, and JSON (de)serialization are all blocking,
+/// so the work runs on a blocking thread; only the request parse, the id/dir
+/// guards, and the config read happen on the async worker.
+///
+/// Writes are serialized through `AppState.build_write` — the same pattern
+/// `put_dataset` uses with `dataset_write`. The whole apply is a
+/// read-modify-write of `canonical.json` + `edit_log.json` with no file lock of
+/// its own, so two concurrent saves/reverts (two tabs on the same build) would
+/// otherwise both answer 200 while the loser's edit and log entries silently
+/// vanish (last write wins). The guard is acquired before the blocking task
+/// spawns and held across its await, so a second request queues behind the
+/// first instead of racing it.
+pub(super) async fn save_build_edits(req: Request<Incoming>, id: &str, state: &AppState) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let request: SaveEditsRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return error_response(
+                400,
+                "bad_request",
+                format!("invalid save-edits request: {error}"),
+            );
+        }
+    };
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    // Fail fast with the install message if typst is absent — the same gate
+    // create_build uses, so an edit that could never render is refused before
+    // any disk work rather than half-applied.
+    if let Err(error) = render::ensure_available() {
+        return render_error_response(error);
+    }
+    // Config drives the fallback template names. A config that won't load is a
+    // server-config problem the browser can't fix.
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => return error_response(500, "internal", error.to_string()),
+    };
+
+    // Serialize build writes: acquire before spawning the blocking task and
+    // hold the guard across its await, so the entire read-apply-write-render
+    // sequence of one request completes before the next begins (mirrors how
+    // `put_dataset` holds `dataset_write` across validate-then-save).
+    let _guard = state.build_write.lock().await;
+    let result =
+        tokio::task::spawn_blocking(move || apply_build_edits(&dir, request, &config)).await;
+    match result {
+        Ok(Ok(response)) => json_response(200, &response),
+        Ok(Err(error)) => save_edits_error_response(error),
+        Err(join) => error_response(
+            500,
+            "internal",
+            format!("the edit task did not complete: {join}"),
+        ),
+    }
+}
+
+/// The blocking half of [`save_build_edits`], with the build directory injected
+/// so a test can drive the whole apply-and-render sequence against a tempdir.
+/// Applies the edits to the canonical draft, re-projects/re-checks the variants,
+/// persists the edited canonical and the appended log, then re-renders both
+/// PDFs. The claim-divergence guard runs *before* any write, so a rejected edit
+/// leaves the stored build untouched.
+fn apply_build_edits(
+    dir: &std::path::Path,
+    request: SaveEditsRequest,
+    config: &Config,
+) -> Result<SaveEditsResponse, SaveEditsError> {
+    let mut canonical: TailoredResume = read_build_json(&dir.join("canonical.json"))?
+        .ok_or(SaveEditsError::MissingArtifact("canonical.json"))?;
+    // A build's JD is required (a real build always has one). Its content isn't
+    // needed to apply text edits — re-scoring coverage is not part of a text
+    // edit — but a build missing it isn't one we edit.
+    if read_build_json::<Value>(&dir.join("jd.json"))?.is_none() {
+        return Err(SaveEditsError::MissingArtifact("jd.json"));
+    }
+
+    // Apply each edit to the canonical, capturing the prior text for the log
+    // (and for cross-session undo). An unknown bullet id is a 400 raised here,
+    // before anything is written, so a bad batch never half-lands.
+    let mut entries = Vec::with_capacity(request.edits.len());
+    for edit in &request.edits {
+        let prev = apply_edit_to_canonical(&mut canonical, &edit.target, &edit.text)?;
+        entries.push(EditLogEntry {
+            at: Utc::now(),
+            target: edit.target.clone(),
+            prev,
+            next: edit.text.clone(),
+        });
+    }
+    // Punctuation-only normalization, exactly as every other write path does
+    // before storing the canonical. Never a claim change.
+    scrub_resume_text(&mut canonical);
+
+    // Re-project the ATS variant deterministically from the edited canonical,
+    // stamped with this build's own template (falling back to the configured
+    // default). Never trusted from a client — the same guard create_build uses.
+    let (ats_id, ats_template) = resolve_build_template(dir, config, Variant::Ats)?;
+    let mut ats = variant::ats_payload(&canonical);
+    ats.template = TemplateId(ats_id);
+
+    // If this build has a human variant, replay the *same* user text onto its
+    // matching lines (the user's words replace the reword; a human line whose
+    // source_id got no edit is left as-is) and re-run the deterministic
+    // claim-divergence guard before persisting anything — same facts, different
+    // presentation, never a new claim. A divergence is a 422.
+    let human = match read_build_json::<VariantPayload>(&dir.join("human_payload.json"))? {
+        Some(mut human) => {
+            for edit in &request.edits {
+                apply_edit_to_payload(&mut human, &edit.target, &edit.text);
+            }
+            variant::scrub_variant_text(&mut human);
+            variant::check_claims(&canonical, &human)?;
+            let (human_id, human_template) = resolve_build_template(dir, config, Variant::Human)?;
+            human.template = TemplateId(human_id);
+            Some((human, human_template))
+        }
+        None => None,
+    };
+
+    // Persist the edited canonical and append to the on-disk log *before*
+    // rendering: the text edit is the durable change, the PDFs are a projection
+    // of it. In production the handler has already verified `typst` is present,
+    // so the renders below succeed; this ordering also lets a test without
+    // `typst` still observe the canonical and log update.
+    builds::write_json(dir, "canonical.json", &canonical)?;
+    let mut log: Vec<EditLogEntry> =
+        read_build_json(&dir.join("edit_log.json"))?.unwrap_or_default();
+    let saved = entries.len();
+    log.extend(entries);
+    let log_len = log.len();
+    builds::write_json(dir, "edit_log.json", &log)?;
+
+    // Re-render both PDFs. `render::render` writes the payload JSON alongside
+    // each PDF, so `ats_payload.json`/`human_payload.json` are refreshed too.
+    render::render(dir, &ats, &ats_template)?;
+    if let Some((human, human_template)) = human {
+        render::render(dir, &human, &human_template)?;
+    }
+
+    Ok(SaveEditsResponse { saved, log_len })
+}
+
+/// Apply one edit to the canonical draft, returning the prior text (for the
+/// log). `summary` targets the summary; `bullet:<id>` targets the canonical
+/// bullet whose `source_id` matches. An id that names no bullet is a
+/// [`SaveEditsError::UnknownTarget`] (a 400 that names it).
+fn apply_edit_to_canonical(
+    canonical: &mut TailoredResume,
+    target: &str,
+    text: &str,
+) -> Result<String, SaveEditsError> {
+    if target == "summary" {
+        return Ok(std::mem::replace(&mut canonical.summary, text.to_string()));
+    }
+    if let Some(id) = target.strip_prefix("bullet:") {
+        for role in &mut canonical.roles {
+            for bullet in &mut role.bullets {
+                if bullet.source_id.0 == id {
+                    return Ok(std::mem::replace(&mut bullet.text, text.to_string()));
+                }
+            }
+        }
+    }
+    Err(SaveEditsError::UnknownTarget(target.to_string()))
+}
+
+/// Replay one edit onto the human payload, best-effort: `summary` and
+/// `bullet:<source_id>` mirror [`apply_edit_to_canonical`]. A target the human
+/// variant doesn't contain (an omitted bullet) is left untouched — omission is
+/// allowed, not a divergence — and never an error, since the canonical is the
+/// authority on which ids exist.
+fn apply_edit_to_payload(payload: &mut VariantPayload, target: &str, text: &str) {
+    if target == "summary" {
+        payload.summary = text.to_string();
+        return;
+    }
+    if let Some(id) = target.strip_prefix("bullet:") {
+        for role in &mut payload.roles {
+            for bullet in &mut role.bullets {
+                if bullet.source_id.0 == id {
+                    bullet.text = text.to_string();
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The template to re-render a variant with: the build's own stored stamp
+/// (`ats/classic`, `human/modern`, …) when present, else the configured
+/// default name. Returns the stamped id and the resolved template, matching
+/// `resolve_ats_template`/`resolve_human_template`'s id shape.
+fn resolve_build_template(
+    dir: &std::path::Path,
+    config: &Config,
+    variant: Variant,
+) -> Result<(String, render::Template), SaveEditsError> {
+    let (prefix, default_name) = match variant {
+        Variant::Ats => ("ats/", config.templates.ats_name()),
+        Variant::Human => ("human/", config.templates.human_name()),
+    };
+    let name = stored_template_stamp(&dir.join(variant.payload_name()))
+        .and_then(|stamp| stamp.strip_prefix(prefix).map(str::to_string))
+        .unwrap_or_else(|| default_name.to_string());
+    let template = templates::resolve(&name, variant)?;
+    Ok((format!("{prefix}{name}"), template))
+}
+
+/// The `template` stamp a stored payload JSON carries (e.g. `"ats/classic"`),
+/// or `None` if the file is absent or has no such field.
+fn stored_template_stamp(path: &std::path::Path) -> Option<String> {
+    read_json_artifact(path)?
+        .get("template")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Read a build artifact as a typed value: `Ok(None)` when the file is absent,
+/// `Ok(Some(_))` when it parses, and an error only when it exists but is
+/// unreadable or malformed. Absence of a *required* artifact becomes a 404 at
+/// the call site; the optional log simply defaults to empty.
+fn read_build_json<T: DeserializeOwned>(
+    path: &std::path::Path,
+) -> Result<Option<T>, SaveEditsError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(serde_json::from_str(&text)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(SaveEditsError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// Map a [`SaveEditsError`] to a response: a missing required artifact is a 404,
+/// an unknown target a 400, a claim divergence a 422 (the same guard
+/// create_build uses), a render failure keeps the CLI's 503/500 split, and a
+/// bad template name is a 400. No message carries secret material.
+fn save_edits_error_response(error: SaveEditsError) -> Resp {
+    match error {
+        SaveEditsError::MissingArtifact(_) => error_response(404, "not_found", error.to_string()),
+        SaveEditsError::UnknownTarget(_) => error_response(400, "bad_request", error.to_string()),
+        SaveEditsError::ClaimDivergence(error) => {
+            error_response(422, "claim_divergence", error.to_string())
+        }
+        SaveEditsError::Render(error) => render_error_response(error),
+        SaveEditsError::Template(error) => error_response(400, "bad_template", error.to_string()),
+        SaveEditsError::Build(error) => error_response(500, "build_error", error.to_string()),
+        SaveEditsError::Json(error) => error_response(500, "internal", error.to_string()),
+        SaveEditsError::Io { .. } => error_response(500, "internal", error.to_string()),
     }
 }
 
@@ -1254,5 +1597,86 @@ mod tests {
             // above) is still on disk.
             assert!(result.is_err());
         }
+    }
+
+    /// Applying an edit rewrites the canonical draft on disk and appends an
+    /// `edit_log.json` entry whose `prev` captures the pre-edit text — the value
+    /// a cross-session revert re-posts as its inverse. The canonical and log
+    /// writes happen before the re-render, so they're asserted unconditionally;
+    /// the re-rendered PDF is gated behind a real `typst`.
+    #[test]
+    fn save_edits_rewrites_the_canonical_and_appends_the_log() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Seed the two required artifacts the way a finalized build has them.
+        let request = minimal_create_build_request();
+        let original_summary = request.canonical.summary.clone();
+        builds::write_json(&dir, "canonical.json", &request.canonical).unwrap();
+        builds::write_json(&dir, "jd.json", &request.jd).unwrap();
+
+        // One summary edit; the build has no human payload, so the ATS variant
+        // (built-in `classic`) is the only projection re-rendered.
+        let edits = SaveEditsRequest {
+            edits: vec![EditItem {
+                target: "summary".into(),
+                text: "A sharper, edited summary.".into(),
+            }],
+        };
+        let result = apply_build_edits(&dir, edits, &Config::default());
+
+        // The canonical draft on disk now carries the edited text, whether or
+        // not typst was available to re-render the PDF.
+        let stored: TailoredResume =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("canonical.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored.summary, "A sharper, edited summary.");
+
+        // The log gained exactly one entry, and its `prev` is the ORIGINAL
+        // summary (what a revert would restore), its `next` the new text.
+        let log: Vec<EditLogEntry> =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("edit_log.json")).unwrap())
+                .unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].target, "summary");
+        assert_eq!(log[0].prev, original_summary);
+        assert_eq!(log[0].next, "A sharper, edited summary.");
+
+        if render::ensure_available().is_ok() {
+            // typst present: the whole apply succeeds and the PDF is rendered.
+            let response = result.unwrap();
+            assert_eq!(response.saved, 1);
+            assert_eq!(response.log_len, 1);
+            assert!(dir.join("resume.ats.pdf").is_file());
+        } else {
+            // No typst: the render step fails, but the canonical/log writes
+            // above still landed (asserted unconditionally).
+            assert!(result.is_err());
+        }
+    }
+
+    /// An edit naming a bullet id the canonical draft doesn't have is a 400
+    /// (`UnknownTarget`) raised before anything is written, so a bad batch never
+    /// half-lands.
+    #[test]
+    fn save_edits_rejects_an_unknown_bullet_id() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let request = minimal_create_build_request();
+        builds::write_json(&dir, "canonical.json", &request.canonical).unwrap();
+        builds::write_json(&dir, "jd.json", &request.jd).unwrap();
+
+        let edits = SaveEditsRequest {
+            edits: vec![EditItem {
+                target: "bullet:does-not-exist".into(),
+                text: "nope".into(),
+            }],
+        };
+        let error = apply_build_edits(&dir, edits, &Config::default()).unwrap_err();
+        assert!(matches!(error, SaveEditsError::UnknownTarget(_)));
+        // Nothing was written: no log, and the canonical is untouched.
+        assert!(!dir.join("edit_log.json").exists());
     }
 }
