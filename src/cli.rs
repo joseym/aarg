@@ -204,12 +204,18 @@ then restart your shell.")]
     Mcp,
     /// Run the HTTP companion server a browser UI calls for the four things wasm can't do (key, typst, workspace, cross-origin fetch)
     Serve {
-        /// Port to bind on 127.0.0.1 (localhost only); defaults to 8787
+        /// Port to bind; defaults to 8787
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
         /// Serve static files (the browser app) from this directory at `/`; omit to expose the API alone
         #[arg(long, value_name = "PATH")]
         dir: Option<std::path::PathBuf>,
+        /// Bind address; defaults to 127.0.0.1 (localhost only). Pass 0.0.0.0 to reach the server from another device on your network (e.g. a phone) — this also exposes your dataset and the key-spending LLM proxy to that network, so use only a trusted one
+        #[arg(long, value_name = "ADDR")]
+        bind: Option<std::net::IpAddr>,
+        /// Extra Host header values to accept (repeatable), used only when bound past loopback; this machine's own hostname is allowed automatically
+        #[arg(long = "allow-host", value_name = "HOST")]
+        allow_host: Vec<String>,
     },
 }
 
@@ -1000,25 +1006,52 @@ mod tests {
             .command
             .unwrap()
         {
-            Command::Serve { port, dir } => {
+            Command::Serve {
+                port,
+                dir,
+                bind,
+                allow_host,
+            } => {
                 assert_eq!(port, None);
                 assert_eq!(dir, None);
+                assert_eq!(bind, None);
+                assert!(allow_host.is_empty());
             }
             other => panic!("expected serve, got {other:?}"),
         }
-        match Cli::try_parse_from(["aarg", "serve", "--port", "9000", "--dir", "web/dist"])
-            .unwrap()
-            .command
-            .unwrap()
+        match Cli::try_parse_from([
+            "aarg",
+            "serve",
+            "--port",
+            "9000",
+            "--dir",
+            "web/dist",
+            "--bind",
+            "0.0.0.0",
+            "--allow-host",
+            "mortm5.local",
+        ])
+        .unwrap()
+        .command
+        .unwrap()
         {
-            Command::Serve { port, dir } => {
+            Command::Serve {
+                port,
+                dir,
+                bind,
+                allow_host,
+            } => {
                 assert_eq!(port, Some(9000));
                 assert_eq!(dir, Some(std::path::PathBuf::from("web/dist")));
+                assert_eq!(bind, Some("0.0.0.0".parse().unwrap()));
+                assert_eq!(allow_host, vec!["mortm5.local".to_string()]);
             }
             other => panic!("expected serve, got {other:?}"),
         }
         // A non-numeric port is rejected by clap.
         assert!(Cli::try_parse_from(["aarg", "serve", "--port", "notaport"]).is_err());
+        // A malformed bind address is rejected by clap.
+        assert!(Cli::try_parse_from(["aarg", "serve", "--bind", "not-an-ip"]).is_err());
     }
 
     #[test]

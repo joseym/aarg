@@ -129,15 +129,29 @@ struct AppState {
     /// (see [`host_is_allowed`]) is correct even when the OS picks the port —
     /// as an ephemeral-port test does.
     bound_port: u16,
+    /// Extra `Host` names the allowlist accepts beyond `127.0.0.1`/`localhost`,
+    /// populated only when the server is bound past loopback (`--bind` +
+    /// `--allow-host`, plus this machine's own hostname). Empty on a loopback
+    /// bind, so the default posture is unchanged.
+    allowed_hosts: Arc<Vec<String>>,
 }
 
 /// Run the server until the process is interrupted. Binds `127.0.0.1:<port>`,
 /// prints where it's listening, and serves connections one tokio task each.
 /// This does not return on its own — the accept loop runs forever — so the
 /// caller (the CLI dispatch) blocks here until Ctrl-C.
-pub async fn run(port: Option<u16>, dir: Option<PathBuf>) -> Result<(), CliError> {
+pub async fn run(
+    bind: Option<std::net::IpAddr>,
+    port: Option<u16>,
+    allow_hosts: Vec<String>,
+    dir: Option<PathBuf>,
+) -> Result<(), CliError> {
     let port = port.unwrap_or(DEFAULT_PORT);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    // Default stays loopback: only an explicit `--bind` opens the server to the
+    // network. `0.0.0.0` binds every interface (the usual way to reach it from
+    // another device); a specific LAN IP binds just that one.
+    let bind = bind.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let addr = SocketAddr::new(bind, port);
 
     // Canonicalize `--dir` once, up front: it's the prefix every served path is
     // checked against to refuse directory traversal, so it must be absolute and
@@ -165,20 +179,72 @@ pub async fn run(port: Option<u16>, dir: Option<PathBuf>) -> Result<(), CliError
         .map_err(|source| ServeError::Bind { addr, source })?
         .port();
 
+    // The Host allowlist: 127.0.0.1/localhost are always in (they still work on
+    // this machine). When bound beyond loopback, add the names a LAN client will
+    // address the server by — the caller's `--allow-host` values plus this
+    // machine's own hostname (and its `.local` mDNS form), looked up best-effort
+    // so `http://<hostname>.local:<port>` just works from a phone.
+    let allowed_hosts = if bind.is_loopback() {
+        // A loopback bind keeps the invariant allowlist (127.0.0.1/localhost are
+        // built into `host_is_allowed`). `--allow-host` is deliberately ignored
+        // here: widening a loopback server's allowlist would re-open the very
+        // DNS-rebinding hole the Host check exists to close.
+        Vec::new()
+    } else {
+        let mut hosts: Vec<String> = allow_hosts
+            .into_iter()
+            .map(|host| host.trim().to_string())
+            .filter(|host| !host.is_empty())
+            .collect();
+        // The literal bound IP, when a specific interface was named — an
+        // IP-literal Host can't be produced by DNS rebinding, so it's safe, and
+        // it's the obvious thing to type. `0.0.0.0`/`::` name no single address.
+        if !bind.is_unspecified() {
+            hosts.push(bind.to_string());
+        }
+        // This machine's own name, so `http://<hostname>.local:<port>` just works.
+        if let Some(name) = system_hostname() {
+            hosts.push(name.clone());
+            if !name.contains('.') {
+                hosts.push(format!("{name}.local"));
+            }
+        }
+        hosts
+    };
+
     let state = AppState {
         static_root: static_root.clone(),
         dataset_write: Arc::new(tokio::sync::Mutex::new(())),
         bound_port,
+        allowed_hosts: Arc::new(allowed_hosts.clone()),
     };
 
     // The startup banner: plain stderr lines, no spinner/animation (the
     // scriptability rule), and the `style` helpers make it NO_COLOR-safe.
     let url = format!("http://{addr}");
     eprintln!("{}", style::info(format!("aarg serve listening on {url}")));
-    eprintln!(
-        "{}",
-        style::dim("bound to 127.0.0.1 only — localhost is the v1 security model")
-    );
+    if bind.is_loopback() {
+        eprintln!(
+            "{}",
+            style::dim("bound to 127.0.0.1 only — localhost is the security default")
+        );
+    } else {
+        // Binding beyond loopback exposes the dataset and the key-spending LLM
+        // proxy to everything that can reach this address. Say so, loudly, and
+        // print exactly which host names the Host allowlist will answer to.
+        eprintln!(
+            "{}",
+            style::warn(format!(
+                "bound to {bind} — the dataset and the LLM proxy (which spends your key) are reachable by anything on this network"
+            ))
+        );
+        for host in allowed_hosts.iter() {
+            eprintln!(
+                "{}",
+                style::bullet(format!("reachable at http://{host}:{port}"))
+            );
+        }
+    }
     match &static_root {
         Some(root) => eprintln!(
             "{}",
@@ -254,7 +320,7 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
-    if let Some(resp) = check_host(req.headers(), state.bound_port) {
+    if let Some(resp) = check_host(req.headers(), state.bound_port, &state.allowed_hosts) {
         return resp;
     }
 
@@ -297,30 +363,50 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
 /// through" or "answer with this instead", and `Option` says that without
 /// clippy's `result_large_err` objecting to carrying a whole `Resp` in an
 /// error slot it isn't one.
-fn check_host(headers: &hyper::HeaderMap, bound_port: u16) -> Option<Resp> {
+fn check_host(headers: &hyper::HeaderMap, bound_port: u16, allowed: &[String]) -> Option<Resp> {
     let host = headers
         .get(hyper::header::HOST)
         .and_then(|value| value.to_str().ok());
     match host {
-        Some(host) if host_is_allowed(host, bound_port) => None,
+        Some(host) if host_is_allowed(host, bound_port, allowed) => None,
         _ => Some(error_response(
             403,
             "forbidden_host",
-            "this server only answers requests addressed to 127.0.0.1 or localhost",
+            "this server does not answer requests with that Host header",
         )),
     }
 }
 
 /// Whether a `Host` header value names this server: the bare loopback names,
-/// or those names with the *actual bound* port appended (what a browser sends
-/// whenever the port isn't the scheme default). Comparing against the bound
-/// port rather than the requested one keeps this correct even when the OS
-/// chose the port, as the ephemeral-port test does.
-fn host_is_allowed(host: &str, bound_port: u16) -> bool {
-    host.eq_ignore_ascii_case("127.0.0.1")
-        || host.eq_ignore_ascii_case("localhost")
-        || host.eq_ignore_ascii_case(&format!("127.0.0.1:{bound_port}"))
-        || host.eq_ignore_ascii_case(&format!("localhost:{bound_port}"))
+/// any extra `allowed` name (from `--bind`/`--allow-host` and the machine's own
+/// hostname when bound past loopback), each accepted bare or with the *actual
+/// bound* port appended (what a browser sends whenever the port isn't the
+/// scheme default). Comparing against the bound port rather than the requested
+/// one keeps this correct even when the OS chose the port, as the ephemeral-port
+/// test does. `allowed` is empty on a loopback bind, so the default posture is
+/// exactly the loopback-only allowlist.
+fn host_is_allowed(host: &str, bound_port: u16, allowed: &[String]) -> bool {
+    let names = ["127.0.0.1", "localhost"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(allowed.iter().cloned());
+    names.into_iter().any(|name| {
+        host.eq_ignore_ascii_case(&name)
+            || host.eq_ignore_ascii_case(&format!("{name}:{bound_port}"))
+    })
+}
+
+/// This machine's hostname, best-effort, for the `Host` allowlist when bound to
+/// the network. Shelled out (like the typst resolution) rather than pulling a
+/// crate for one string; a failure just means the caller must name the host via
+/// `--allow-host` instead.
+fn system_hostname() -> Option<String> {
+    let output = std::process::Command::new("hostname").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Which API routes accept a JSON request body — the ones the content-type
@@ -683,6 +769,7 @@ mod tests {
             static_root: Some(Arc::new(root)),
             dataset_write: Arc::new(tokio::sync::Mutex::new(())),
             bound_port: addr.port(),
+            allowed_hosts: Arc::new(Vec::new()),
         };
         let server = tokio::spawn(serve_listener(listener, state));
 
@@ -750,19 +837,29 @@ mod tests {
 
     #[test]
     fn host_is_allowed_covers_the_documented_forms() {
+        // Loopback bind: no extra allowed hosts, only the built-in loopback names.
+        let none: &[String] = &[];
         // The bare loopback names, with no port, are accepted (some non-browser
         // clients send exactly these).
-        assert!(host_is_allowed("127.0.0.1", 8787));
-        assert!(host_is_allowed("localhost", 8787));
+        assert!(host_is_allowed("127.0.0.1", 8787, none));
+        assert!(host_is_allowed("localhost", 8787, none));
         // What a browser actually sends: the name plus the *bound* port.
-        assert!(host_is_allowed("127.0.0.1:8787", 8787));
-        assert!(host_is_allowed("localhost:8787", 8787));
+        assert!(host_is_allowed("127.0.0.1:8787", 8787, none));
+        assert!(host_is_allowed("localhost:8787", 8787, none));
         // Anything naming another origin — including the right name at the
         // *wrong* port, which is a different origin as far as a browser is
         // concerned — is refused.
-        assert!(!host_is_allowed("attacker.com", 8787));
-        assert!(!host_is_allowed("127.0.0.1:9999", 8787));
-        assert!(!host_is_allowed("127.0.0.1.attacker.com", 8787));
+        assert!(!host_is_allowed("attacker.com", 8787, none));
+        assert!(!host_is_allowed("127.0.0.1:9999", 8787, none));
+        assert!(!host_is_allowed("127.0.0.1.attacker.com", 8787, none));
+
+        // LAN bind: an explicitly-allowed host is accepted bare and with the
+        // bound port (case-insensitively), but an unlisted one is still refused.
+        let lan = vec!["MortM5.local".to_string()];
+        assert!(host_is_allowed("mortm5.local", 8787, &lan));
+        assert!(host_is_allowed("MortM5.local:8787", 8787, &lan));
+        assert!(!host_is_allowed("mortm5.local:9999", 8787, &lan));
+        assert!(!host_is_allowed("someone-else.local", 8787, &lan));
     }
 
     #[test]
@@ -788,6 +885,7 @@ mod tests {
             static_root: None,
             dataset_write: Arc::new(tokio::sync::Mutex::new(())),
             bound_port: addr.port(),
+            allowed_hosts: Arc::new(Vec::new()),
         };
         (addr, tokio::spawn(serve_listener(listener, state)))
     }

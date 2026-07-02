@@ -1060,7 +1060,12 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             command: TemplatesCommand::Use { name },
         } => templates::use_template(name).await?,
         Command::Mcp => mcp::run().await?,
-        Command::Serve { port, dir } => serve::run(port, dir).await?,
+        Command::Serve {
+            port,
+            dir,
+            bind,
+            allow_host,
+        } => serve::run(bind, port, allow_host, dir).await?,
     }
     Ok(())
 }
