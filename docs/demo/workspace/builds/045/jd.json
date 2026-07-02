@@ -1,0 +1,168 @@
+{
+  "company": "Cornerstone Commerce",
+  "title": "Director of Software Engineering, Platform & Infrastructure",
+  "seniority": "director",
+  "location": null,
+  "remote": "unspecified",
+  "domain_keywords": [
+    "e-commerce",
+    "SaaS infrastructure",
+    "cloud-native",
+    "distributed systems",
+    "developer productivity",
+    "infrastructure unification"
+  ],
+  "required_skills": [
+    {
+      "name": "Software Engineering Leadership",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "10+ years in software engineering with 5+ years managing teams (managing through managers)",
+        "lead, scale, and inspire a distributed team of engineers"
+      ]
+    },
+    {
+      "name": "Cross-functional Stakeholder Alignment",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "Proven ability to influence and align cross-functional stakeholders across distributed teams in Australia, North America, and Europe"
+      ]
+    },
+    {
+      "name": "Complex Initiative Execution",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "Demonstrated track record of driving complex, ambiguous initiatives from conception through production"
+      ]
+    },
+    {
+      "name": "Cloud-Native Architecture",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Expertise in the architecture, operation, and evolution of large-scale, cloud-native SaaS infrastructure",
+        "Drive our continued evolution toward cloud-native, containerized, and highly orchestrated environments"
+      ]
+    },
+    {
+      "name": "Kubernetes",
+      "category": "tool",
+      "importance": "critical",
+      "context_phrases": [
+        "Proficient with containerization, orchestration (e.g., Kubernetes), and infrastructure-as-code"
+      ]
+    },
+    {
+      "name": "Infrastructure-as-Code",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Proficient with containerization, orchestration (e.g., Kubernetes), and infrastructure-as-code"
+      ]
+    },
+    {
+      "name": "Containerization",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Proficient with containerization, orchestration (e.g., Kubernetes), and infrastructure-as-code"
+      ]
+    },
+    {
+      "name": "Edge Infrastructure",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Hands-on experience optimizing global performance and security using modern edge platforms like Cloudflare"
+      ]
+    },
+    {
+      "name": "Cloudflare",
+      "category": "tool",
+      "importance": "required",
+      "context_phrases": [
+        "Hands-on experience optimizing global performance and security using modern edge platforms like Cloudflare"
+      ]
+    },
+    {
+      "name": "Systems Engineering",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "A strong technical foundation building at scale. Ability to evaluate system design tradeoffs, conduct high-level code reviews, and identify application weaknesses"
+      ]
+    },
+    {
+      "name": "Distributed Systems",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Ensure our core data and messaging layers are optimized for global scale"
+      ]
+    },
+    {
+      "name": "Developer Productivity Engineering",
+      "category": "hard",
+      "importance": "required",
+      "context_phrases": [
+        "Lead developer productivity engineering to drastically reduce cycle times across build, test, deploy, and observability workflows"
+      ]
+    },
+    {
+      "name": "Talent Acquisition and Retention",
+      "category": "soft",
+      "importance": "required",
+      "context_phrases": [
+        "Drive hiring strategies to attract, retain, and diverse top-tier engineering talent"
+      ]
+    },
+    {
+      "name": "Team Coaching and Mentoring",
+      "category": "soft",
+      "importance": "required",
+      "context_phrases": [
+        "Coach, mentor, and elevate engineering managers and technical leaders, building a sustainable leadership pipeline"
+      ]
+    }
+  ],
+  "preferred_skills": [],
+  "responsibilities": [
+    "Shape infrastructure strategy and define roadmap for infrastructure unification across global organization",
+    "Establish modern operational standards across entire global engineering organization",
+    "Drive evolution toward cloud-native, containerized, and highly orchestrated environments",
+    "Optimize core data and messaging layers for global scale",
+    "Lead developer productivity engineering to reduce cycle times across build, test, deploy, and observability",
+    "Ensure technical decisions support world-class performance, reliability, availability, and security without sacrificing developer velocity",
+    "Coach, mentor, and elevate engineering managers and technical leaders",
+    "Build sustainable leadership pipeline within organization",
+    "Drive hiring strategies to attract, retain, and build diverse top-tier engineering talent",
+    "Champion high-trust, productive feedback culture",
+    "Empower engineers to speak up, experiment, and challenge status quo",
+    "Lead, scale, and inspire distributed teams of engineers",
+    "Eliminate developer friction and champion cloud-native evolution",
+    "Ensure systems are relentlessly scalable, secure, and reliable"
+  ],
+  "ats_phrases": [
+    "Director of Software Engineering",
+    "Platform & Infrastructure",
+    "cloud-native SaaS infrastructure",
+    "Kubernetes",
+    "containerization",
+    "infrastructure-as-code",
+    "distributed systems",
+    "edge platforms",
+    "Cloudflare",
+    "developer productivity engineering",
+    "systems engineering",
+    "cross-functional stakeholders",
+    "managing teams",
+    "engineering leadership",
+    "global scale",
+    "infrastructure unification"
+  ],
+  "raw_text": "Here's the job description as plain text:\n\n---\n\nFull job description\n\nWelcome to the Agentic Cornerstone Commerce Era\n\nAt Cornerstone Commerce, our mission is to empower businesses to innovate, grow, and thrive with our open, AI-driven commerce ecosystem. As the parent company of BigCornerstone Commerce, Feedonomics, and Makeswift, we connect the tools and systems that power growth, enabling businesses to unlock the full potential of their data, deliver seamless and personalized experiences across every channel, and adapt swiftly to an ever-changing market. We believe in harnessing AI responsibly to unlock new possibilities, and we're looking for individuals who use it intentionally to solve problems, accelerate outcomes, and expand what's possible in their role. Our purpose is to help businesses confidently solve complex commerce challenges so they can build smarter, adapt faster, and grow on their own terms. If you want to be part of a team of bold builders, sharp thinkers, and technical trailblazers who shape the future of commerce, this is the place for you.\n\nAs the Director of Software Engineering for Platform & Infrastructure, you will play a critical role in shaping the technical foundation that empowers our global engineering organization. This is a strategic leadership role where you will collaborate to define infrastructure strategy, pioneer developer productivity at scale, and partner with executive leadership to modernize how we build, deploy, and operate systems.\n\nYou will lead, scale, and inspire a distributed team of engineers. Your mission is to eliminate developer friction, champion cloud-native evolution, and ensure our systems are relentlessly scalable, secure, and reliable.\n\nBigCornerstone Commerce, part of the Cornerstone Commerce brand family, helps merchants increase sales at every stage of their growth. From small startups to mid-market businesses and large enterprises, we provide the leading e-commerce platform. Our customers can then concentrate on what's most important: growing their businesses. We enable our customers to build, innovate, and grow, collectively reshaping the e-commerce industry.\n\nWhat You'll Do\n\nAreas of Impact\n\nStrategic Infrastructure and Platform Evolution\n- Shape the Strategy: Partner with engineering leadership to help define and execute the roadmap for infrastructure unification, establishing modern operational standards across the entire global organization.\n- Modernize Architecture: Drive our continued evolution toward cloud-native, containerized, and highly orchestrated environments.\n- Scale Distributed Systems: Ensure our core data and messaging layers are optimized for global scale.\n- Remove Friction: Lead developer productivity engineering to drastically reduce cycle times across build, test, deploy, and observability workflows.\n- Elevate Quality: Ensure that technical decisions inherently support world-class performance, reliability, availability, and security without sacrificing developer velocity.\n\nTalent Leadership and Team Growth\n- Grow the Organization: Coach, mentor, and elevate engineering managers and technical leaders, building a sustainable leadership pipeline within your organization.\n- Global Talent Acquisition: Drive hiring strategies to attract, retain, and diverse top-tier engineering talent.\n- Foster Collaboration: Champion a high-trust, productive feedback culture where engineers are empowered to speak up, experiment, and challenge the status quo.\n\nWho Are You\n- Experienced Leader: 10+ years in software engineering with 5+ years managing teams (managing through managers).\n- Global Scale Mindset: Proven ability to influence and align cross-functional stakeholders across distributed teams in Australia, North America, and Europe.\n- Bias for Action: Demonstrated track record of driving complex, ambiguous initiatives from conception through production.\n- Cloud-Native & Platform Architecture: Expertise in the architecture, operation, and evolution of large-scale, cloud-native SaaS infrastructure. Proficient with containerization, orchestration (e.g., Kubernetes), and infrastructure-as-code.\n- Edge & Network Infrastructure: Hands-on experience optimizing global performance and security using modern edge platforms like Cloudflare.\n- Systems Engineering: A strong technical foundation building at scale. Ability to evaluate system design tradeoffs, conduct high-level code reviews, and identify application weaknesses.\n\n(Pay Transparency Range: $207,000.00 - $311,000.00)\n\nCompensation Transparency\n\nThe national base salary range for this role is posted above in this job post. Final compensation will be determined based on factors such as relevant experience, skills, qualifications and geographic location. We also consider internal equity to help ensure fair and consistent pay practices across our teams. Where applicable, this role may also be eligible for variable compensation (such as bonus or commission), equity, and benefits in accordance with local policies. Details will be shared during the hiring process. We are committed to equitable and transparent pay practices that align to market data, internal equity, and individual contribution.\n\nInclusion and Belonging\n\nAt Cornerstone Commerce, we believe that celebrating the unique histories, perspectives and abilities of every employee makes a difference for our company, our customers and our community. We are an equal opportunity employer and the inclusive atmosphere we build together will make room for every person to contribute, grow and thrive.\n\nWe are committed to creating an inclusive and accessible hiring experience for all candidates. If you require accommodations or adjustments at any stage of the recruitment process, please let us know and we will work with you to meet your needs.\n\nLearn more about the Cornerstone Commerce team, culture and benefits at https://www.commerce.com/careers/\n\nProtect Yourself Against Hiring Scams: Our Corporate Disclaimer\n\nCornerstone Commerce, along with many other employers, has become the subject of fraudulent job offers to hopeful prospective job seekers.\n\nBe advised: Cornerstone Commerce does not offer jobs to individuals who do not go through our formal hiring process.\n\nCornerstone Commerce will never:\n- require payment of recruitment fees from candidates;\n- request personally identifiable information through unsanctioned websites or applications;\n- attempt to solicit money from you as part of the hiring process or as part of an employment offer;\n- solicit money to complete visa requirements as part of a job offer.\n\nIf you receive unsolicited offers of employment from Cornerstone Commerce, we urge you to be extremely cautious and avoid engaging or responding.\n\n---\n\nThis is a Director of Software Engineering, Platform & Infrastructure role, $207K–$311K, with a heavy infrastructure/cloud-native/Kubernetes/Cloudflare emphasis. Worth flagging: it leans more toward deep platform and infra architecture than the product-and-team-leadership angle in your Meridian Logistics background, so the \"Cloud-Native & Platform Architecture\" and \"Edge & Network Infrastructure\" bullets are the spots where your resume is thinner against the JD. Want me to draft a \"why Cornerstone Commerce\" answer, or think through how to position against those infra-heavy requirements?",
+  "source_url": null
+}

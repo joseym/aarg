@@ -1,0 +1,22 @@
+{
+  "ats": {
+    "page_count": 2,
+    "over_page_limit": false,
+    "density_score": 0.80142856,
+    "hierarchy_ok": null,
+    "issues": [
+      "page 1 is dense (4344 characters) — consider trimming for whitespace",
+      "font hierarchy check unavailable (pdfium)"
+    ]
+  },
+  "human": {
+    "page_count": 3,
+    "over_page_limit": true,
+    "density_score": 0.49085715,
+    "hierarchy_ok": null,
+    "issues": [
+      "3 pages, over the 2-page limit",
+      "font hierarchy check unavailable (pdfium)"
+    ]
+  }
+}

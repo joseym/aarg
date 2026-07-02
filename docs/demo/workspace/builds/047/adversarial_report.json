@@ -1,0 +1,82 @@
+{
+  "objections": [
+    {
+      "target": "skills_section",
+      "severity": "blocking",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "The JD's heaviest required asks are Kubernetes, distributed systems, and backend depth in Python/Go/Rust. Skills list shows Docker and microservices but no Kubernetes anywhere, and Python only appears as 'Typescript/Python' with no supporting experience bullet. Go and Rust are absent entirely. This is the core of the role.",
+      "suggestion": "Do not pad with technologies you haven't used. If Kubernetes/Python work exists somewhere in your history, surface it in a bullet; if it doesn't, accept this role is a stretch rather than listing buzzwords."
+    },
+    {
+      "target": "overall",
+      "severity": "major",
+      "kind": "jd_mismatch",
+      "scope": "canonical",
+      "message": "This is an AI-infrastructure / inference-serving / hardware-adjacent platform role (RDU chips, LLM workloads at production scale). The resume's entire context is regulated fintech and product delivery. No bullet demonstrates distributed-systems scale, inference serving, or cloud-native platform work for enterprise customers.",
+      "suggestion": "Lean hard on the one genuine overlap (AI coding-assistant adoption, bullet-38) and the hands-on-while-leading angle; don't pretend the infra-at-scale experience is there."
+    },
+    {
+      "target": {
+        "bullet": "bullet-48"
+      },
+      "severity": "major",
+      "kind": "no_metric",
+      "scope": "canonical",
+      "message": "This is the most technical bullet and it's a run-on that buries the architecture work under process narrative. No scale indicators (request volume, number of services, data size) to demonstrate distributed-systems competence the JD requires.",
+      "suggestion": "Split into two tighter bullets: one on the microservice/Postgres/Docker/CI-CD architecture, one on standards. Add scale only if it genuinely exists in your work; otherwise let the architecture stand on its own."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Bullet-4 and bullet-41 are near-duplicates: both cite '4 engineering teams,' 'bi-weekly cadence,' and '5+ regulated product milestones.' Redundancy wastes a slot and signals thin content.",
+      "suggestion": "Merge into one bullet covering scrum/release management and product-partner alignment; recover the slot or drop it."
+    },
+    {
+      "target": {
+        "bullet": "bullet-4"
+      },
+      "severity": "minor",
+      "kind": "unsupported_claim",
+      "scope": "canonical",
+      "message": "'3x faster than the prior process' compares a bi-weekly cadence to 'ad hoc deployments,' which is not a meaningful baseline — ad hoc has no cadence to be 3x slower than. The number reads invented.",
+      "suggestion": "Drop the 3x claim and let 'replaced ad hoc deployments with a predictable bi-weekly cadence' stand; it's credible without the dubious multiplier."
+    },
+    {
+      "target": {
+        "bullet": "bullet-38"
+      },
+      "severity": "minor",
+      "kind": "vague_verb",
+      "scope": "canonical",
+      "message": "This is your single best JD match (AI coding assistants), but 'establishing the working patterns the team adopted going forward' is soft and unmeasured. The strongest line is the least sharp.",
+      "suggestion": "Tighten the verb and state the concrete change (which tools, which workflows), without inventing a productivity metric."
+    },
+    {
+      "target": {
+        "bullet": "bullet-16"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "AngularJS/LessCSS/Grunt and the older roles (Nimbus Freight, Beacon Labs) consume space on dated frontend stacks irrelevant to a backend/distributed-systems infra role.",
+      "suggestion": "Compress the pre-2017 roles to one line each to make room for whatever backend/scale signal you can legitimately surface higher up."
+    },
+    {
+      "target": {
+        "bullet": "bullet-9"
+      },
+      "severity": "minor",
+      "kind": "other",
+      "scope": "canonical",
+      "message": "Good metric (20% faster reviews, Jira-tracked), but causally muddled: it claims 'reducing bugs and tech debt' with no support alongside the one number it does have. The unsupported half weakens the supported half.",
+      "suggestion": "Keep the 20% review-speed claim with its tracking method; drop or substantiate the bugs/tech-debt clause."
+    }
+  ],
+  "overall_score": 0.52,
+  "persona_notes": "Strong people-leadership and team-building story from a regulated-fintech background, but this role demands Kubernetes, distributed systems, and Python/Go/Rust depth in an AI-infrastructure context that the resume barely touches. The leadership half is interviewable; the technical-stack half is a real gap I can't ignore."
+}

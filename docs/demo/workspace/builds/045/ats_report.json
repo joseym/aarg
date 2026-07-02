@@ -1,0 +1,168 @@
+{
+  "keyword_hits": [
+    {
+      "phrase": "Software Engineering Leadership",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Cross-functional Stakeholder Alignment",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Complex Initiative Execution",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Cloud-Native Architecture",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Containerization",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Systems Engineering",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Distributed Systems",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Talent Acquisition and Retention",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Team Coaching and Mentoring",
+      "kind": "required_skill"
+    },
+    {
+      "phrase": "Director of Software Engineering",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "Platform & Infrastructure",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "containerization",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "distributed systems",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "systems engineering",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "cross-functional stakeholders",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "managing teams",
+      "kind": "ats_phrase"
+    },
+    {
+      "phrase": "engineering leadership",
+      "kind": "ats_phrase"
+    }
+  ],
+  "keyword_misses": [
+    {
+      "phrase": "Kubernetes",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Infrastructure-as-Code",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Edge Infrastructure",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Cloudflare",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Developer Productivity Engineering",
+      "kind": "required_skill",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "internal platforms"
+      }
+    },
+    {
+      "phrase": "cloud-native SaaS infrastructure",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Kubernetes",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "infrastructure-as-code",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "edge platforms",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "Cloudflare",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "developer productivity engineering",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "backed",
+        "dataset_skill": "internal platforms"
+      }
+    },
+    {
+      "phrase": "global scale",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    },
+    {
+      "phrase": "infrastructure unification",
+      "kind": "ats_phrase",
+      "evidence": {
+        "status": "unbacked"
+      }
+    }
+  ],
+  "coverage": 0.64285713
+}

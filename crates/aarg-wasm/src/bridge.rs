@@ -418,6 +418,10 @@ async fn ask_over_js(callback: &js_sys::Function, question: Question) -> Result<
             // Accept only a `choice` that names one of the options; anything
             // else (decline, dismiss, or an unknown value) aborts the step,
             // exactly as `ElicitationUser` treats a declined required choice.
+            // No `abort` check is needed here: a dismissed modal resolving
+            // `{"abort": true}` carries no valid `choice`, so it already falls
+            // through to the same `NotInteractive` error the sentinel forces in
+            // the MultiSelect arm.
             match call_user_callback(callback, &envelope).await {
                 Some(value) => match choice_index(&value, &options) {
                     Some(index) => Ok(Answer::Choice(index)),
@@ -431,9 +435,28 @@ async fn ask_over_js(callback: &js_sys::Function, question: Question) -> Result<
                 "kind": "multi_select", "prompt": prompt, "options": options,
             })
             .to_string();
-            // A dismissed multi-select means "none of them" — a valid, empty
-            // answer, never an error (matching `ElicitationUser`).
+            // A dismissed multi-select modal now resolves `{"abort": true}` —
+            // a deliberate session end, mapped to the same typed error a
+            // dismissed Select produces. Without this, a dismissed modal
+            // resolving `{choices: []}` would read as "none of them", which
+            // once declines persist means "decline every keyword" by accident.
+            // A present `choices` array (even empty) is still a legit answer;
+            // a thrown callback (`None`) still means "none of them".
             match call_user_callback(callback, &envelope).await {
+                Some(value)
+                    if value
+                        .get("abort")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false) =>
+                {
+                    Err(AskError::NotInteractive { what: prompt })
+                }
+                // A reply with neither `abort` nor a `choices` array is garbled
+                // — treat it like a dismissal, not "none of them": once declines
+                // persist, a malformed reply must not mass-decline keywords.
+                Some(value) if value.get("choices").is_none() => {
+                    Err(AskError::NotInteractive { what: prompt })
+                }
                 Some(value) => Ok(Answer::Choices(choices_indices(&value, &options))),
                 None => Ok(Answer::Choices(Vec::new())),
             }

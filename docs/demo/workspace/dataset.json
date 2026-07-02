@@ -1,0 +1,2515 @@
+{
+  "schema_version": 1,
+  "contact": {
+    "full_name": "Sam Rivera",
+    "email": "sam.rivera@example.com",
+    "phone": "(555) 010-1974",
+    "location": "Remote (US)",
+    "links": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/sam-rivera-dev"
+      }
+    ]
+  },
+  "summary": "Founding engineer turned Director of Engineering at Meridian Logistics, where I grew the team from just myself to 20+ engineers spanning backend, frontend, QA, DevOps, and release management, and delivered the infrastructure behind Meridian Logistics becoming the first regulated fintech platform in the US. I architected the backend systems and processes the platform is built on, took releases from ad hoc to a structured bi-weekly cadence across 4 engineering teams, and led the engineering and compliance work across a 7-year regulatory build-out. Hands-on with Node.js and TypeScript, and equally comfortable shaping technical strategy with C-suite leadership, I'm targeting Director of Engineering and VP of Engineering roles where team development and delivery excellence are priorities.",
+  "summary_confirmed": true,
+  "roles": [
+    {
+      "id": "role-1",
+      "company": "Meridian Logistics",
+      "title": "Director of Engineering",
+      "start": "2019-04",
+      "end": "2026-05",
+      "location": null,
+      "employment_type": "full_time",
+      "bullets": [
+        {
+          "id": "bullet-1",
+          "text": "Built the engineering organization from the ground up, growing from sole backend engineer to a 20+ person team spanning backend, frontend, QA, DevOps, and release management, with full hiring authority and ownership of every career-level and cultural decision.",
+          "skill_ids": [
+            "skill-2",
+            "skill-3",
+            "skill-1"
+          ],
+          "metric": "grew from 1 to 20+ person team",
+          "theme": [
+            "leadership",
+            "team building"
+          ],
+          "strength": "high",
+          "variants": []
+        },
+        {
+          "id": "bullet-2",
+          "text": "Architected and delivered the backend systems, compliance workflows, and engineering processes that enabled Meridian Logistics to become the first regulated fintech platform in the US, including KYC and onboarding backends and UIs built to support direct SEC and regulatory regulatory review.",
+          "skill_ids": [
+            "skill-19",
+            "skill-16"
+          ],
+          "metric": null,
+          "theme": [
+            "regulatory",
+            "compliance"
+          ],
+          "strength": "high",
+          "variants": []
+        },
+        {
+          "id": "bullet-3",
+          "text": "that was the official annoucement",
+          "skill_ids": [
+            "skill-16",
+            "skill-9"
+          ],
+          "metric": "15 engineers, 4 months.",
+          "theme": [
+            "delivery",
+            "product"
+          ],
+          "strength": "high",
+          "variants": []
+        },
+        {
+          "id": "bullet-4",
+          "text": "Took on scrum and release management across 4 engineering teams as an expansion of engineering leadership responsibilities, standardizing sprint and epic planning and replacing ad hoc deployments with a bi-weekly release cadence that gave the business consistent, predictable delivery across 5+ regulated product milestones, including regulatory the platform approval, custody launch, ETH custody, and clearing and settlement approval.",
+          "skill_ids": [
+            "skill-6",
+            "skill-5",
+            "skill-4",
+            "skill-7"
+          ],
+          "metric": "3x faster",
+          "theme": [
+            "process improvement",
+            "delivery"
+          ],
+          "strength": "high",
+          "variants": []
+        },
+        {
+          "id": "bullet-5",
+          "text": "Took on scrum and release management across 4 engineering teams, standardizing sprint and epic planning and establishing a bi-weekly release cadence that gave the business consistent delivery predictability across a regulated environment.",
+          "skill_ids": [
+            "skill-4",
+            "skill-6",
+            "skill-1"
+          ],
+          "metric": "4 engineering teams",
+          "theme": [
+            "leadership",
+            "process"
+          ],
+          "strength": "high",
+          "variants": []
+        },
+        {
+          "id": "bullet-6",
+          "text": "we're keeping it as is",
+          "skill_ids": [
+            "skill-7",
+            "skill-8"
+          ],
+          "metric": "2x faster",
+          "theme": [
+            "innovation",
+            "tooling"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-7",
+          "text": "Led development of onboarding, KYC, and compliance backends and UIs for regulatory and SEC regulatory reviews, delivering documentation and comprehensive system demos to regulators",
+          "skill_ids": [
+            "skill-19",
+            "skill-16",
+            "skill-9"
+          ],
+          "metric": "7-year regulatory build-out",
+          "theme": [
+            "leadership",
+            "regulatory"
+          ],
+          "strength": "high",
+          "variants": []
+        },
+        {
+          "id": "bullet-19",
+          "text": "I built the backend framework meridian logistics runs on today",
+          "skill_ids": [
+            "skill-12"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-20",
+          "text": "Built automation tooling for data transformation and defined database schema, reducing new hire onboarding time from several weeks to 3 days.",
+          "skill_ids": [
+            "skill-26"
+          ],
+          "metric": "this is covered in the log for onboarding",
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-21",
+          "text": "Restructured Meridian Logistics's remote engineering team communication from noisy, unfocused channels into several focused Slack channels scoped by project and function, reducing information fatigue and driving fewer siloed DM conversations, stronger team interaction, and faster responses.",
+          "skill_ids": [
+            "skill-27"
+          ],
+          "metric": "not recordable",
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-22",
+          "text": "Lead the AI assisted pilot program for software and qa engineers, also built side projects.",
+          "skill_ids": [
+            "skill-28"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-23",
+          "text": "Worked remote for Meridian Logistics, a NYC based company.",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-24",
+          "text": "I built and ran all engineering, devops, qa, and release teams.",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-25",
+          "text": "I defined the processes (both in code and people) that all systems were built atop.",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-26",
+          "text": "I architected the backend systems and schemas all work is built atop",
+          "skill_ids": [
+            "skill-36"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-27",
+          "text": "Coordinated change management and auditor communication across 3 concurrent audits covering backend platform, onboarding, mobile app, and blockchain, managing timelines, drafting responses, conducting the least-privilege access review, and converting audit findings into prioritized remediation items entered into the SDLC workflow.",
+          "skill_ids": [
+            "skill-37"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-28",
+          "text": "Wrote engineering standards and code review processes from scratch as the founding engineer, establishing the baseline the team built on as it scaled and the compliance guardrails required for a regulatory-regulated platform.",
+          "skill_ids": [
+            "skill-43"
+          ],
+          "metric": "ibcan speak do this, but nothing was recorded, no.",
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-35",
+          "text": "Meridian Logistics is a NY based company",
+          "skill_ids": [
+            "skill-44"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-36",
+          "text": "I hired and scaled the engineering teams",
+          "skill_ids": [
+            "skill-45"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-37",
+          "text": "Directed engineering for compliance and books-and-records business systems",
+          "skill_ids": [
+            "skill-59"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-38",
+          "text": "Piloted AI-assisted development and QA workflows using Claude and Cursor across a 20+ person engineering team in a regulatory-regulated environment, shifting both software and QA engineers to AI-native tooling and establishing the working patterns the team adopted going forward.",
+          "skill_ids": [
+            "skill-61"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-39",
+          "text": "Served as engineering lead for incident response across backend, DevOps, and release teams on Meridian Logistics's regulatory-regulated platform, owning technical investigation and cross-functional coordination to drive issues to resolution in an environment where platform failures carried direct regulatory and compliance risk.",
+          "skill_ids": [
+            "skill-62"
+          ],
+          "metric": "yes, but it wasnt so straightforward. Some could be resolved immediately following discovery, others would need work entered into the SDLC flow",
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-40",
+          "text": "As indicated by my resume and background, I built the engineering teams from just me to over 20 people.",
+          "skill_ids": [
+            "skill-65"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-41",
+          "text": "Took on scrum and release management across 4 engineering teams as an expansion of engineering leadership responsibilities, partnering with product and stakeholders to translate business priorities into standardized sprint and epic planning and a bi-weekly release cadence, with delivery spanning regulated milestones including regulatory the platform approval, custody launch, ETH custody, and clearing and settlement approval.",
+          "skill_ids": [
+            "skill-72"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-42",
+          "text": "the database architecture was on postgres",
+          "skill_ids": [
+            "skill-74"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-43",
+          "text": "The team used claude for the AI pilot",
+          "skill_ids": [
+            "skill-75"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-44",
+          "text": "see related notes about team building",
+          "skill_ids": [
+            "skill-76"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-45",
+          "text": "Built the backend framework and database architecture, in TypeScript and PostgreSQL, that Meridian Logistics's platform is built on today, defining the foundational schemas and engineering standards as the founding engineer before the team grew to 20+ people.",
+          "skill_ids": [
+            "skill-77"
+          ],
+          "metric": "that cant be relevant. i could say 12 schemas for thr project but it was always active and evolving",
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-46",
+          "text": "Joined Meridian Logistics as the founding engineer.",
+          "skill_ids": [
+            "skill-78"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-47",
+          "text": "Built containerized applications and automation tooling for deployment and operational workflows.",
+          "skill_ids": [
+            "skill-81"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-48",
+          "text": "Designed the TypeScript microservice backend framework and PostgreSQL database schemas that Meridian Logistics's platform is built on today, containerizing services with Docker and building GitHub Actions CI/CD pipelines to satisfy regulatory auditability and compliance requirements, and wrote the engineering standards and code review processes from scratch as the founding engineer, establishing the baseline all subsequent work was built on as the team scaled from a single engineer to 20+ people across backend, DevOps, and QA.",
+          "skill_ids": [
+            "skill-82"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-49",
+          "text": "Built automated workflows, tests, and deployments using GitHub Actions.",
+          "skill_ids": [
+            "skill-83"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-50",
+          "text": "Introduced tech debt cleanup as a standing part of every sprint, embedding it into the engineering standards and SDLC processes defined from the ground up as the founding engineer, keeping a codebase that grew from 1 to 20+ engineers stable across a regulatory-regulated environment where shortcuts carried real compliance risk.",
+          "skill_ids": [
+            "skill-85"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-51",
+          "text": "this should not have been flagged as missing since there is ample evidence in my profile",
+          "skill_ids": [
+            "skill-87"
+          ],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        }
+      ],
+      "skill_ids": [
+        "skill-2",
+        "skill-3",
+        "skill-1",
+        "skill-19",
+        "skill-16",
+        "skill-9",
+        "skill-6",
+        "skill-5",
+        "skill-4",
+        "skill-7",
+        "skill-8",
+        "skill-12",
+        "skill-26",
+        "skill-27",
+        "skill-28",
+        "skill-36",
+        "skill-37",
+        "skill-43",
+        "skill-44",
+        "skill-45",
+        "skill-59",
+        "skill-61",
+        "skill-62",
+        "skill-65",
+        "skill-72",
+        "skill-74",
+        "skill-75",
+        "skill-76",
+        "skill-77",
+        "skill-78",
+        "skill-81",
+        "skill-82",
+        "skill-83",
+        "skill-85",
+        "skill-87"
+      ],
+      "context": "One of the first regulatory-regulated digital asset platforms in the US. Led engineering organization spanning backend, frontend, QA, DevOps, and release management."
+    },
+    {
+      "id": "role-2",
+      "company": "Vantage Retail",
+      "title": "Director of Product Development",
+      "start": "2017-12",
+      "end": "2019-04",
+      "location": null,
+      "employment_type": "full_time",
+      "bullets": [
+        {
+          "id": "bullet-8",
+          "text": "Held a dual engineering and product role as an IC at Vantage Retail, defining product requirements with stakeholders and contributing to software architecture decisions alongside establishing the QA standards, CI/CD pipelines, and PR annotation practices that governed how the team designed, reviewed, and shipped code.",
+          "skill_ids": [
+            "skill-16",
+            "skill-9"
+          ],
+          "metric": null,
+          "theme": [
+            "product",
+            "architecture"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-9",
+          "text": "Introduced a 'PR annotation' practice requiring engineers to comment on their own code in GitHub with explanations of logic and intent, reducing bugs and tech debt by prompting a final self-review and speeding up peer reviews by giving reviewers richer context; tracked impact using Jira data on time from in-progress to code-complete.",
+          "skill_ids": [
+            "skill-8",
+            "skill-7"
+          ],
+          "metric": "20%",
+          "theme": [
+            "process improvement"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-10",
+          "text": "Built QA standards and testing protocols for the team, integrating Codecov coverage verification, CI/CD pipelines, and Xray scripts linked to Jira stories, and reaching 97% codebase test coverage.",
+          "skill_ids": [
+            "skill-8"
+          ],
+          "metric": "test coverage increased from roughly 50% to 100% as part of the peer review gates",
+          "theme": [
+            "quality"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-11",
+          "text": "Defined product requirements in collaboration with stakeholders, balancing customer needs, business objectives, and technical constraints",
+          "skill_ids": [
+            "skill-9"
+          ],
+          "metric": null,
+          "theme": [
+            "product"
+          ],
+          "strength": "medium",
+          "variants": []
+        }
+      ],
+      "skill_ids": [
+        "skill-16",
+        "skill-9",
+        "skill-8",
+        "skill-7"
+      ],
+      "context": null
+    },
+    {
+      "id": "role-3",
+      "company": "Harbor Reviews",
+      "title": "Software Engineer, Tooling/Automation Lead",
+      "start": "2015-08",
+      "end": "2017-12",
+      "location": null,
+      "employment_type": "full_time",
+      "bullets": [
+        {
+          "id": "bullet-12",
+          "text": "Led automation initiatives and built internal tooling to streamline developer onboarding and integration workflows",
+          "skill_ids": [
+            "skill-11"
+          ],
+          "metric": "before over 2 weeks, after - 3 days",
+          "theme": [
+            "tooling",
+            "automation"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-13",
+          "text": "Built Docker automation that reduced engineer onboarding time from several weeks to a few days",
+          "skill_ids": [
+            "skill-15",
+            "skill-9"
+          ],
+          "metric": null,
+          "theme": [
+            "integration",
+            "efficiency"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-14",
+          "text": "Built internal tooling and software solutions in JavaScript, React.js, HTML, and CSS within an Agile workflow, contributing to automation initiatives that cut engineer onboarding time from over two weeks to three days.",
+          "skill_ids": [
+            "skill-11",
+            "skill-14",
+            "skill-4",
+            "skill-21",
+            "skill-22"
+          ],
+          "metric": null,
+          "theme": [
+            "development"
+          ],
+          "strength": "medium",
+          "variants": []
+        }
+      ],
+      "skill_ids": [
+        "skill-11",
+        "skill-15",
+        "skill-9",
+        "skill-14",
+        "skill-4",
+        "skill-21",
+        "skill-22"
+      ],
+      "context": null
+    },
+    {
+      "id": "role-4",
+      "company": "Nimbus Freight",
+      "title": "Senior Software Engineer, Frontend/UX Lead",
+      "start": "2013-08",
+      "end": "2014-12",
+      "location": null,
+      "employment_type": "full_time",
+      "bullets": [
+        {
+          "id": "bullet-15",
+          "text": "Built the frontend media player and user platform in AngularJS, backed by a Node.js/Express API that handled cloud storage interactions for user media collections.",
+          "skill_ids": [
+            "skill-15",
+            "skill-14"
+          ],
+          "metric": null,
+          "theme": [
+            "frontend",
+            "api"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-16",
+          "text": "Built the frontend media player and user platform in AngularJS, styled with LessCSS and bundled with Grunt, backed by a Node.js/Express API that handled cloud storage interactions for user media collections.",
+          "skill_ids": [
+            "skill-13",
+            "skill-20",
+            "skill-23",
+            "skill-24"
+          ],
+          "metric": null,
+          "theme": [
+            "development"
+          ],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-29",
+          "text": "I built the frontend media player and user platform with angularjs, powered by nodejs and expressjs in the backend",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-30",
+          "text": "2, daily check-ins and code review flows",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-31",
+          "text": "I interacted with a cloud storage backend to interact and manage media the user collected on their cloud profile",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-32",
+          "text": "Migrated from a PHP backend to NodeJS/mean stack",
+          "skill_ids": [],
+          "metric": "it was a required migration, it wasnt driven by metrics",
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        }
+      ],
+      "skill_ids": [
+        "skill-15",
+        "skill-14",
+        "skill-13",
+        "skill-20",
+        "skill-23",
+        "skill-24"
+      ],
+      "context": null
+    },
+    {
+      "id": "role-5",
+      "company": "Beacon Labs",
+      "title": "Senior Software Engineer",
+      "start": "2012-08",
+      "end": "2013-08",
+      "location": null,
+      "employment_type": "full_time",
+      "bullets": [
+        {
+          "id": "bullet-17",
+          "text": "Built custom client applications, including accounting and reservation software, in PHP and AngularJS, running weekly stakeholder check-ins and tracking work velocity in Pivotal Tracker to keep requirements, timelines, and delivery goals aligned across the full delivery cycle.",
+          "skill_ids": [
+            "skill-9"
+          ],
+          "metric": null,
+          "theme": [
+            "client services"
+          ],
+          "strength": "low",
+          "variants": []
+        },
+        {
+          "id": "bullet-18",
+          "text": "Built custom client applications, including accounting and reservation software, using PHP and AngularJS as the primary technologies throughout the full delivery cycle.",
+          "skill_ids": [
+            "skill-25",
+            "skill-20"
+          ],
+          "metric": null,
+          "theme": [
+            "development"
+          ],
+          "strength": "low",
+          "variants": []
+        },
+        {
+          "id": "bullet-33",
+          "text": "we had weekly check in calls with customers, used Pivotal Tracker to maintain and track work velocity",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        },
+        {
+          "id": "bullet-34",
+          "text": "Managed end-to-end delivery of custom client applications, including accounting and reservation software, by running weekly check-in calls with stakeholders, defining requirements, and tracking work velocity in Pivotal Tracker to keep timelines and delivery goals on target.",
+          "skill_ids": [],
+          "metric": null,
+          "theme": [],
+          "strength": "medium",
+          "variants": []
+        }
+      ],
+      "skill_ids": [
+        "skill-9",
+        "skill-25",
+        "skill-20"
+      ],
+      "context": null
+    }
+  ],
+  "education": [],
+  "skills": {
+    "skills": [
+      {
+        "id": "skill-1",
+        "canonical_name": "Engineering management",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "expert",
+        "years": 7.0,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-2",
+        "canonical_name": "Team leadership and mentorship",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "expert",
+        "years": 7.0,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-3",
+        "canonical_name": "Talent acquisition and development",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "expert",
+        "years": 7.0,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-4",
+        "canonical_name": "Agile and Scrum methodologies",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          },
+          {
+            "type": "role",
+            "id": "role-3"
+          },
+          {
+            "type": "role",
+            "id": "role-2"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-5",
+        "canonical_name": "Sprint planning and backlog refinement",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-6",
+        "canonical_name": "Release management",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "expert",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-7",
+        "canonical_name": "Continuous integration and delivery",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          },
+          {
+            "type": "role",
+            "id": "role-2"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-8",
+        "canonical_name": "Software development lifecycle",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          },
+          {
+            "type": "role",
+            "id": "role-2"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-9",
+        "canonical_name": "Cross-functional collaboration",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          },
+          {
+            "type": "role",
+            "id": "role-2"
+          },
+          {
+            "type": "role",
+            "id": "role-3"
+          },
+          {
+            "type": "role",
+            "id": "role-5"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-10",
+        "canonical_name": "OKRs and engineering metrics",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-11",
+        "canonical_name": "JavaScript",
+        "aliases": [],
+        "category": "language",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2017-12",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-3"
+          },
+          {
+            "type": "role",
+            "id": "role-4"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-12",
+        "canonical_name": "TypeScript",
+        "aliases": [],
+        "category": "language",
+        "proficiency": "working",
+        "years": 9.0,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T02:22:06.282458660Z"
+      },
+      {
+        "id": "skill-13",
+        "canonical_name": "Node.js development",
+        "aliases": [],
+        "category": "framework",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-4"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-14",
+        "canonical_name": "React framework",
+        "aliases": [],
+        "category": "framework",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2017-12",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-3"
+          },
+          {
+            "type": "role",
+            "id": "role-4"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-15",
+        "canonical_name": "GraphQL API design",
+        "aliases": [],
+        "category": "tool",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2017-12",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-3"
+          },
+          {
+            "type": "role",
+            "id": "role-4"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-16",
+        "canonical_name": "Software architecture design",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "expert",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          },
+          {
+            "type": "role",
+            "id": "role-2"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-17",
+        "canonical_name": "System architecture principles",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "proficient",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-18",
+        "canonical_name": "Cloud infrastructure management",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-19",
+        "canonical_name": "Regulatory compliance oversight",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "expert",
+        "years": 7.0,
+        "last_used": "2026-05",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-20",
+        "canonical_name": "AngularJS",
+        "aliases": [],
+        "category": "framework",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2013-08",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-4"
+          },
+          {
+            "type": "role",
+            "id": "role-5"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-21",
+        "canonical_name": "HTML",
+        "aliases": [],
+        "category": "language",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2017-12",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-3"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-22",
+        "canonical_name": "CSS",
+        "aliases": [],
+        "category": "language",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2017-12",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-3"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-23",
+        "canonical_name": "LessCSS",
+        "aliases": [],
+        "category": "tool",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2017-12",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-4"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-24",
+        "canonical_name": "Grunt",
+        "aliases": [],
+        "category": "tool",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2017-12",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-4"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-25",
+        "canonical_name": "PHP",
+        "aliases": [],
+        "category": "language",
+        "proficiency": "working",
+        "years": null,
+        "last_used": "2013-08",
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-5"
+          }
+        ],
+        "verified": false,
+        "verified_at": null
+      },
+      {
+        "id": "skill-26",
+        "canonical_name": "Data Engineering",
+        "aliases": [],
+        "category": "hard",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T03:09:08.442034603Z"
+      },
+      {
+        "id": "skill-27",
+        "canonical_name": "Remote-First Communication",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T03:13:00.812496597Z"
+      },
+      {
+        "id": "skill-28",
+        "canonical_name": "AI-Powered Product Development",
+        "aliases": [],
+        "category": "hard",
+        "proficiency": "working",
+        "years": 2.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T03:14:17.735373391Z"
+      },
+      {
+        "id": "skill-29",
+        "canonical_name": "AI Engineering Workflows",
+        "aliases": [],
+        "category": "tool",
+        "proficiency": "working",
+        "years": 2.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T03:14:37.792908994Z"
+      },
+      {
+        "id": "skill-35",
+        "canonical_name": "operational excellence",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T17:50:05.199028684Z"
+      },
+      {
+        "id": "skill-36",
+        "canonical_name": "backend engineering",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T17:50:32.372614825Z"
+      },
+      {
+        "id": "skill-37",
+        "canonical_name": "SOC 2 Type 2",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 4.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T17:52:33.634368319Z"
+      },
+      {
+        "id": "skill-38",
+        "canonical_name": "team management",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T17:52:38.873444559Z"
+      },
+      {
+        "id": "skill-39",
+        "canonical_name": "people manager",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T17:52:45.508765335Z"
+      },
+      {
+        "id": "skill-40",
+        "canonical_name": "technical leadership",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T17:52:49.267883385Z"
+      },
+      {
+        "id": "skill-42",
+        "canonical_name": "compliance-bound environments",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T17:53:08.187623283Z"
+      },
+      {
+        "id": "skill-43",
+        "canonical_name": "engineering excellence",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T18:42:47.286164518Z"
+      },
+      {
+        "id": "skill-44",
+        "canonical_name": "NYC Location",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-13T23:27:24.322709252Z"
+      },
+      {
+        "id": "skill-45",
+        "canonical_name": "engineering leadership experience",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T14:52:56.405035241Z"
+      },
+      {
+        "id": "skill-46",
+        "canonical_name": "managing senior technical leaders",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T14:53:21.542814459Z"
+      },
+      {
+        "id": "skill-47",
+        "canonical_name": "translate ambiguous business requirements into clear technical strategies",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T14:53:39.147885051Z"
+      },
+      {
+        "id": "skill-48",
+        "canonical_name": "internal platforms",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T14:53:49.514028135Z"
+      },
+      {
+        "id": "skill-49",
+        "canonical_name": "automation or AI-driven workflows",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 1.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T14:53:59.533126739Z"
+      },
+      {
+        "id": "skill-50",
+        "canonical_name": "high-performing teams",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T14:54:25.640547990Z"
+      },
+      {
+        "id": "skill-51",
+        "canonical_name": "organizational design and leadership development",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T14:54:36.524424397Z"
+      },
+      {
+        "id": "skill-52",
+        "canonical_name": "AI-first engineering",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 1.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T16:50:02.416265607Z"
+      },
+      {
+        "id": "skill-53",
+        "canonical_name": "AI tooling",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 1.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T16:50:12.817174491Z"
+      },
+      {
+        "id": "skill-54",
+        "canonical_name": "lean team",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T16:52:40.701838779Z"
+      },
+      {
+        "id": "skill-55",
+        "canonical_name": "product-driven company",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T16:52:49.070557395Z"
+      },
+      {
+        "id": "skill-56",
+        "canonical_name": "Series A startup",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T16:52:56.305835244Z"
+      },
+      {
+        "id": "skill-57",
+        "canonical_name": "high-performance engineering standards",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T16:53:16.227686471Z"
+      },
+      {
+        "id": "skill-58",
+        "canonical_name": "data correctness",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T16:53:47.280871107Z"
+      },
+      {
+        "id": "skill-59",
+        "canonical_name": "Business Applications",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T17:14:50.607724606Z"
+      },
+      {
+        "id": "skill-60",
+        "canonical_name": "systems of record",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T17:15:04.679087183Z"
+      },
+      {
+        "id": "skill-61",
+        "canonical_name": "AI-assisted workflows",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-16T17:15:53.271862848Z"
+      },
+      {
+        "id": "skill-62",
+        "canonical_name": "Incident management",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "working",
+        "years": 4.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:38:04.867568722Z"
+      },
+      {
+        "id": "skill-63",
+        "canonical_name": "engineering leadership roles",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:38:14.451735867Z"
+      },
+      {
+        "id": "skill-64",
+        "canonical_name": "software engineering",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:38:27.098179533Z"
+      },
+      {
+        "id": "skill-65",
+        "canonical_name": "team recruitment and development",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:39:21.192703011Z"
+      },
+      {
+        "id": "skill-66",
+        "canonical_name": "roadmap and execution",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:39:31.228023250Z"
+      },
+      {
+        "id": "skill-67",
+        "canonical_name": "team growth",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:39:39.359704194Z"
+      },
+      {
+        "id": "skill-68",
+        "canonical_name": "professional growth",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:39:43.898036804Z"
+      },
+      {
+        "id": "skill-69",
+        "canonical_name": "team engagement",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-17T08:39:47.647124678Z"
+      },
+      {
+        "id": "skill-70",
+        "canonical_name": "multi-team engineering organization",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-18T11:16:28.354012682Z"
+      },
+      {
+        "id": "skill-71",
+        "canonical_name": "platform modernization",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-18T11:17:33.711721789Z"
+      },
+      {
+        "id": "skill-72",
+        "canonical_name": "roadmap and delivery",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-18T11:18:47.359775104Z"
+      },
+      {
+        "id": "skill-73",
+        "canonical_name": "AI-augmented engineering practices",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-18T11:19:02.177600763Z"
+      },
+      {
+        "id": "skill-74",
+        "canonical_name": "PostgreSQL",
+        "aliases": [],
+        "category": "tool",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T10:17:40.415167212Z"
+      },
+      {
+        "id": "skill-75",
+        "canonical_name": "Cursor/Anthropic Claude",
+        "aliases": [],
+        "category": "tool",
+        "proficiency": "working",
+        "years": 1.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T10:18:06.899593014Z"
+      },
+      {
+        "id": "skill-76",
+        "canonical_name": "engineering team building and scaling",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T10:18:24.325958810Z"
+      },
+      {
+        "id": "skill-77",
+        "canonical_name": "Typescript/Python",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 10.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T10:19:02.718017657Z"
+      },
+      {
+        "id": "skill-78",
+        "canonical_name": "Founder or founding engineer experience",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T18:38:46.622646672Z"
+      },
+      {
+        "id": "skill-79",
+        "canonical_name": "early-stage company",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T18:38:55.186149199Z"
+      },
+      {
+        "id": "skill-80",
+        "canonical_name": "founding team",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T18:38:59.270080374Z"
+      },
+      {
+        "id": "skill-81",
+        "canonical_name": "Docker",
+        "aliases": [],
+        "category": "tool",
+        "proficiency": "working",
+        "years": 12.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T19:09:59.623073683Z"
+      },
+      {
+        "id": "skill-82",
+        "canonical_name": "microservices architecture",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T19:10:49.853826508Z"
+      },
+      {
+        "id": "skill-83",
+        "canonical_name": "CI/CD",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T19:11:46.599281060Z"
+      },
+      {
+        "id": "skill-84",
+        "canonical_name": "platform architecture",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T19:11:52.648797993Z"
+      },
+      {
+        "id": "skill-85",
+        "canonical_name": "technical debt",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-19T19:12:31.954724615Z"
+      },
+      {
+        "id": "skill-86",
+        "canonical_name": "Director of Software Engineering",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-21T02:55:19.828797579Z"
+      },
+      {
+        "id": "skill-87",
+        "canonical_name": "Engineering team leadership and management",
+        "aliases": [],
+        "category": "soft",
+        "proficiency": "working",
+        "years": 7.0,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-21T14:46:28.778481128Z"
+      },
+      {
+        "id": "skill-88",
+        "canonical_name": "Software Engineering Manager",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-21T14:46:38.893752490Z"
+      },
+      {
+        "id": "skill-89",
+        "canonical_name": "LLM workloads",
+        "aliases": [],
+        "category": "domain",
+        "proficiency": "working",
+        "years": null,
+        "last_used": null,
+        "evidence": [
+          {
+            "type": "role",
+            "id": "role-1"
+          }
+        ],
+        "verified": true,
+        "verified_at": "2026-06-21T14:46:47.388811979Z"
+      }
+    ],
+    "aliases": {
+      "engineering team leadership and management": "skill-87",
+      "regulatory compliance oversight": "skill-19",
+      "technical debt": "skill-85",
+      "postgresql": "skill-74",
+      "engineering management": "skill-1",
+      "high-performance engineering standards": "skill-57",
+      "grunt": "skill-24",
+      "platform modernization": "skill-71",
+      "series a startup": "skill-56",
+      "docker": "skill-81",
+      "business applications": "skill-59",
+      "ci/cd": "skill-83",
+      "graphql api design": "skill-15",
+      "html": "skill-21",
+      "okrs and engineering metrics": "skill-10",
+      "lean team": "skill-54",
+      "professional growth": "skill-68",
+      "ai-augmented engineering practices": "skill-73",
+      "managing senior technical leaders": "skill-46",
+      "talent acquisition and development": "skill-3",
+      "automation or ai-driven workflows": "skill-49",
+      "ai tooling": "skill-53",
+      "nyc location": "skill-44",
+      "cursor/anthropic claude": "skill-75",
+      "sprint planning and backlog refinement": "skill-5",
+      "director of software engineering": "skill-86",
+      "technical leadership": "skill-40",
+      "roadmap and execution": "skill-66",
+      "typescript": "skill-12",
+      "multi-team engineering organization": "skill-70",
+      "javascript": "skill-11",
+      "founder or founding engineer experience": "skill-78",
+      "product-driven company": "skill-55",
+      "lesscss": "skill-23",
+      "css": "skill-22",
+      "software development lifecycle": "skill-8",
+      "cloud infrastructure management": "skill-18",
+      "data correctness": "skill-58",
+      "engineering team building and scaling": "skill-76",
+      "php": "skill-25",
+      "engineering leadership roles": "skill-63",
+      "roadmap and delivery": "skill-72",
+      "data engineering": "skill-26",
+      "systems of record": "skill-60",
+      "node.js development": "skill-13",
+      "translate ambiguous business requirements into clear technical strategies": "skill-47",
+      "engineering leadership experience": "skill-45",
+      "software engineering manager": "skill-88",
+      "team leadership and mentorship": "skill-2",
+      "team growth": "skill-67",
+      "team management": "skill-38",
+      "software architecture design": "skill-16",
+      "backend engineering": "skill-36",
+      "ai-powered product development": "skill-28",
+      "llm workloads": "skill-89",
+      "engineering excellence": "skill-43",
+      "platform architecture": "skill-84",
+      "ai-first engineering": "skill-52",
+      "incident management": "skill-62",
+      "early-stage company": "skill-79",
+      "organizational design and leadership development": "skill-51",
+      "operational excellence": "skill-35",
+      "angularjs": "skill-20",
+      "soc 2 type 2": "skill-37",
+      "high-performing teams": "skill-50",
+      "internal platforms": "skill-48",
+      "ai engineering workflows": "skill-29",
+      "agile and scrum methodologies": "skill-4",
+      "compliance-bound environments": "skill-42",
+      "remote-first communication": "skill-27",
+      "react framework": "skill-14",
+      "system architecture principles": "skill-17",
+      "continuous integration and delivery": "skill-7",
+      "founding team": "skill-80",
+      "release management": "skill-6",
+      "team recruitment and development": "skill-65",
+      "team engagement": "skill-69",
+      "microservices architecture": "skill-82",
+      "people manager": "skill-39",
+      "ai-assisted workflows": "skill-61",
+      "typescript/python": "skill-77",
+      "cross-functional collaboration": "skill-9",
+      "software engineering": "skill-64"
+    }
+  },
+  "projects": [],
+  "certifications": [],
+  "achievements": [],
+  "publications": [],
+  "languages": [],
+  "voice_samples": [
+    {
+      "id": "sample-1",
+      "text": "Change management is about controlling how changes reach your production systems. Rather than letting engineers push updates whenever they want, you put a process in place: someone other than the author reviews the change, it gets tested somewhere safe before it touches live systems, and there’s a written record of what happened. An auditor reviewing this will pull a sample of changes from the audit period and check that each one followed the process. If a developer can quietly ship code to production without anyone signing off, that’s the kind of gap the audit is designed to catch.",
+      "captured_at": "2026-06-13T20:25:18.728646311Z",
+      "context": null
+    },
+    {
+      "id": "sample-3",
+      "text": "Least privilege follows similar logic but applies to who can get into what. The idea is that people should only have the access their role requires, and nothing more. A support agent doesn’t need the keys to the production database, and a former employee shouldn’t be able to log in at all. In practice this means avoiding shared accounts, removing access promptly when someone changes roles or leaves, and reviewing permissions on a regular schedule so they don’t quietly accumulate over time.",
+      "captured_at": "2026-06-13T20:40:57.063318658Z",
+      "context": null
+    },
+    {
+      "id": "sample-4",
+      "text": "These two areas tend to be where companies lose the most points, because both depend on discipline rather than technology. You can buy a tool that manages access, but the audit cares whether you actually revoked the right person’s login last quarter and whether someone genuinely reviewed that risky deployment. The controls are simple to describe and easy to let slip, which is exactly why auditors spend so much time on them.",
+      "captured_at": "2026-06-13T20:41:16.363536614Z",
+      "context": null
+    },
+    {
+      "id": "sample-5",
+      "text": "Engineering leadership lives or dies in the unglamorous moments. Anyone can look competent when a launch goes well and the dashboards are green, but the real test is how you show up on the bad days: the outage that drags past midnight, the project that quietly slipped two months, the talented engineer who’s clearly one frustrating sprint away from updating their resume. Morale isn’t built through pizza parties or motivational Slack messages. It’s built when people see that their manager takes the blame upward and passes the credit downward, protects focus time instead of stacking on meetings, and is honest when something isn’t working rather than papering over it with optimism. Teams can tell the difference between a leader who actually has their back and one who’s performing the role, and they’ll give their best work to the former every time.",
+      "captured_at": "2026-06-13T20:51:00.511403132Z",
+      "context": null
+    }
+  ],
+  "metadata": {
+    "created_at": "2026-06-12T20:52:49.033578550Z",
+    "updated_at": "2026-06-25T14:19:59.594979291Z",
+    "source_files": [
+      "/home/sam-rivera-dev/Briefcase/aarg/.docs/resume.txt"
+    ],
+    "declined_skills": [
+      "insurtech industry experience",
+      "insurtech",
+      "ai-powered products",
+      "saas environment",
+      "salesforce",
+      "business workflows platform",
+      "salesforce-centric solutions",
+      "business applications across multiple record systems",
+      "distributed systems",
+      "engineering organization",
+      "data pipelines",
+      "operational reliability",
+      "single family rental",
+      "business workflows",
+      "salesforce-centered",
+      "technical strategy",
+      "org design",
+      "internal systems",
+      "agentic marketing platform",
+      "product features",
+      "content generation",
+      "context management",
+      "campaign orchestration",
+      "hr tech and compensation systems",
+      "essentials platform",
+      "pay equity and pay analytics",
+      "b2b saas enterprise customers",
+      "ai-native operator",
+      "data hub",
+      "hr and compensation data",
+      "customer-facing engineering",
+      "multi-tenant data modeling",
+      "hris integrations",
+      "cross-functional partnership",
+      "healthcare experience",
+      "claims data experience",
+      "clinical data experience",
+      "python",
+      "temporal",
+      "data infrastructure",
+      "production with llms and agents",
+      "high-growth environments",
+      "player-coach",
+      "technical depth",
+      "production systems",
+      "healthcare data",
+      "application platform",
+      "intervention engine",
+      "ai-native",
+      "hipaa compliance",
+      "claims processing",
+      "prediction ml",
+      "kafka",
+      "production code",
+      "data platforms",
+      "ml infrastructure",
+      "therapy management",
+      "patient care",
+      "hipaa",
+      "cloud-native technologies",
+      "system modernization",
+      "kubernetes",
+      "infrastructure-as-code",
+      "edge infrastructure",
+      "cloudflare",
+      "platform & infrastructure",
+      "cloud-native saas infrastructure",
+      "containerization",
+      "edge platforms",
+      "developer productivity engineering",
+      "systems engineering",
+      "cross-functional stakeholders",
+      "global scale",
+      "infrastructure unification",
+      "go",
+      "rust",
+      "kubernetes ecosystem tooling",
+      "helm charts",
+      "kubernetes operators",
+      "sambastack platform",
+      "ai inference serving",
+      "generative ai platform",
+      "rdu (reconfigurable dataflow unit)",
+      "backend systems",
+      "python, go, or rust",
+      "cloud-native platforms",
+      "ai infrastructure",
+      "hands-on technical contributor",
+      "distributed data systems",
+      "billing systems design",
+      "cloud/saas metering platforms",
+      "flink",
+      "spark",
+      "apache beam",
+      "meter-to-cash platforms",
+      "gpu infrastructure",
+      "billing pipeline",
+      "metering pipelines",
+      "meter-to-cash",
+      "idempotency",
+      "auditability",
+      "stream/batch processing",
+      "cloud/saas metering",
+      "sox compliance",
+      "financial-controls environments",
+      "gpu infrastructure consumption models"
+    ],
+    "dismissed_objections": [
+      {
+        "target": "bullet:bullet-1",
+        "kind": "unsupported_claim"
+      },
+      {
+        "target": "bullet:bullet-21",
+        "kind": "no_metric"
+      },
+      {
+        "target": "bullet:bullet-8",
+        "kind": "generic_phrasing"
+      },
+      {
+        "target": "bullet:bullet-11",
+        "kind": "generic_phrasing"
+      },
+      {
+        "target": "summary",
+        "kind": "jd_mismatch"
+      },
+      {
+        "target": "bullet:bullet-38",
+        "kind": "no_metric"
+      },
+      {
+        "target": "bullet:bullet-1",
+        "kind": "generic_phrasing"
+      },
+      {
+        "target": "bullet:bullet-39",
+        "kind": "no_metric"
+      },
+      {
+        "target": "summary",
+        "kind": "generic_phrasing"
+      },
+      {
+        "target": "bullet:bullet-16",
+        "kind": "jd_mismatch"
+      },
+      {
+        "target": "overall",
+        "kind": "jd_mismatch"
+      },
+      {
+        "target": "bullet:bullet-27",
+        "kind": "other"
+      },
+      {
+        "target": "bullet:bullet-39",
+        "kind": "vague_verb"
+      },
+      {
+        "target": "bullet:bullet-32",
+        "kind": "no_metric"
+      },
+      {
+        "target": "bullet:bullet-34",
+        "kind": "other"
+      }
+    ]
+  }
+}

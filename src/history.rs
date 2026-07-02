@@ -60,11 +60,25 @@ fn combined(overall_score: f32, coverage: f32) -> f32 {
 }
 
 /// A one-line summary of one build, for `aarg history`.
+///
+/// `title`/`company` are kept as separate fields (rather than one pre-joined
+/// string) because the browser sidebar lays them out on their own lines; the
+/// CLI, which prints them joined, gets that back from [`BuildSummary::target`]
+/// below instead of duplicating the join logic at every call site.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuildSummary {
     pub id: String,
     pub created_at: String,
-    pub target: String,
+    pub title: String,
+    /// Empty when there's no company to show — the JD artifact was missing
+    /// and `title` fell back to the resume's own title/name (see
+    /// [`summarize`]). [`BuildSummary::target`] treats that case specially so
+    /// the CLI's printed line doesn't grow a trailing `" @ "`.
+    pub company: String,
+    /// The Typst template the build was rendered with (`meta.json`'s
+    /// `template` field) — not shown by the CLI today, but the browser
+    /// sidebar wants it alongside title/company.
+    pub template: String,
     pub model: String,
     pub score: f32,
     pub review_score: f32,
@@ -75,6 +89,22 @@ pub struct BuildSummary {
     /// The run was on a Claude plan, so its cost is covered by the flat fee
     /// and a dollar estimate would mislead.
     pub subscription: bool,
+}
+
+impl BuildSummary {
+    /// The `"title @ company"` form `aarg history` has always printed,
+    /// rejoined from the split fields so every existing CLI call site keeps
+    /// producing the same output. Falls back to the bare title when there's no
+    /// company (see the [`Self::company`] doc) — the one intentional
+    /// improvement over the old join, which printed a trailing `"title @ "`
+    /// when a JD carried an empty company.
+    pub fn target(&self) -> String {
+        if self.company.is_empty() {
+            self.title.clone()
+        } else {
+            format!("{} @ {}", self.title, self.company)
+        }
+    }
 }
 
 /// Every build with a complete-enough set of artifacts, newest first. A
@@ -131,19 +161,25 @@ fn summarize(dir: &Path, id: &str) -> Option<BuildSummary> {
     let resume: TailoredResume = read_json(dir, "canonical.json")?;
 
     // The JD it was tailored for, if its `jd.json` is still around; else
-    // fall back to the headline title or the candidate's name.
-    let target = match read_json::<JobRequirements>(dir, "jd.json") {
-        Some(jd) => format!("{} @ {}", jd.title, jd.company),
-        None => resume
-            .target_title
-            .clone()
-            .unwrap_or_else(|| resume.contact.full_name.clone()),
+    // fall back to the headline title or the candidate's name, with no
+    // company (there isn't one to show).
+    let (title, company) = match read_json::<JobRequirements>(dir, "jd.json") {
+        Some(jd) => (jd.title, jd.company),
+        None => (
+            resume
+                .target_title
+                .clone()
+                .unwrap_or_else(|| resume.contact.full_name.clone()),
+            String::new(),
+        ),
     };
 
     Some(BuildSummary {
         id: id.to_string(),
         created_at: meta.created_at.format("%Y-%m-%d %H:%M").to_string(),
-        target,
+        title,
+        company,
+        template: meta.template.clone(),
         model: meta.model,
         score: combined(report.overall_score, ats.coverage),
         review_score: report.overall_score,

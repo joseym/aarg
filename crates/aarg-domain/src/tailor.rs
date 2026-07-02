@@ -1063,12 +1063,24 @@ pub trait LoopObserver<E>: Send + Sync {
 
     /// A revision pass is about to address `objections` objection(s).
     fn revising(&self, iteration: usize, objections: usize) {}
-    /// The revision's draft returned from the model.
-    fn revision_drafted(&self, iteration: usize) {}
+    /// The revision's draft returned from the model, carrying the tokens that
+    /// draft call spent. The live-cost ticker streams *every* loop call, not
+    /// just the review ones, so this hook hands over the revision draft's usage
+    /// (the same `usage` `run_loop` folds into its running total) for a host
+    /// that meters spend as it happens.
+    fn revision_drafted(&self, iteration: usize, usage: &TokenUsage) {}
     /// The revision was scored.
     fn evaluated(&self, iteration: usize, eval: &Evaluation<E>) {}
     /// A revision failed the score-must-improve gate; the loop stops.
     fn no_improvement(&self) {}
+
+    /// Whether the loop may start another revision pass. Checked at the top of
+    /// each iteration, so a `false` stops *between* passes — the in-flight pass
+    /// always completes and the best draft seen is still returned. Default
+    /// `true`: an observer that never cancels changes nothing.
+    fn should_continue(&self) -> bool {
+        true
+    }
 }
 
 /// What the loop returns: the best draft it saw (never merely the last), and
@@ -1130,6 +1142,11 @@ where
     let mut usage = TokenUsage::default();
 
     for iteration in 1..=limits.revisions {
+        // A host-requested stop (e.g. the browser's Stop button) ends the loop
+        // between passes; the best draft in hand is returned as usual.
+        if !observer.should_continue() {
+            break;
+        }
         // Stop early when the draft is good enough or has nothing major
         // left to fix — no point spending tokens polishing a strong draft.
         if best.score >= limits.acceptable_score || !best.report.has_blocking_or_major() {
@@ -1155,7 +1172,10 @@ where
             Some(RevisionContext { objections }),
         )
         .await?;
-        observer.revision_drafted(iteration);
+        // Stream the draft call's own tokens before folding them in, so the
+        // live-cost ticker sees the revision draft's spend and not only the
+        // review's. `usage` (the loop's running total) still gets every call.
+        observer.revision_drafted(iteration, &revised.usage);
         add_usage(&mut usage, revised.usage);
 
         let candidate = evaluator
@@ -2383,5 +2403,118 @@ mod tests {
 
         // The 0.8 draft is kept even though the last one scored 0.5.
         assert!((out.best.score - 0.8).abs() < f32::EPSILON);
+    }
+
+    /// A host that asks to stop once it has seen a single scored draft: its
+    /// first `should_continue` (before any pass) is `true`, then after the
+    /// first `evaluated` call it flips to `false`, so the loop stops between
+    /// passes. Counts `evaluated` calls with an `AtomicUsize` so the flip is
+    /// tied to real loop progress, not a call count guessed in advance.
+    struct CancellingObserver {
+        evaluations: std::sync::atomic::AtomicUsize,
+    }
+    impl LoopObserver<()> for CancellingObserver {
+        fn objection_line(&self, objection: &Objection) -> String {
+            objection.message.clone()
+        }
+        fn evaluated(&self, _iteration: usize, _eval: &Evaluation<()>) {
+            self.evaluations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn should_continue(&self) -> bool {
+            self.evaluations.load(std::sync::atomic::Ordering::Relaxed) == 0
+        }
+    }
+
+    #[tokio::test]
+    async fn a_host_stop_ends_the_loop_between_passes_and_returns_the_best() {
+        let mock = MockLlmClient::default();
+        let resume = initial_resume(&mock).await;
+        // One revision draft is all the loop should ask for before the stop.
+        mock.enqueue(VALID_REPLY);
+        // Scores keep improving, and the cap allows three passes — so only the
+        // host stop can halt the loop.
+        let evaluator = ScriptedEvaluator::new([0.6, 0.7, 0.8]);
+        let observer = CancellingObserver {
+            evaluations: std::sync::atomic::AtomicUsize::new(0),
+        };
+
+        let out = run_loop(
+            &test_ctx(&mock),
+            &evaluator,
+            &observer,
+            LoopLimits {
+                revisions: 3,
+                acceptable_score: 0.99,
+            },
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &sample_dataset(),
+            &sample_gap(),
+            eval_with(0.4, resume),
+        )
+        .await
+        .unwrap();
+
+        // Exactly one revision pass ran (initial tailor + one revision = two
+        // model calls); the stop was honored between passes, not mid-pass.
+        assert_eq!(mock.requests().len(), 2);
+        // The best draft seen (the one scored revision, 0.6) is returned, not
+        // the untouched starting draft.
+        assert!((out.best.score - 0.6).abs() < f32::EPSILON);
+    }
+
+    /// Records the usage each `revision_drafted` hook delivers, so the test
+    /// below can confirm the loop streams every revision draft's tokens (not
+    /// only the review calls) — the live-cost ticker's completeness (L3).
+    struct UsageRecordingObserver {
+        drafts: Mutex<Vec<TokenUsage>>,
+    }
+    impl LoopObserver<()> for UsageRecordingObserver {
+        fn objection_line(&self, objection: &Objection) -> String {
+            objection.message.clone()
+        }
+        fn revision_drafted(&self, _iteration: usize, usage: &TokenUsage) {
+            self.drafts.lock().unwrap().push(*usage);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_loop_streams_each_revision_drafts_usage_to_the_observer() {
+        let mock = MockLlmClient::default();
+        let resume = initial_resume(&mock).await;
+        mock.enqueue(VALID_REPLY); // exactly one revision draft (cap of 1)
+        let evaluator = ScriptedEvaluator::new([0.6]);
+        let observer = UsageRecordingObserver {
+            drafts: Mutex::new(Vec::new()),
+        };
+
+        let out = run_loop(
+            &test_ctx(&mock),
+            &evaluator,
+            &observer,
+            LoopLimits {
+                revisions: 1,
+                acceptable_score: 0.99,
+            },
+            BuildId("001".into()),
+            JdId("x".into()),
+            &sample_jd(),
+            &sample_dataset(),
+            &sample_gap(),
+            eval_with(0.4, resume),
+        )
+        .await
+        .unwrap();
+
+        let drafts = observer.drafts.lock().unwrap();
+        // The one revision draft delivered its usage to the observer...
+        assert_eq!(drafts.len(), 1);
+        // ...carrying real tokens (the mock estimates a positive count), the
+        // same draft-call usage the loop folds into its running total — so a
+        // live-cost ticker that sums these arrives at the loop's own figure.
+        assert!(drafts[0].output_tokens > 0);
+        assert!(out.usage.output_tokens >= drafts[0].output_tokens);
     }
 }

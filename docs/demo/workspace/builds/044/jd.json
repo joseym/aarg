@@ -1,0 +1,120 @@
+{
+  "company": "Aperture Cloud",
+  "title": "Director of Engineering",
+  "seniority": "director",
+  "location": null,
+  "remote": "unspecified",
+  "domain_keywords": [
+    "distributed systems",
+    "microservices architecture",
+    "cloud-native technologies",
+    "platform architecture",
+    "developer experience",
+    "technical debt",
+    "system modernization"
+  ],
+  "required_skills": [
+    {
+      "name": "People Leadership",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "3+ years in a people leadership role",
+        "Lead senior engineers, fostering a culture of technical excellence"
+      ]
+    },
+    {
+      "name": "Distributed Systems Architecture",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Deep expertise of hands-on experience with distributed systems, microservices architecture, and cloud-native technologies",
+        "Drive architectural decisions for large-scale distributed systems"
+      ]
+    },
+    {
+      "name": "Microservices Architecture",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Deep expertise of hands-on experience with distributed systems, microservices architecture, and cloud-native technologies"
+      ]
+    },
+    {
+      "name": "Cloud-Native Technologies",
+      "category": "hard",
+      "importance": "critical",
+      "context_phrases": [
+        "Deep expertise of hands-on experience with distributed systems, microservices architecture, and cloud-native technologies"
+      ]
+    },
+    {
+      "name": "CI/CD",
+      "category": "tool",
+      "importance": "required",
+      "context_phrases": [
+        "Supporting active development workflows, including CI/CD integration and modern automation",
+        "Proficiency with modern development practices, CI/CD, and Docker technologies"
+      ]
+    },
+    {
+      "name": "Docker",
+      "category": "tool",
+      "importance": "required",
+      "context_phrases": [
+        "Proficiency with modern development practices, CI/CD, and Docker technologies"
+      ]
+    },
+    {
+      "name": "Strategic Leadership",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "strategic and experienced Director of Engineering",
+        "Define and execute technical strategy across multiple engineering teams"
+      ]
+    },
+    {
+      "name": "Technical Strategy",
+      "category": "soft",
+      "importance": "critical",
+      "context_phrases": [
+        "Define and execute technical strategy across multiple engineering teams, driving initiatives and supporting our platform's evolution"
+      ]
+    },
+    {
+      "name": "Programming (Go, Python, or Java)",
+      "category": "language",
+      "importance": "required",
+      "context_phrases": [
+        "Strong foundation in programming languages such as Go, Python, or Java"
+      ]
+    }
+  ],
+  "preferred_skills": [],
+  "responsibilities": [
+    "Treat the internal Platform as a product, prioritizing developer experience (DX) and adopting company-level standards and practices",
+    "Define and execute technical strategy across multiple engineering teams, driving initiatives and supporting platform evolution",
+    "Lead senior engineers, fostering a culture of technical excellence and continuous learning",
+    "Drive architectural decisions for large-scale distributed systems, focusing on scalability, reliability, and performance optimization",
+    "Improve platform's software development, system design, and operational excellence across the organization",
+    "Manage complex technical debt and guide system modernization efforts while maintaining platform stability",
+    "Establish Aperture Cloud's technical roadmap by building and maintaining strong relationships with essential technology partners and vendors"
+  ],
+  "ats_phrases": [
+    "Director of Engineering",
+    "distributed systems",
+    "microservices architecture",
+    "cloud-native technologies",
+    "CI/CD",
+    "Docker",
+    "developer experience",
+    "technical strategy",
+    "platform architecture",
+    "system modernization",
+    "operational excellence",
+    "technical debt"
+  ],
+  "raw_text": "2:04 🔋\n\n◇ theladders.com\n\n🔔 Rungs\n\n🔔\n\nFull Job Description\nThe Role\n\nAperture Cloud is seeking a strategic and experienced Director of Engineering to lead multiple critical engineering teams. This can be an exciting role for a strategic leader and an organization. We are looking for a strategic and experienced Director of Engineering will drive technical excellence across multiple teams while shaping the architectural vision of our platform with an emphasis on process, planning with hands-on technical guidance, ensuring our engineering organization delivers robust, scalable solutions that support Aperture Cloud's aggressive growth targets.\n\nWhat You Need to Succeed\n\n• Treat the internal Platform as a product, prioritizing developer experience (DX) and adopting company-level standards and practices\n\n• Define and execute technical strategy across multiple engineering teams, driving initiatives and supporting our platform's evolution\n\n• Lead senior engineers, fostering a culture of technical excellence and continuous learning\n\n• Drive architectural decisions for large-scale distributed systems, focusing on scalability, reliability, and performance optimization\n\n• Improve land platform's software development, system design, and operational excellence across the organization\n\n• Manage complex technical debt and guide system modernization efforts while maintaining platform stability\n\n• Establish Aperture Cloud's technical roadmap by building and maintaining strong relationships with essential technology partners and vendors\n\nWhat You Bring to the Table\nExperience\n\n• 12+ years of engineering experience with 3+ years in a people leadership role or managing complex initiatives\n\n• Proven track record of leading high-performing engineering teams\n\n• Deep expertise of hands-on experience with distributed systems, microservices architecture, and cloud-native technologies\n\n• Supporting active development workflows, including CI/CD integration and modern automation\n\n• Proficiency with modern development practices, CI/CD, and Docker technologies\n\n• Staff-level architectural knowledge with passion for driving solution-ready insights through technical discussions\n\n• Strong foundation in programming languages such as Go, Python, or Java\n\nWhat We Offer\n\n• Competitive base work and benefits (just what we can really offer you is a fantastic work environment powered by amazing talent)\n\n• Industry competitive compensation and equity plan\n\n• Flexible time off, sick days, and 13 paid holidays\n\n• Comprehensive medical coverage including health, Dental and Vision\n\n• Paid parental leave (plus fertility, adoption and other family planning benefits)\n\n• Commuter benefits (San Francisco & Chicago)\n\n• Monthly allowance for wellness, reading and access to GitHub Learning for continued development\n\n• Events and activities both team-based and company-wide that results, educate and celebrate\n\nThe US base salary range for this position in the United States is $276,000 - $270,000 USD per year. Our salary ranges are determined by role, level, and location. At Aperture Cloud, it is not typical for an individual to be hired at or near the top of the range for their role and compensation decisions are dependent on the facts and circumstances of each case.\n\nVisa Sponsorship is not available at this time.\n\nShow Less »\n\nMore Jobs at Aperture Cloud Systems, Inc\n\nTechnical Enablement, Senior Manager\nRemote, United States\nAperture Cloud\nEducation, Government & Non-Profit\n\n[unreadable] Manager [unreadable]\nKeep it up, to land your next interview",
+  "source_url": null
+}
