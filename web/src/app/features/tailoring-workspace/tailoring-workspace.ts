@@ -60,10 +60,42 @@ type ClaimState = 'ok' | 'checking' | 'flag';
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
     <div class="ctxbar">
-      <a class="btn btn-ghost" routerLink="/">← Back to builds</a>
       <div class="ctx">
+        <div class="bh-kicker"><span class="dot"></span> Tailor job · complete</div>
         <div class="ctx-job">{{ jobTitle() }}</div>
-        <div class="ctx-co">{{ jobCompany() }} · tailoring workspace</div>
+        <div class="bh-meta">
+          @if (jobCompany()) {
+            <span class="co">{{ jobCompany() }}</span>
+          }
+          @if (locationLine()) {
+            <span class="sep">·</span>
+            <span>{{ locationLine() }}</span>
+          }
+          @if (sourceUrl(); as url) {
+            <span class="sep">·</span>
+            <a class="bh-src" [href]="url" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />
+                <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />
+              </svg>
+              Source posting
+            </a>
+          } @else {
+            <span class="sep">·</span>
+            <span class="bh-src plain">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M4 3h11l5 5v13H4z" /><path d="M15 3v5h5" />
+              </svg>
+              Pasted description
+            </span>
+          }
+        </div>
+        <div class="ctx-status">
+          <span class="status-pill" [attr.data-status]="status()"><span class="sp-dot"></span>{{ status() }}</span>
+          @if (provenance(); as p) {
+            <span class="bh-prov">Generated {{ p.created }} · {{ p.model }} · {{ p.tokens }} tokens · {{ p.template }} template</span>
+          }
+        </div>
       </div>
       <div class="spacer"></div>
       <button class="btn" type="button" (click)="downloadPdf()" [disabled]="downloading()">
@@ -172,12 +204,25 @@ type ClaimState = 'ok' | 'checking' | 'flag';
   `,
   styles: `
     :host { display: block; }
-    .ctxbar { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
-    .ctx { display: flex; flex-direction: column; }
-    .ctx-job { font-family: var(--font-display); font-size: 15px; }
-    .ctx-co { color: var(--muted); font-size: 13px; }
+    .ctxbar { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+    .ctx { display: flex; flex-direction: column; min-width: 0; }
+    .ctx-job { font-family: var(--font-display); font-size: 22px; line-height: 1.15; margin-top: 4px; }
+    .bh-kicker { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); display: flex; align-items: center; gap: 10px; }
+    .bh-kicker .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+    .bh-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-top: 10px; color: var(--muted); font-size: 14.5px; }
+    .bh-meta .co { font-weight: 500; color: var(--fg); }
+    .bh-meta .sep { color: var(--border-ink); opacity: 0.4; }
+    .bh-src { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12.5px; color: var(--accent); text-decoration: none; }
+    .bh-src.plain { color: var(--muted); }
+    .bh-src svg { width: 12px; height: 12px; }
+    .ctx-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; }
+    .status-pill { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border); }
+    .status-pill .sp-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status-pill[data-status='Tailored'] { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 40%, transparent); background: var(--accent-soft); }
+    .status-pill[data-status='Exported'] { color: var(--success); border-color: color-mix(in oklch, var(--success) 35%, var(--border)); background: color-mix(in oklch, var(--success) 8%, transparent); }
+    .bh-prov { font-family: var(--font-mono); font-size: 11px; color: var(--faint); letter-spacing: 0.02em; }
     .spacer { flex: 1; }
-    .ctx-score { display: block; margin: 4px 0 26px; }
+    .ctx-score { display: block; margin: 12px 0 26px; }
 
     .btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 14px; font-weight: 500; color: inherit; cursor: pointer; text-decoration: none; }
     .btn:hover:not(:disabled) { border-color: var(--fg); }
@@ -266,6 +311,35 @@ export class TailoringWorkspace {
     () => this.jd()?.title ?? this.bundle()?.canonical?.target_title ?? 'Untitled build',
   );
   protected readonly jobCompany = computed(() => this.jd()?.company ?? '');
+
+  // Build provenance for the header — location, JD source, export status, and
+  // the generation stamp (moved here when the separate overview screen was
+  // collapsed into this one).
+  protected readonly locationLine = computed(() => {
+    const jd = this.jd();
+    if (!jd) return '';
+    if (jd.location) return jd.location;
+    if (jd.remote && jd.remote !== 'unspecified' && jd.remote !== 'onsite') {
+      return jd.remote === 'remote' ? 'Remote' : jd.remote;
+    }
+    return '';
+  });
+  protected readonly sourceUrl = computed(() => this.jd()?.source_url ?? null);
+  protected readonly status = computed<'Tailored' | 'Exported'>(() =>
+    (this.bundle()?.pdfs?.length ?? 0) > 0 ? 'Exported' : 'Tailored',
+  );
+  protected readonly provenance = computed(() => {
+    const meta = this.bundle()?.meta;
+    if (!meta) return null;
+    const tokens =
+      (meta.tailor_usage?.input_tokens ?? 0) + (meta.tailor_usage?.output_tokens ?? 0);
+    return {
+      created: formatStamp(meta.created_at),
+      model: meta.model,
+      tokens: tokens.toLocaleString(),
+      template: meta.template,
+    };
+  });
 
   // The preview renders a VariantPayload. Prefer the human variant, but most
   // builds are rendered ATS-only (no human_payload.json), so fall back to the
@@ -611,6 +685,21 @@ function errMessage(err: unknown): string {
   if (err instanceof HttpErrorResponse) return err.message;
   if (err instanceof Error) return err.message;
   return 'request failed';
+}
+
+const MONTHS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/** A build's `created_at` stamp as "Jun 25, 2026 · 09:43" (falls back to the
+ *  raw ISO string if it doesn't parse). */
+function formatStamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()} · ${hh}:${mm}`;
 }
 
 function findings(err: HttpErrorResponse): string {
