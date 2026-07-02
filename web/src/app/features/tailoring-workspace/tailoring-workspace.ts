@@ -889,6 +889,8 @@ export class TailoringWorkspace {
         }
         throw err;
       }
+      // A cancelled run is confirmed by the app-global notice BuildRunner fires
+      // after navigation (survives this component unmounting) — no local toast.
       await this.buildRunner.runAndSave(jd, dataset, 'Retailor');
     } catch (err) {
       this.showToast(errMessage(err));
