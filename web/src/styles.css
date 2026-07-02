@@ -1,0 +1,193 @@
+/* ══════════════════════════════════════════════════════════════════════
+   AARG design system — reconciled tokens + Tailwind v4 theme
+   ----------------------------------------------------------------------
+   Two prototype exports (index.html / tailoring.html) disagreed on a few
+   values; this file is the single reconciled source. See the note on each
+   block for which value won. Raw tokens live in :root (so the proto's
+   `var(--surface)` etc. keep working); they are mirrored into Tailwind's
+   `@theme` so utilities (`bg-surface`, `text-muted`, `rounded-lg`,
+   `font-display`, the status colors) resolve to the same values.
+   ══════════════════════════════════════════════════════════════════════ */
+
+@import 'tailwindcss';
+
+:root {
+  /* ── surfaces & ink (identical across both exports except surface-2 /
+        border-ink, where the fuller tailoring.html values win) ── */
+  --bg: oklch(96.5% 0.014 88); /* parchment page */
+  --surface: oklch(98.6% 0.008 88); /* raised card */
+  --surface-2: oklch(94.3% 0.017 84); /* inset / meter track (tailoring) */
+  --fg: oklch(27% 0.018 70); /* body ink */
+  --muted: oklch(50% 0.016 74);
+  --faint: oklch(63% 0.014 78);
+  --border: oklch(88% 0.016 84);
+  --border-ink: oklch(30% 0.02 60); /* frozen: tailoring.html value */
+
+  /* ── accent (indigo / blue-purple) ── */
+  --accent: oklch(47% 0.15 276);
+  --accent-2: oklch(55% 0.16 276); /* hover / lift */
+  --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+  --fg-soft: color-mix(in oklch, var(--fg) 5%, transparent);
+
+  /* ── one status trio: exact-match=green / semantic=amber / gap=red.
+        Named success/warn/danger; values are tailoring.html's ok/warn/bad
+        (the fuller set). ── */
+  --success: oklch(52% 0.11 150);
+  --warn: oklch(64% 0.12 74);
+  --danger: oklch(54% 0.16 29);
+  --success-bg: color-mix(in oklch, var(--success) 12%, transparent);
+  --warn-bg: color-mix(in oklch, var(--warn) 15%, transparent);
+  --danger-bg: color-mix(in oklch, var(--danger) 12%, transparent);
+
+  /* ── objection-type hues (always paired with a text label, never
+        color-only) ── */
+  --t-unsupported: var(--danger);
+  --t-metric: var(--accent);
+  --t-weak: var(--warn);
+  --t-skills: oklch(48% 0.06 250);
+  --t-layout: var(--faint);
+  --t-overall: var(--fg);
+
+  /* ── type families ── */
+  --font-display: 'Iowan Old Style', 'Palatino Linotype', 'Charter', Georgia,
+    'Times New Roman', serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui,
+    sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+
+  /* ── frozen radii (index.html's 8 / 12) ── */
+  --radius: 8px;
+  --radius-lg: 12px;
+
+  /* ── derived spacing scale (4px base; the exports had none) ── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+}
+
+/* Map the raw tokens into Tailwind's theme so utilities exist alongside the
+   `var(--x)` forms. Colors → `bg-*`/`text-*`/`border-*`; fonts → `font-*`;
+   radii → `rounded-*`; `--spacing` anchors the numeric scale to 4px so
+   `p-1`…`p-16` line up with `--space-*`. `inline` keeps the values as
+   references to the :root vars rather than snapshotting them. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-border-token: var(--border);
+  --color-border-ink: var(--border-ink);
+
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+
+  --color-t-unsupported: var(--t-unsupported);
+  --color-t-metric: var(--t-metric);
+  --color-t-weak: var(--t-weak);
+  --color-t-skills: var(--t-skills);
+  --color-t-layout: var(--t-layout);
+  --color-t-overall: var(--t-overall);
+
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-mono);
+
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius-lg);
+
+  --spacing: 4px;
+}
+
+/* ── motion: subtle entrances carried over from the export; disabled under
+      reduced-motion. Reusable as plain classes on any element. ── */
+@keyframes aarg-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes aarg-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes aarg-count-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.anim-up {
+  animation: aarg-fade-up 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.anim-fade {
+  animation: aarg-fade 0.3s ease both;
+}
+.anim-count {
+  animation: aarg-count-up 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-up,
+  .anim-fade,
+  .anim-count {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* ── base page ── */
+html,
+body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: 0;
+}

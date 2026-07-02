@@ -1,0 +1,9 @@
+<app-topbar (toggleNav)="navOpen.set(!navOpen())" />
+
+<div class="shell" [class.nav-open]="navOpen()">
+  <div class="nav-scrim" (click)="navOpen.set(false)"></div>
+  <app-sidebar [open]="navOpen()" (closeNav)="navOpen.set(false)" />
+  <main class="main">
+    <router-outlet />
+  </main>
+</div>
