@@ -63,6 +63,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 @Component({
   selector: 'app-tailoring-workspace',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(document:keydown)': 'onKeydown($event)' },
   imports: [RouterLink, ResumePreview, PdfPreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel],
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
@@ -212,7 +213,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                  destroyed) so its per-template render cache survives a mode
                  toggle instead of re-hitting Typst for an unchanged
                  payload/template. -->
-            @if (previewPayload(); as pp) {
+            @if (effectivePayload(); as pp) {
               @if (pixelSeen()) {
                 <app-pdf-preview
                   [class.hide]="previewMode() !== 'pixel'"
@@ -238,6 +239,16 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                   <span class="tag">HTML · editing</span>
                   <span>Live in-browser preview — edit any line. Facts stay identical to the</span>
                   <button class="btn btn-sm" type="button" (click)="previewMode.set('pixel')">pixel-perfect PDF</button>
+                  @if (editHistory().length > 0) {
+                    <button
+                      class="btn btn-sm"
+                      type="button"
+                      (click)="undoEdit()"
+                      [title]="'Undo last edit (' + editHistory().length + ' in history)'"
+                    >
+                      Undo ↩
+                    </button>
+                  }
                   @if (editCount() > 0) {
                     <button
                       class="btn btn-sm btn-record"
@@ -422,6 +433,12 @@ export class TailoringWorkspace {
    *  set of flagged lines changes (see the constructor effect). */
   private cycleIndex = 0;
   protected readonly edits = signal<Record<string, string>>({});
+  /** Session undo stack for local edits. Each entry captures the overlay's value
+   *  BEFORE the edit (`prev`): `null` means the key wasn't overlaid (the payload's
+   *  original text was showing), so undo removes the key; otherwise undo restores
+   *  `prev`. Capped at {@link EDIT_HISTORY_CAP}; cleared by {@link reset} and by the
+   *  layout swap that drops pending edits. */
+  protected readonly editHistory = signal<Array<{ key: string; prev: string | null; next: string }>>([]);
   /** Edit keys already recorded to the dataset this session. Kept IN `edits` (so
    *  the preview text persists rather than snapping back), but excluded from the
    *  pending `editCount` — re-editing a key re-pends it (see {@link onEdit}). */
@@ -492,6 +509,51 @@ export class TailoringWorkspace {
   protected readonly previewPayload = computed<VariantPayload | null>(
     () => this.refinedHuman() ?? this.bundle()?.human_payload ?? this.bundle()?.ats_payload ?? null,
   );
+
+  /** The preview payload with the user's local edits applied — the single object
+   *  fed to BOTH the pixel-perfect renderer and Download PDF, so what the preview
+   *  shows and what downloads are byte-identical.
+   *
+   *  When there are no edits it returns {@link previewPayload} UNCHANGED (same
+   *  reference), so the PDF preview's per-payload render cache stays warm. An edit
+   *  produces a fresh `structuredClone`; pdf-preview clears its cache on any
+   *  payload-reference change, so the edit re-renders through Typst for free.
+   *  Unresolvable keys are skipped silently (same tolerance as {@link recordLines}).
+   *
+   *  HONESTY: this applies the edit to the rendered projection ONLY — it does NOT
+   *  persist to the stored build (a Phase B adds that). The claim-check overlay
+   *  (provenance / "your own edit" pills) carries the never-fabricate story for
+   *  these local edits. */
+  protected readonly effectivePayload = computed<VariantPayload | null>(() => {
+    const base = this.previewPayload();
+    const edits = this.edits();
+    // No edits → SAME reference, so pdf-preview's render cache is untouched.
+    if (!base || Object.keys(edits).length === 0) return base;
+    const next = structuredClone(base) as VariantPayload;
+    for (const [key, text] of Object.entries(edits)) {
+      if (key === 'summary') {
+        next.summary = text;
+      } else if (key.startsWith('bullet:')) {
+        // bullet:<roleId>:<i> — role ids may contain colons, so split the index
+        // off the end (mirrors resolveBulletSourceId).
+        const rest = key.slice('bullet:'.length);
+        const lastColon = rest.lastIndexOf(':');
+        if (lastColon < 0) continue;
+        const roleId = rest.slice(0, lastColon);
+        const index = Number(rest.slice(lastColon + 1));
+        if (!Number.isInteger(index) || index < 0) continue;
+        const bullet = next.roles?.find((r) => r.id === roleId)?.bullets?.[index];
+        if (bullet) bullet.text = text; // unresolvable → skip silently
+      } else if (key.startsWith('skill:')) {
+        const index = Number(key.slice('skill:'.length));
+        if (!Number.isInteger(index) || index < 0) continue;
+        const skills = next.skills_section?.skills;
+        if (skills && index < skills.length) skills[index] = text;
+      }
+      // any other key shape → skipped silently
+    }
+    return next;
+  });
 
   /** The template names to offer for the CURRENT preview payload's variant —
    *  ATS names for an ATS payload, human names for a human one. Degrades
@@ -623,6 +685,7 @@ export class TailoringWorkspace {
     this.coverageReport.set(null);
     this.claimsFlagged.set(false);
     this.edits.set({});
+    this.editHistory.set([]);
     this.recordedKeys.set(new Set());
     this.accepted.set(new Set());
     this.refinedIds.set(new Set());
@@ -722,6 +785,17 @@ export class TailoringWorkspace {
 
   // ── free edit ────────────────────────────────────────────────────────
   protected onEdit(e: { key: string; text: string }): void {
+    const overlay = this.edits();
+    const had = Object.prototype.hasOwnProperty.call(overlay, e.key);
+    const prev = had ? overlay[e.key] : null;
+    // No-op re-blur of an already-overlaid line with identical text: nothing
+    // changed, so don't grow the undo stack or re-run the checks.
+    if (prev === e.text) return;
+    // Push the pre-edit overlay value onto the undo stack (capped).
+    this.editHistory.update((h) => {
+      const next = [...h, { key: e.key, prev, next: e.text }];
+      return next.length > EDIT_HISTORY_CAP ? next.slice(next.length - EDIT_HISTORY_CAP) : next;
+    });
     this.edits.update((m) => ({ ...m, [e.key]: e.text }));
     // A re-edit of an already-recorded line is pending again until re-recorded.
     this.recordedKeys.update((s) => withRemoved(s, e.key));
@@ -730,6 +804,49 @@ export class TailoringWorkspace {
     // rebuild an edited canonical so the core can re-check the changed line too.
     void this.recompute();
     this.showToast('Edit kept locally — not yet saved to your dataset.');
+  }
+
+  /** Undo the most recent local edit. If the key wasn't overlaid before the edit
+   *  (`prev === null`) the overlay entry is removed (the line reverts to the
+   *  payload's original text); otherwise it's restored to `prev`. A key that was
+   *  recorded to the dataset this session loses its recorded mark AND gets an
+   *  honest caveat — reverting the local overlay does NOT touch the dataset copy;
+   *  a dataset revert is a separate, deliberate act. Re-runs the deterministic
+   *  checks so provenance reflects the revert. */
+  protected undoEdit(): void {
+    const hist = this.editHistory();
+    if (hist.length === 0) return;
+    const last = hist[hist.length - 1];
+    this.editHistory.set(hist.slice(0, -1));
+    if (last.prev === null) {
+      this.edits.update((m) => {
+        const next = { ...m };
+        delete next[last.key];
+        return next;
+      });
+    } else {
+      this.edits.update((m) => ({ ...m, [last.key]: last.prev as string }));
+    }
+    if (this.recordedKeys().has(last.key)) {
+      this.recordedKeys.update((s) => withRemoved(s, last.key));
+      this.showToast('Reverted locally — the version recorded in your dataset is unchanged.');
+    } else {
+      this.showToast('Edit undone.');
+    }
+    void this.recompute();
+  }
+
+  /** Workspace-level undo shortcut. The browser's native undo owns text editing
+   *  while a contenteditable line is focused, so we only claim Cmd/Ctrl+Z when the
+   *  event target is NOT inside an editable line. */
+  protected onKeydown(event: KeyboardEvent): void {
+    const isUndo =
+      (event.metaKey || event.ctrlKey) && !event.shiftKey && (event.key === 'z' || event.key === 'Z');
+    if (!isUndo) return;
+    if ((event.target as HTMLElement | null)?.isContentEditable) return;
+    if (this.editHistory().length === 0) return;
+    event.preventDefault();
+    this.undoEdit();
   }
 
   /** Record the current free edits back into the dataset as evidence. Only the
@@ -967,8 +1084,10 @@ export class TailoringWorkspace {
         this.refinedHuman.set(result as VariantPayload);
         // `edits` is keyed by the OLD payload's positional `bullet:role:index`;
         // the new payload re-projects those positions, so a stale key could write
-        // an edit onto the wrong dataset bullet. Drop pending edits on the swap.
+        // an edit onto the wrong dataset bullet. Drop pending edits on the swap —
+        // and the undo stack too (its stale `prev` values would corrupt undo).
         this.edits.set({});
+        this.editHistory.set([]);
         this.recordedKeys.set(new Set());
         this.showToast('Layout refined — preview updated (not saved to this build). Unsaved edits were cleared by the layout change.');
         return;
@@ -1191,7 +1310,9 @@ export class TailoringWorkspace {
   protected downloadPdf(): void {
     const b = this.bundle();
     if (!b) return;
-    const payload = this.previewPayload();
+    // Download the edits-applied projection so the file matches the preview
+    // exactly (falls back to the un-edited payload when there are no edits).
+    const payload = this.effectivePayload();
     this.downloading.set(true);
     const done = () => this.downloading.set(false);
     if (payload) {
@@ -1265,6 +1386,10 @@ interface RefineResult {
   aborted?: boolean;
   message?: string;
 }
+
+/** Cap on the session undo stack — enough for a real editing session without
+ *  growing unbounded. */
+const EDIT_HISTORY_CAP = 50;
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
