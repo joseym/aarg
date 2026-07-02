@@ -338,6 +338,7 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::ListBuilds => routes::list_builds().await,
             ApiRoute::CreateBuild => routes::create_build(req).await,
             ApiRoute::Models => routes::models().await,
+            ApiRoute::Templates => routes::templates().await,
             ApiRoute::GetBuild(id) => routes::get_build(&id).await,
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
@@ -489,6 +490,7 @@ enum ApiRoute {
     ListBuilds,
     CreateBuild,
     Models,
+    Templates,
     GetBuild(String),
     GetBuildFile(String, String),
     FetchJd,
@@ -523,6 +525,7 @@ fn match_route(method: &Method, path: &str) -> Match {
             ("GET", ["builds"]) => Some(ApiRoute::ListBuilds),
             ("POST", ["builds"]) => Some(ApiRoute::CreateBuild),
             ("GET", ["models"]) => Some(ApiRoute::Models),
+            ("GET", ["templates"]) => Some(ApiRoute::Templates),
             ("GET", ["builds", id]) => Some(ApiRoute::GetBuild((*id).to_string())),
             ("GET", ["builds", id, "files", name]) => Some(ApiRoute::GetBuildFile(
                 (*id).to_string(),
@@ -710,6 +713,10 @@ mod tests {
             Match::Api(ApiRoute::CreateBuild)
         );
         assert_eq!(route("GET", "/api/models"), Match::Api(ApiRoute::Models));
+        assert_eq!(
+            route("GET", "/api/templates"),
+            Match::Api(ApiRoute::Templates)
+        );
         assert_eq!(
             route("GET", "/api/builds/041"),
             Match::Api(ApiRoute::GetBuild("041".into()))

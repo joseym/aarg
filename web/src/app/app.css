@@ -7,6 +7,21 @@
   display: grid;
   grid-template-columns: 288px 1fr;
   min-height: calc(100vh - 60px);
+  transition: grid-template-columns 0.25s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* Desktop-only sidebar collapse (see shell/sidebar for the toggle control).
+ * ≤1080px this is ignored entirely — the drawer always opens full-width. */
+@media (min-width: 1081px) {
+  .shell.collapsed {
+    grid-template-columns: 44px 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell {
+    transition: none;
+  }
 }
 
 .main {

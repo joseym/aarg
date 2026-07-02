@@ -96,6 +96,13 @@ export class ApiService {
     );
   }
 
+  /** `GET /api/templates` — the template names available per variant (the
+   *  built-ins plus any user human templates in the workspace), the exact set
+   *  `POST /api/render` will accept. Feeds the workspace's template picker. */
+  getTemplates(): Observable<{ ats: string[]; human: string[] }> {
+    return this.http.get<{ ats: string[]; human: string[] }>(`${this.base}/templates`);
+  }
+
   // ── job description ─────────────────────────────────────────────────
   /** `POST /api/fetch-jd` — fetch a cross-origin posting server-side, returning
    *  its extracted text. */
