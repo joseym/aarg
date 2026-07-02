@@ -95,6 +95,18 @@ together:
   claim-divergence guard, with an append-only edit log, history, and revert. A
   sticky pending-edits bar (with `Cmd`/`Ctrl+S`) keeps the save action in reach.
 
+<p align="center">
+  <img src="docs/screenshots/copilot.png" alt="A copilot question posed in a modal over the workspace, the browser mirror of the CLI's evidence interviews" width="820">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/pixel.png" alt="Pixel-perfect preview: the real Typst-rendered PDF shown under the fidelity toggle and template picker" width="380">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/edit-bar.png" alt="A line edited in the provenance-checked preview, with the sticky pending-edits bar offering save, undo, and record-as-evidence" width="820">
+</p>
+
 The honest architecture sentence: the whole domain pipeline is compiled to
 WebAssembly and runs in the page, and `aarg serve` is a small native companion
 that does only what a page can't: proxy one model completion through your
