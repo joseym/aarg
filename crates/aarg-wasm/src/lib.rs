@@ -1077,6 +1077,71 @@ pub async fn verify_skills_interactive(
     .map_err(throw)
 }
 
+/// Verify a **single** JD requirement the user clicked (the coverage map's
+/// per-row "Fill the gap" / "Strengthen"), rather than the whole-gap checklist
+/// [`verify_skills_interactive`] offers. Builds one `KeywordCandidate` for
+/// exactly `keyword` — its category taken from the JD skill of the same name so
+/// the evidence interview reads right — and re-offers it even if
+/// `unbacked_keywords` would have dropped it (already declined, or collapsed
+/// into a broader recorded skill): the user explicitly asked to fill *this*
+/// gap. Same `{dataset, verified, …}` shape as the batch export.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn verify_skill_interactive(
+    dataset_json: String,
+    jd_json: String,
+    keyword: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    let key = aarg_domain::keywords::keyword_key(&keyword);
+    let category = jd
+        .required_skills
+        .iter()
+        .chain(jd.preferred_skills.iter())
+        .find(|s| aarg_domain::keywords::keyword_key(&s.name) == key)
+        .map(|s| s.category)
+        .unwrap_or(aarg_domain::dataset::types::SkillCategory::Domain);
+    let candidate = aarg_domain::verify::KeywordCandidate {
+        name: keyword,
+        category,
+    };
+
+    let outcome = aarg_domain::verify::verify_keywords(
+        &mut dataset,
+        std::slice::from_ref(&candidate),
+        &user_handle,
+        Some(&ctx),
+    )
+    .await
+    .map_err(|e| throw(e.to_string()))?;
+
+    dump(&serde_json::json!({
+        "dataset": dataset,
+        "verified": outcome.verified,
+        "removed": outcome.removed,
+        "skipped": outcome.skipped,
+        "bullets_added": outcome.bullets_added,
+        "declined": outcome.declined,
+    }))
+    .map_err(throw)
+}
+
 /// Voice-anchored rewrite of a canonical draft (FR-3.6's autonomous half,
 /// `aarg_domain::voice::rewrite_to_voice`): flag every line that reads like
 /// generic AI prose (a cliché-deny-list hit, or a raw un-bullet-like line —

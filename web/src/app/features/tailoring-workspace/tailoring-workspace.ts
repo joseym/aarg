@@ -769,36 +769,36 @@ export class TailoringWorkspace {
     }
   }
 
-  /** The skill-verification session behind a coverage-map gap/semantic row: it
-   *  interviews for the JD's unbacked requirements (a checklist of "which of
-   *  these do you actually have?") and records the evidence you confirm. Not
-   *  tied to one objection, so it marks every open skills objection refined. */
-  private async runSkillsGap(): Promise<void> {
+  /** The skill-verification copilot behind a coverage-map row: it interviews
+   *  for the ONE requirement the user clicked (not the whole gap) — "do you have
+   *  this? then talk me through it" — and records the evidence you confirm. */
+  private async runSkillGap(name: string): Promise<void> {
     if (this.copilot.running()) {
       this.showToast('A copilot is already running — finish or dismiss it first.');
       return;
     }
     const ds = this.dataset();
     const jd = this.jd();
-    const gap = this.bundle()?.gap_report;
-    if (!ds || !jd || !gap) {
-      this.showToast('This build has no JD or gap report to verify against.');
+    if (!ds || !jd) {
+      this.showToast('This build has no JD to verify against.');
       return;
     }
     try {
       const result = await this.copilot.runWithUi('skills copilot', (): Promise<unknown> =>
-        this.wasm.verifySkills(ds, jd, gap),
+        this.wasm.verifySkill(ds, jd, name),
       );
       const r = (result ?? {}) as RefineResult;
       const summary = refineSummaryText('skills', r);
       if (!summary || !r.dataset) {
-        this.showToast('No changes recorded.');
+        this.showToast(`Nothing recorded for “${name}”.`);
         return;
       }
-      const skillsIds = this.objectionVMs()
-        .filter((o) => o.copilot === 'skills')
+      // Mark any open skills objection that names this requirement as refined.
+      const needle = name.toLowerCase();
+      const ids = this.objectionVMs()
+        .filter((o) => o.copilot === 'skills' && o.targetLabel.toLowerCase().includes(needle))
         .map((o) => o.id);
-      await this.persistEnrichedDataset(r.dataset, summary, skillsIds);
+      await this.persistEnrichedDataset(r.dataset, summary, ids);
     } catch (err) {
       this.showToast(errMessage(err));
     }
@@ -825,9 +825,9 @@ export class TailoringWorkspace {
       this.showToast(`“${e.name}” is already covered by your evidence.`);
       return;
     }
-    // A bare gap/semantic requirement → the skill-verification copilot records
-    // the evidence for the JD's unbacked skills (this one included).
-    void this.runSkillsGap();
+    // A bare gap/semantic requirement → verify exactly this one, scoped to what
+    // the user clicked (not the whole-gap checklist).
+    void this.runSkillGap(e.name);
   }
 
   /** Accept as intentional → append a `DismissedObjection` to the dataset and

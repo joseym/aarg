@@ -133,6 +133,14 @@ interface WasmExports {
     llm: StringCallback,
     user: StringCallback,
   ): Promise<string>;
+  verify_skill_interactive(
+    datasetJson: string,
+    jdJson: string,
+    keyword: string,
+    modelsJson: string,
+    llm: StringCallback,
+    user: StringCallback,
+  ): Promise<string>;
 }
 
 // ── payload shapes the compound exports return ──────────────────────────
@@ -487,6 +495,22 @@ export class WasmService {
         JSON.stringify(dataset),
         JSON.stringify(jd),
         JSON.stringify(gap),
+        this.modelsJson(),
+        this.llm,
+        (json) => this.userHandler(json),
+      ),
+    );
+  }
+
+  /** Verify a single JD requirement the user clicked (coverage-map row action),
+   *  scoped to just that keyword — see `verify_skill_interactive`. */
+  async verifySkill(dataset: ResumeDataset, jd: JobRequirements, keyword: string): Promise<unknown> {
+    const m = await this.load();
+    return JSON.parse(
+      await m.verify_skill_interactive(
+        JSON.stringify(dataset),
+        JSON.stringify(jd),
+        keyword,
         this.modelsJson(),
         this.llm,
         (json) => this.userHandler(json),
