@@ -349,6 +349,11 @@ pub(super) async fn get_build(id: &str) -> Resp {
         ("gap_report", "gap_report.json"),
         ("adversarial_report", "adversarial_report.json"),
         ("canonical", "canonical.json"),
+        // The rendered variant payloads: the browser preview shows the human
+        // one and re-renders it via POST /api/render, and both variants back
+        // the "same facts, different presentation" projection the UI relies on.
+        ("human_payload", "human_payload.json"),
+        ("ats_payload", "ats_payload.json"),
         ("ats_report", "ats_report.json"),
     ] {
         if let Some(value) = read_json_artifact(&dir.join(file)) {
