@@ -96,7 +96,7 @@ import type { LineStatus, PreviewLine, PreviewModel } from './workspace.model';
             (mousedown)="$event.preventDefault()"
             (click)="confirmLine()"
           >
-            This is true — record it as evidence
+            This is true: record it as evidence
           </button>
         }
       </div>

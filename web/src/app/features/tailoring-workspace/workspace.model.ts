@@ -18,6 +18,7 @@ import type {
 import type { LineLocation, LineProvenance, SourceRef, ProvenanceReport } from '../../models';
 import type { ResumeDataset } from '../../models';
 import type { VariantPayload } from '../../models';
+import { normalizeDashes } from '../../shared/normalize-dashes';
 
 // ── provenance ──────────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ export function provenanceCopy(
     case 'grounded':
       return { label: 'Closest match', text: resolveSource(line?.best_match?.source ?? null, dataset) };
     case 'unrecorded':
-      return { label: 'Needs review', text: 'not yet traced to your evidence — confirm before it lands' };
+      return { label: 'Needs review', text: 'not yet traced to your evidence: confirm before it lands' };
   }
 }
 
@@ -146,7 +147,7 @@ export function buildPreviewModel(
       id: r.id,
       title: r.title,
       company: r.company,
-      dates: `${r.start ?? ''}${r.end ? ' — ' + r.end : r.start ? ' — Present' : ''}`,
+      dates: `${r.start ?? ''}${r.end ? ' - ' + r.end : r.start ? ' - Present' : ''}`,
       bullets: r.bullets.map((b, i) => line(`bullet:${r.id}:${i}`, b.text)),
     })),
     skills: (payload.skills_section?.skills ?? []).map((s, i) => line(`skill:${i}`, s)),
@@ -298,8 +299,11 @@ export function buildObjectionVMs(
       typeLabel: TYPE_LABEL[type],
       targetLabel: targetLabel(o.target, dataset),
       flaggedText: flaggedText(o.target, payload, dataset),
-      message: o.message,
-      suggestion: o.suggestion,
+      // MODEL text reaching the view: normalize dashes at this render boundary
+      // (see shared/normalize-dashes.ts — the résumé payload is scrubbed
+      // upstream, but reviewer objection prose is not).
+      message: normalizeDashes(o.message),
+      suggestion: o.suggestion === null ? null : normalizeDashes(o.suggestion),
       severity: o.severity,
       copilot,
       runnable,

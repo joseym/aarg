@@ -12,6 +12,7 @@ import {
 
 import { WasmService } from '../services/wasm.service';
 import { ApiService } from '../services/api.service';
+import { normalizeDashes } from './normalize-dashes';
 
 // ── prompt envelopes the core's `user` callback hands us ────────────────────
 // These mirror the wasm bridge contract exactly: the core sends one of these as
@@ -52,10 +53,17 @@ export type Envelope =
 export type QuestionEnvelope = Exclude<Envelope, NotifyEnvelope>;
 
 /** A pending question: the parsed envelope plus the promise resolver the modal
- *  settles with a stringified answer. */
+ *  settles with a stringified answer.
+ *
+ *  `choices` carries the select/multi_select options as {display, value} pairs:
+ *  `display` is the dash-normalized text SHOWN to the user, `value` is the
+ *  ORIGINAL option string. The overlay renders `display` but answers with
+ *  `value`, because the wasm bridge matches the chosen option by exact string —
+ *  normalizing the answer would break the match. Empty for text/confirm. */
 export interface PendingQuestion {
   env: QuestionEnvelope;
   resolve: (answer: string) => void;
+  choices: { display: string; value: string }[];
 }
 
 /** A live progress event from `tailor_loop`. */
@@ -130,6 +138,7 @@ export class CopilotHost {
     }
 
     if (env.kind === 'notify') {
+      // MODEL text: normalized at the display boundary in showNotice.
       this.showNotice(env.message, 2500);
       // One-way: the return is ignored, so don't block.
       return Promise.resolve('{}');
@@ -143,7 +152,16 @@ export class CopilotHost {
       return Promise.resolve(skipAnswer(env.kind));
     }
 
-    return new Promise<string>((resolve) => this.question.set({ env, resolve }));
+    // MODEL text: the prompt is model-phrased and only ever DISPLAYED (never
+    // sent back), so normalize it in place. Options are also model-phrased, but
+    // the bridge matches the answer by exact string — so normalize only for
+    // display and keep the original as the answer value (see PendingQuestion).
+    env.prompt = normalizeDashes(env.prompt);
+    const choices =
+      env.kind === 'select' || env.kind === 'multi_select'
+        ? env.options.map((o) => ({ display: normalizeDashes(o), value: o }))
+        : [];
+    return new Promise<string>((resolve) => this.question.set({ env, resolve, choices }));
   }
 
   /**
@@ -159,7 +177,10 @@ export class CopilotHost {
   /** Set the notice signal and (re)arm its auto-clear. Shared by the public
    *  {@link notify} and the `ask` path's `{kind:"notify"}` envelopes. */
   private showNotice(message: string, ms: number): void {
-    this.notice.set(message);
+    // The single display point for notices (both `notify()` and the ask-path
+    // `{kind:"notify"}` envelope). Model-borne notices carry raw dashes, so
+    // normalize here (see shared/normalize-dashes).
+    this.notice.set(normalizeDashes(message));
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = setTimeout(() => this.notice.set(null), ms);
   }
@@ -210,6 +231,9 @@ export class CopilotHost {
     } catch {
       return;
     }
+    // MODEL text: the progress line is model-phrased; normalize it before it
+    // reaches the overlay (see shared/normalize-dashes).
+    if (ev.message) ev.message = normalizeDashes(ev.message);
     this.progress.update((list) => [...list, ev]);
 
     if (ev.usage) {
@@ -241,7 +265,7 @@ export class CopilotHost {
     // Refuse a concurrent run: two copilots sharing one modal would race for the
     // single pending-question slot (see `ask`). Callers catch and toast this.
     if (this.running()) {
-      throw new Error('A copilot is already running — finish or dismiss it first.');
+      throw new Error('A copilot is already running: finish or dismiss it first.');
     }
     this.running.set(label);
     this.cancellable.set(opts?.cancellable ?? false);
@@ -340,9 +364,9 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
         @switch (q.env.kind) {
           @case ('select') {
             <div class="opts">
-              @for (opt of q.env.options; track opt) {
-                <button class="opt" type="button" (click)="host.answerSelect(opt)">
-                  {{ opt }}
+              @for (c of q.choices; track c.value) {
+                <button class="opt" type="button" (click)="host.answerSelect(c.value)">
+                  {{ c.display }}
                 </button>
               }
             </div>
@@ -354,14 +378,14 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
           }
           @case ('multi_select') {
             <div class="opts">
-              @for (opt of q.env.options; track $index) {
+              @for (c of q.choices; track $index) {
                 <label class="check">
                   <input
                     type="checkbox"
                     [checked]="checked().has($index)"
                     (change)="toggle($index)"
                   />
-                  <span>{{ opt }}</span>
+                  <span>{{ c.display }}</span>
                 </label>
               }
             </div>
@@ -369,7 +393,7 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
               <button class="btn btn-ghost end" type="button" (click)="host.cancel()">
                 End session
               </button>
-              <button class="btn primary" type="button" (click)="submitMulti(q.env.options)">
+              <button class="btn primary" type="button" (click)="submitMulti(q.choices)">
                 Done
               </button>
             </div>
@@ -748,8 +772,10 @@ export class CopilotOverlay {
     });
   }
 
-  protected submitMulti(options: string[]): void {
-    const chosen = options.filter((_, i) => this.checked().has(i));
+  protected submitMulti(choices: { display: string; value: string }[]): void {
+    // Answer with the ORIGINAL option strings (`value`), never the normalized
+    // `display` — the bridge matches the chosen keywords by exact string.
+    const chosen = choices.filter((_, i) => this.checked().has(i)).map((c) => c.value);
     this.host.answerMulti(chosen);
   }
 

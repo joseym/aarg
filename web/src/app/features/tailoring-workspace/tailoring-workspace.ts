@@ -177,11 +177,11 @@ type ClaimState = 'ok' | 'checking' | 'flag';
               @if (infoOpen()) {
                 <div class="cc-tip" role="tooltip">
                   Each line is checked against your dataset:
-                  <b>verbatim</b> — copied from your evidence;
-                  <b>grounded</b> — closest recorded match;
-                  <b>your own edit</b> — you changed it. A flag means a line isn’t
+                  <b>verbatim</b>: copied from your evidence;
+                  <b>grounded</b>: closest recorded match;
+                  <b>your own edit</b>: you changed it. A flag means a line isn’t
                   yet traced and needs your confirmation.
-                  Click the badge to jump to a flagged line — confirm it as your
+                  Click the badge to jump to a flagged line: confirm it as your
                   own evidence, or edit it.
                 </div>
               }
@@ -253,7 +253,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                      this bar keeps only the mode concerns (fidelity + pixel link). -->
                 <div class="fidelity">
                   <span class="tag">HTML · editing</span>
-                  <span>Live in-browser preview — edit any line. Facts stay identical to the</span>
+                  <span>Live in-browser preview: edit any line. Facts stay identical to the</span>
                   <button class="btn btn-sm" type="button" (click)="previewMode.set('pixel')">pixel-perfect PDF</button>
                 </div>
               } @else {
@@ -893,7 +893,7 @@ export class TailoringWorkspace {
     }
     if (this.recordedKeys().has(last.key)) {
       this.recordedKeys.update((s) => withRemoved(s, last.key));
-      this.showToast('Reverted locally — the version recorded in your dataset is unchanged.');
+      this.showToast('Reverted locally: the version recorded in your dataset is unchanged.');
     } else {
       this.showToast('Edit undone.');
     }
@@ -970,8 +970,8 @@ export class TailoringWorkspace {
       if (!res.saved) {
         this.showToast(
           res.skippedSkills.length > 0
-            ? 'Only summary and bullet edits can be recorded yet — skill edits stay local.'
-            : 'Nothing to record — these edits don’t map to a dataset item.',
+            ? 'Only summary and bullet edits can be recorded yet: skill edits stay local.'
+            : 'Nothing to record: these edits don’t map to a dataset item.',
         );
         return;
       }
@@ -982,10 +982,10 @@ export class TailoringWorkspace {
 
       let msg =
         stillUnrecorded.length > 0
-          ? `Recorded, but ${plural(stillUnrecorded.length, 'line')} no longer trace to your evidence — review them.`
+          ? `Recorded, but ${plural(stillUnrecorded.length, 'line')} no longer trace to your evidence: review them.`
           : `Recorded ${plural(res.recorded.length, 'edit')} to your dataset.`;
       if (res.skippedSkills.length > 0) {
-        msg += ` ${plural(res.skippedSkills.length, 'skill edit')} skipped — skills aren’t recordable yet.`;
+        msg += ` ${plural(res.skippedSkills.length, 'skill edit')} skipped: skills aren’t recordable yet.`;
       }
       this.showToast(msg);
     } catch (err) {
@@ -1031,8 +1031,8 @@ export class TailoringWorkspace {
     if (targets.length === 0) {
       this.showToast(
         skippedSkills > 0
-          ? 'Only summary and bullet edits can be saved into a build — skill edits stay local.'
-          : 'Nothing to save — these edits don’t map to a build line.',
+          ? 'Only summary and bullet edits can be saved into a build: skill edits stay local.'
+          : 'Nothing to save: these edits don’t map to a build line.',
       );
       return;
     }
@@ -1045,9 +1045,9 @@ export class TailoringWorkspace {
           targets.map((t) => ({ target: t.target, text: t.text })),
         ),
       );
-      let msg = `Saved ${plural(res.saved, 'edit')} into build ${this.id()} — PDFs re-rendered.`;
+      let msg = `Saved ${plural(res.saved, 'edit')} into build ${this.id()}. PDFs re-rendered.`;
       if (skippedSkills > 0) {
-        msg += ` ${plural(skippedSkills, 'skill edit')} skipped — skills aren’t savable to a build.`;
+        msg += ` ${plural(skippedSkills, 'skill edit')} skipped: skills aren’t savable to a build.`;
       }
       this.showToast(msg);
       // Baked into the build now — drop the saved keys from the local overlay,
@@ -1100,7 +1100,7 @@ export class TailoringWorkspace {
       this.edits.set({});
       this.recordedKeys.set(new Set());
       this.editHistory.set([]);
-      this.showToast(`Reverted ${this.editTargetLabel(entry.target).toLowerCase()} — PDFs re-rendered.`);
+      this.showToast(`Reverted ${this.editTargetLabel(entry.target).toLowerCase()}. PDFs re-rendered.`);
       this.reloadBundle();
     } catch (err) {
       this.showToast(errMessage(err));
@@ -1159,12 +1159,12 @@ export class TailoringWorkspace {
       if (!res.saved) {
         this.showToast(
           res.skippedSkills.length > 0
-            ? 'Skill lines aren’t recordable yet — edit it in the preview instead.'
-            : 'Couldn’t record this line — it doesn’t map to a dataset item.',
+            ? 'Skill lines aren’t recordable yet: edit it in the preview instead.'
+            : 'Couldn’t record this line: it doesn’t map to a dataset item.',
         );
         return;
       }
-      this.showToast('Confirmed — recorded as your evidence.');
+      this.showToast('Confirmed: recorded as your evidence.');
     } catch (err) {
       this.showToast(this.saveErrorMessage(err));
     }
@@ -1282,12 +1282,12 @@ export class TailoringWorkspace {
     // Only one copilot at a time — a second would race the first for the shared
     // Q&A modal and hang it (see CopilotHost.ask). Refuse before we start.
     if (this.copilot.running()) {
-      this.showToast('A copilot is already running — finish or dismiss it first.');
+      this.showToast('A copilot is already running: finish or dismiss it first.');
       return;
     }
     const ds = this.dataset();
     if (!ds) {
-      this.showToast('Dataset unavailable — cannot run a copilot.');
+      this.showToast('Dataset unavailable: cannot run a copilot.');
       return;
     }
     // A single-objection report keeps the copilot's work surgical.
@@ -1338,7 +1338,7 @@ export class TailoringWorkspace {
         this.edits.set({});
         this.editHistory.set([]);
         this.recordedKeys.set(new Set());
-        this.showToast('Layout refined — preview updated (not saved to this build). Unsaved edits were cleared by the layout change.');
+        this.showToast('Layout refined: preview updated (not saved to this build). Unsaved edits were cleared by the layout change.');
         return;
       }
 
@@ -1382,11 +1382,11 @@ export class TailoringWorkspace {
       // markIds empty: kept the evidence, but the objection is NOT refined.
       await this.persistEnrichedDataset(
         r.dataset,
-        'Session ended — kept what you recorded so far.',
+        'Session ended: kept what you recorded so far.',
         [],
       );
     } else {
-      this.showToast('Session ended — nothing recorded.');
+      this.showToast('Session ended: nothing recorded.');
     }
   }
 
@@ -1421,7 +1421,7 @@ export class TailoringWorkspace {
    *  this? then talk me through it" — and records the evidence you confirm. */
   private async runSkillGap(name: string): Promise<void> {
     if (this.copilot.running()) {
-      this.showToast('A copilot is already running — finish or dismiss it first.');
+      this.showToast('A copilot is already running: finish or dismiss it first.');
       return;
     }
     const ds = this.dataset();
@@ -1492,7 +1492,7 @@ export class TailoringWorkspace {
   protected onAccept(o: ObjectionVM): void {
     const ds = this.dataset();
     if (!ds) {
-      this.showToast('Dataset unavailable — cannot persist this dismissal.');
+      this.showToast('Dataset unavailable: cannot persist this dismissal.');
       return;
     }
     // Persist the DOMAIN target string (`bullet:<id>`, `skills`, `summary`, …),
@@ -1507,7 +1507,7 @@ export class TailoringWorkspace {
         this.accepted.update((s) => withAdded(s, o.id));
         this.leftIds.update((s) => withRemoved(s, o.id));
         this.busy.set(null);
-        this.showToast('Accepted — the reviewer won’t raise this again.');
+        this.showToast('Accepted: the reviewer won’t raise this again.');
       },
       error: (err: unknown) => {
         this.busy.set(null);
@@ -1528,7 +1528,7 @@ export class TailoringWorkspace {
    *  dead spinner. */
   protected async retailor(): Promise<void> {
     if (this.copilot.running()) {
-      this.showToast('A copilot is already running — finish or dismiss it first.');
+      this.showToast('A copilot is already running: finish or dismiss it first.');
       return;
     }
     const jd = this.bundle()?.jd;
@@ -1656,7 +1656,7 @@ function refineOutcome(kind: CopilotKind, r: RefineResult): RefineOutcome | null
   switch (kind) {
     case 'strengthen':
       return r.changed
-        ? { summary: 'Recorded a stronger line as evidence — it lands on your next build.', recorded: true }
+        ? { summary: 'Recorded a stronger line as evidence: it lands on your next build.', recorded: true }
         : null;
     case 'summary':
       return r.changed ? { summary: 'Updated summary saved to your dataset.', recorded: true } : null;
@@ -1677,7 +1677,7 @@ function refineOutcome(kind: CopilotKind, r: RefineResult): RefineOutcome | null
       if (!recorded) {
         return declined > 0
           ? {
-              summary: `Noted — ${plural(declined, 'keyword')} declined; they won’t be offered again.`,
+              summary: `Noted: ${plural(declined, 'keyword')} declined; they won’t be offered again.`,
               recorded: false,
             }
           : null;

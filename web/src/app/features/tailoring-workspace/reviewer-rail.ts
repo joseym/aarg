@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, computed, input, output, signal } f
 import type { AdversarialReport } from '../../models';
 import type { ObjectionVM, TriageStatus } from './workspace.model';
 import { band, pct } from './workspace.model';
+import { normalizeDashes } from '../../shared/normalize-dashes';
 
 type StatusFilter = 'open' | 'accepted' | 'refined' | 'left';
 type TypeFilter = ObjectionVM['type'];
@@ -15,7 +16,6 @@ type TypeFilter = ObjectionVM['type'];
   selector: 'app-reviewer-rail',
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    @let rep = report();
     <div class="verdict" [style.borderLeftColor]="'var(--' + verdictToken() + ')'">
       <div class="vhead">
         <div class="vtitle">Reviewer verdict</div>
@@ -24,7 +24,7 @@ type TypeFilter = ObjectionVM['type'];
         </div>
       </div>
       <div class="rule"></div>
-      <p>{{ rep.persona_notes || 'No reviewer notes on this build.' }}</p>
+      <p>{{ personaNotes() || 'No reviewer notes on this build.' }}</p>
     </div>
 
     <div class="sec-h">
@@ -81,11 +81,11 @@ type TypeFilter = ObjectionVM['type'];
           } @else if (statusOf(o.id) === 'refined') {
             <div class="c-resolved refined">
               <span class="rmark">✓</span>
-              <span>Refined — evidence recorded · reflects on your next build</span>
+              <span>Refined: evidence recorded · reflects on your next build</span>
             </div>
           } @else {
             <div class="c-resolved" [class.left]="statusOf(o.id) === 'left'">
-              <span class="rmark">{{ statusOf(o.id) === 'left' ? '—' : '✓' }}</span>
+              <span class="rmark">{{ statusOf(o.id) === 'left' ? '·' : '✓' }}</span>
               <span>{{ statusOf(o.id) === 'left' ? 'Left for now' : 'Accepted as intentional · won’t re-flag' }}</span>
               <button class="undo" (click)="reopen.emit(o)">undo</button>
             </div>
@@ -180,6 +180,10 @@ export class ReviewerRail {
 
   protected readonly statusSel = signal<Set<StatusFilter>>(new Set());
   protected readonly typeSel = signal<Set<TypeFilter>>(new Set());
+
+  /** MODEL text: the reviewer's free-text verdict reaches the view unscrubbed,
+   *  so normalize dashes at this render boundary (see shared/normalize-dashes). */
+  protected readonly personaNotes = computed(() => normalizeDashes(this.report().persona_notes));
 
   protected readonly scorePct = computed(() => pct(this.report().overall_score));
   protected readonly verdictBand = computed(() => band(this.report().overall_score));

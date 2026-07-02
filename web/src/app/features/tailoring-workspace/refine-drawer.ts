@@ -13,13 +13,13 @@ import type { CopilotKind, ObjectionVM } from './workspace.model';
 const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: string }> = {
   strengthen: {
     kicker: 'EVIDENCE INTERVIEW · STRENGTHEN A LINE',
-    title: 'A stronger line — in your own scope',
+    title: 'A stronger line, in your own scope',
     blurb: 'The strengthen copilot will interview you for what actually happened, then rephrase the flagged line without widening its scope.',
   },
   metric: {
     kicker: 'EVIDENCE INTERVIEW · METRIC CAPTURE',
     title: 'What was the measurable result?',
-    blurb: 'The metric copilot will ask for a number and fold your exact words into the bullet — it never proposes a figure.',
+    blurb: 'The metric copilot will ask for a number and fold your exact words into the bullet: it never proposes a figure.',
   },
   summary: {
     kicker: 'EVIDENCE INTERVIEW · SUMMARY',
@@ -28,13 +28,13 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
   },
   skills: {
     kicker: 'EVIDENCE INTERVIEW · SKILL CHECK',
-    title: 'The job asks for these — which do you have?',
+    title: 'The job asks for these: which do you have?',
     blurb: 'The skills copilot will run the JD skill check; anything you leave unchecked is recorded as “don’t have” and won’t be re-asked.',
   },
   layout: {
     kicker: 'LAYOUT ADJUSTMENT',
     title: 'A presentation-only change',
-    blurb: 'The layout copilot routes to the variant adapter — presentation only, the canonical claims never change.',
+    blurb: 'The layout copilot routes to the variant adapter: presentation only, the canonical claims never change.',
   },
 };
 
@@ -82,7 +82,7 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
           <div class="honest-note">
             @if (o.copilot === 'layout') {
               <b>Presentation only.</b> This routes to the variant adapter and
-              updates the preview here — the canonical claims never change and
+              updates the preview here. The canonical claims never change and
               nothing is saved to this build.
             } @else {
               <b>This records evidence, not a rewrite.</b> Refining captures the
@@ -98,7 +98,7 @@ const COPILOT_COPY: Record<CopilotKind, { kicker: string; title: string; blurb: 
           } @else {
             <p class="no-run">
               @if (o.objection.target === 'overall') {
-                No copilot acts on the whole draft directly — Retailor addresses
+                No copilot acts on the whole draft directly: Retailor addresses
                 overall objections in its revision pass, or accept it as intentional.
               } @else {
                 This layout concern applies to the canonical draft; Retailor

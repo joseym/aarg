@@ -80,7 +80,7 @@ export class BuildRunner {
     // CopilotOverlay at the root), so it's the single, navigation-proof
     // confirmation that a stop was honored — the callers no longer toast it.
     if (result.cancelled) {
-      this.copilot.notify('Stopped — saved the best draft so far.');
+      this.copilot.notify('Stopped: saved the best draft so far.');
     }
     return result;
   }
