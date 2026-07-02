@@ -6,6 +6,7 @@ import {
   inject,
   input,
   signal,
+  untracked,
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -27,6 +28,7 @@ import type {
 } from '../../models';
 
 import { ResumePreview } from './resume-preview';
+import { PdfPreview } from './pdf-preview';
 import { ReviewerRail } from './reviewer-rail';
 import { RefineDrawer } from './refine-drawer';
 import { CoverageMap } from '../../shared/coverage-map';
@@ -61,7 +63,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
 @Component({
   selector: 'app-tailoring-workspace',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [RouterLink, ResumePreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel],
+  imports: [RouterLink, ResumePreview, PdfPreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel],
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
     <div class="ctxbar">
@@ -173,30 +175,83 @@ type ClaimState = 'ok' | 'checking' | 'flag';
           </div>
 
           @if (view() === 'preview') {
-            @if (previewModel(); as m) {
-              <app-resume-preview
-                [model]="m"
-                [highlightKey]="highlightKey()"
-                (edit)="onEdit($event)"
-                (confirm)="onConfirmLine($event)"
-              />
-              <div class="fidelity">
-                <span class="tag">HTML · editing</span>
-                <span>Live in-browser preview — edit any line. Facts stay identical to the</span>
-                <button class="btn btn-sm" type="button" (click)="downloadPdf()">pixel-perfect PDF ↓</button>
-                @if (editCount() > 0) {
-                  <button
-                    class="btn btn-sm btn-record"
-                    type="button"
-                    (click)="recordEdits()"
-                    [disabled]="recording()"
-                  >
-                    {{ recording() ? 'Recording…' : 'Record ' + editCount() + ' edit' + (editCount() === 1 ? '' : 's') + ' in your dataset' }}
-                  </button>
-                }
+            <!-- ── fidelity sub-toggle: editable HTML vs the real Typst PDF ── -->
+            <div class="pv-sub">
+              <div class="segmented" role="tablist" aria-label="Preview fidelity">
+                <button
+                  type="button" role="tab"
+                  [class.on]="previewMode() === 'editing'"
+                  [attr.aria-selected]="previewMode() === 'editing'"
+                  (click)="previewMode.set('editing')"
+                >Editing</button>
+                <button
+                  type="button" role="tab"
+                  [class.on]="previewMode() === 'pixel'"
+                  [attr.aria-selected]="previewMode() === 'pixel'"
+                  (click)="previewMode.set('pixel')"
+                >Pixel-perfect</button>
               </div>
-            } @else {
+              @if (templateOptions().length > 0) {
+                <label class="tpl">
+                  <span class="tpl-label">Template:</span>
+                  <select [value]="chosenTemplate()" (change)="onTemplateChange($event)">
+                    @for (t of templateOptions(); track t) {
+                      <!-- [selected] as well as the select's [value]: when the async
+                           template list replaces the options after first render, a
+                           bare [value] binding isn't re-applied and the select can
+                           DISPLAY the wrong option; [selected] tracks the signal. -->
+                      <option [value]="t" [selected]="t === chosenTemplate()">{{ t }}</option>
+                    }
+                  </select>
+                </label>
+              }
+            </div>
+
+            <!-- The PDF preview mounts on the FIRST Pixel-perfect entry, then
+                 stays mounted across Editing↔Pixel flips (hidden, never
+                 destroyed) so its per-template render cache survives a mode
+                 toggle instead of re-hitting Typst for an unchanged
+                 payload/template. -->
+            @if (previewPayload(); as pp) {
+              @if (pixelSeen()) {
+                <app-pdf-preview
+                  [class.hide]="previewMode() !== 'pixel'"
+                  [variant]="pp.variant"
+                  [payload]="pp"
+                  [template]="chosenTemplate() ?? ''"
+                  (error)="onPreviewError($event)"
+                />
+              }
+            } @else if (previewMode() === 'pixel') {
               <div class="panel muted">This build has no résumé payload to preview.</div>
+            }
+
+            @if (previewMode() === 'editing') {
+              @if (previewModel(); as m) {
+                <app-resume-preview
+                  [model]="m"
+                  [highlightKey]="highlightKey()"
+                  (edit)="onEdit($event)"
+                  (confirm)="onConfirmLine($event)"
+                />
+                <div class="fidelity">
+                  <span class="tag">HTML · editing</span>
+                  <span>Live in-browser preview — edit any line. Facts stay identical to the</span>
+                  <button class="btn btn-sm" type="button" (click)="previewMode.set('pixel')">pixel-perfect PDF</button>
+                  @if (editCount() > 0) {
+                    <button
+                      class="btn btn-sm btn-record"
+                      type="button"
+                      (click)="recordEdits()"
+                      [disabled]="recording()"
+                    >
+                      {{ recording() ? 'Recording…' : 'Record ' + editCount() + ' edit' + (editCount() === 1 ? '' : 's') + ' in your dataset' }}
+                    </button>
+                  }
+                </div>
+              } @else {
+                <div class="panel muted">This build has no résumé payload to preview.</div>
+              }
             }
           } @else {
             <app-coverage-map
@@ -286,6 +341,20 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     .cc-tip { position: absolute; top: 30px; right: 0; z-index: 20; width: 300px; background: var(--fg); color: oklch(96% 0.01 80); padding: 12px 14px; border-radius: 9px; font-size: 12.5px; line-height: 1.5; box-shadow: 0 12px 30px -12px color-mix(in oklch, var(--fg) 60%, transparent); }
     .cc-tip b { color: oklch(99% 0.01 80); }
 
+    .pv-sub { display: flex; align-items: center; gap: 12px; margin: 14px 0 16px; flex-wrap: wrap; }
+    .pv-sub .segmented { display: inline-flex; padding: 3px; gap: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; }
+    .pv-sub .segmented button { display: inline-flex; align-items: center; padding: 6px 14px; border: 0; border-radius: 999px; background: transparent; font: inherit; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; transition: background 0.15s, color 0.15s, box-shadow 0.15s; }
+    .pv-sub .segmented button.on { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 12%, transparent); }
+    .pv-sub .segmented button:not(.on):hover { color: var(--fg); }
+    .pv-sub .segmented button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .tpl { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+    .tpl-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+    .tpl select { height: 30px; padding: 0 8px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 13px; color: inherit; cursor: pointer; }
+    .tpl select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    /* Hides the still-mounted PDF preview in Editing mode. Must out-specify the
+       child's own \`:host { display: block }\` (0,1,0) — element+class is (0,1,1). */
+    app-pdf-preview.hide { display: none; }
+
     .fidelity { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
     .fidelity .tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; }
     .btn-record { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); color: var(--accent); background: var(--accent-soft); }
@@ -328,6 +397,23 @@ export class TailoringWorkspace {
 
   // ── local UI state ───────────────────────────────────────────────────
   protected readonly view = signal<'preview' | 'coverage'>('preview');
+  /** The Final-preview fidelity sub-toggle: the editable HTML preview
+   *  (`editing`) or the real Typst-rendered PDF in an iframe (`pixel`). */
+  protected readonly previewMode = signal<'editing' | 'pixel'>('editing');
+  /** Latches true the first time Pixel-perfect is entered (per build). The PDF
+   *  preview mounts lazily on that first entry — no Typst render for a build
+   *  the user never inspects — but is then kept mounted and merely hidden on a
+   *  flip back to Editing, so its render cache survives mode toggles. */
+  protected readonly pixelSeen = signal(false);
+  /** The templates resolvable per variant (`GET /api/templates`) — feeds the
+   *  picker. `null` until loaded (or if the fetch fails, in which case the
+   *  picker stays hidden and rendering falls back to the payload's own stamp). */
+  private readonly templates = signal<{ ats: string[]; human: string[] } | null>(null);
+  /** The template the picker has selected (a bare name like `modern`), per
+   *  session — not persisted. Defaults to the preview payload's own stamp; see
+   *  the reset effect in the constructor. Drives BOTH the pixel-perfect iframe
+   *  and Download PDF. */
+  protected readonly chosenTemplate = signal<string | null>(null);
   protected readonly infoOpen = signal(false);
   /** The line key the preview should spotlight (badge → jump). Cycles through
    *  {@link unrecordedKeys} on repeated badge clicks. */
@@ -403,9 +489,29 @@ export class TailoringWorkspace {
   // builds are rendered ATS-only (no human_payload.json), so fall back to the
   // ATS payload — it's the same shape, so the preview builder works on either.
   // Only when neither exists is there nothing to show.
-  private readonly previewPayload = computed<VariantPayload | null>(
+  protected readonly previewPayload = computed<VariantPayload | null>(
     () => this.refinedHuman() ?? this.bundle()?.human_payload ?? this.bundle()?.ats_payload ?? null,
   );
+
+  /** The template names to offer for the CURRENT preview payload's variant —
+   *  ATS names for an ATS payload, human names for a human one. Degrades
+   *  gracefully against a server without `GET /api/templates` (an older binary
+   *  404s it) or a response with no entry for this variant: the picker then
+   *  offers just the payload's own bare template stamp, so the select is never
+   *  empty and pixel-perfect / Download keep working. Silent by design — a
+   *  capability degrade, not a user error, so no toast. The full server list
+   *  wins whenever the endpoint answers with names for this variant. */
+  protected readonly templateOptions = computed<string[]>(() => {
+    const payload = this.previewPayload();
+    if (!payload) return [];
+    const t = this.templates();
+    const list = t ? (payload.variant === 'ats' ? t.ats : t.human) : [];
+    if (list.length > 0) return list;
+    // Endpoint errored/absent or listed nothing for this variant — seed with
+    // the build's actual template (its stamp minus the `ats/`/`human/` prefix).
+    const stamp = payload.template?.replace(/^(ats|human)\//, '');
+    return stamp ? [stamp] : [];
+  });
 
   protected readonly previewModel = computed<PreviewModel | null>(() => {
     const payload = this.previewPayload();
@@ -461,6 +567,29 @@ export class TailoringWorkspace {
   });
 
   constructor() {
+    // The templates the picker can offer. A failure just leaves the picker
+    // hidden (empty options) — the preview and download fall back to each
+    // payload's own template stamp, so the screen still works keyless.
+    this.api.getTemplates().subscribe({
+      next: (t) => this.templates.set(t),
+      error: () => {},
+    });
+
+    // Default the picker to whichever template the current payload was stamped
+    // with, resetting whenever the payload itself changes (a fresh build, or a
+    // layout copilot swapping in a re-projected human variant). A manual pick
+    // survives unrelated recomputes because the payload reference is stable.
+    effect(() => {
+      const payload = this.previewPayload();
+      const stamp = payload?.template ? payload.template.replace(/^(ats|human)\//, '') : null;
+      untracked(() => this.chosenTemplate.set(stamp));
+    });
+
+    // Latch the lazy PDF-preview mount on the first Pixel-perfect entry.
+    effect(() => {
+      if (this.previewMode() === 'pixel') this.pixelSeen.set(true);
+    });
+
     // Whenever the set of flagged lines changes (a re-check, an edit, a confirm),
     // restart the jump cycle from the first flagged line.
     effect(() => {
@@ -501,6 +630,22 @@ export class TailoringWorkspace {
     this.refinedHuman.set(null);
     this.drawer.set(null);
     this.view.set('preview');
+    this.previewMode.set('editing');
+    // Unmount the PDF preview for the incoming build (its onDestroy revokes the
+    // old build's cached object URLs); it re-mounts on the next pixel entry.
+    this.pixelSeen.set(false);
+  }
+
+  /** The picker changed the template: re-project the pixel-perfect iframe and
+   *  the next Download PDF against the newly-chosen (bare) name. */
+  protected onTemplateChange(e: Event): void {
+    this.chosenTemplate.set((e.target as HTMLSelectElement).value);
+  }
+
+  /** A pixel-perfect render failed — surface it the same way every other
+   *  failure on this screen does, via the shared toast + `errMessage`. */
+  protected onPreviewError(err: unknown): void {
+    this.showToast(`Render failed: ${errMessage(err)}`);
   }
 
   private loadDataset(): void {
@@ -1051,12 +1196,13 @@ export class TailoringWorkspace {
     const done = () => this.downloading.set(false);
     if (payload) {
       // Render the variant actually being previewed (human when present, else
-      // the ATS payload) with the payload's OWN template stamp — never
-      // meta.template, which by convention records the ATS template id and
-      // 400s a human render. The stamp is the prefixed id ("human/modern");
-      // send the bare name the resolver takes (the server also accepts the
-      // prefixed form now, but the bare name works on older servers too).
-      const templateName = payload.template?.replace(/^(ats|human)\//, '') || undefined;
+      // the ATS payload) with the template the picker has chosen — which
+      // defaults to the payload's OWN stamp (bare name), never meta.template
+      // (that records the ATS template id and 400s a human render). Falls back
+      // to the stamp if the picker never loaded. The bare name is what the
+      // resolver takes (the server also accepts the prefixed form).
+      const templateName =
+        this.chosenTemplate() || payload.template?.replace(/^(ats|human)\//, '') || undefined;
       this.api.render(payload.variant, payload, templateName).subscribe({
         next: (blob) => {
           triggerDownload(blob, `${this.id()}-${payload.variant}.pdf`);

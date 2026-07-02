@@ -818,6 +818,30 @@ pub(super) async fn models() -> Resp {
     )
 }
 
+/// `GET /api/templates` — the template names a browser picker can offer per
+/// variant, resolved through the very same [`templates::available`] the CLI's
+/// `aarg templates list` uses (and that `POST /api/render` resolves against),
+/// so the picker can only ever offer names the render route will actually
+/// accept. That list is fully enumerable: the built-ins embedded in the binary
+/// (`classic`/`minimal` for ATS; `modern`/`technical`/`editorial` for human)
+/// *plus* any user human templates discovered on disk under the active
+/// workspace's `templates/human/` directory — `available()` walks that
+/// directory itself, so user files show up here without the browser knowing
+/// where they live. ATS stays built-in only (a custom ATS layout could break an
+/// applicant-tracker parser), so no user name ever appears under `ats`. Config/
+/// workspace only — no keychain, no key spend.
+pub(super) async fn templates() -> Resp {
+    let mut ats: Vec<String> = Vec::new();
+    let mut human: Vec<String> = Vec::new();
+    for listed in templates::available() {
+        match listed.variant {
+            Variant::Ats => ats.push(listed.name),
+            Variant::Human => human.push(listed.name),
+        }
+    }
+    json_response(200, &json!({ "ats": ats, "human": human }))
+}
+
 pub(super) async fn cost(req: Request<Incoming>) -> Resp {
     let query = match parse_cost_query(req.uri().query().unwrap_or("")) {
         Ok(query) => query,
@@ -926,6 +950,8 @@ fn parse_cost_query(query: &str) -> Result<CostQuery, String> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use http_body_util::BodyExt;
+
     use super::*;
 
     #[test]
@@ -994,6 +1020,39 @@ mod tests {
         assert!(!is_numeric_id("-41"));
         assert!(!is_numeric_id("../etc"));
         assert!(!is_numeric_id("41 "));
+    }
+
+    #[tokio::test]
+    async fn templates_lists_the_builtins_grouped_by_variant() {
+        // The handler groups `templates::available()` by variant. The built-ins
+        // are embedded in the binary, so they're always present regardless of
+        // the active workspace (a user human template, if any, would simply be
+        // an extra name under `human`).
+        let resp = templates().await;
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        let ats: Vec<&str> = body["ats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(ats.contains(&"classic"), "ats missing classic: {ats:?}");
+        assert!(ats.contains(&"minimal"), "ats missing minimal: {ats:?}");
+
+        let human: Vec<&str> = body["human"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        for name in ["modern", "technical", "editorial"] {
+            assert!(human.contains(&name), "human missing {name}: {human:?}");
+        }
+        // ATS stays built-in only — a user name never leaks into the ATS list.
+        assert_eq!(ats.len(), 2, "unexpected ATS templates: {ats:?}");
     }
 
     #[tokio::test]
