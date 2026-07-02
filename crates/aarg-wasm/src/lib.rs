@@ -47,6 +47,8 @@ use aarg_domain::agent::{Agent, AgentContext};
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::gap::GapReport;
 #[cfg(target_arch = "wasm32")]
+use aarg_domain::llm::TokenUsage;
+#[cfg(target_arch = "wasm32")]
 use aarg_domain::metric::{AnchorStyle, MetricTarget};
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::review::{
@@ -707,6 +709,55 @@ pub async fn refine_layout_llm(
 // canonical draft) and `voice_rewrite` (an LLM-only autonomous rewrite,
 // so it takes just the `llm` callback and no `UserHandle` at all).
 
+/// Assemble one interactive export's result JSON, aborted or not.
+///
+/// Every dataset-mutating copilot folds the person's answers into `dataset`
+/// *as the interview runs*, so those facts are already recorded when the
+/// interview ends — whether it ran to completion or an `AskError` cut it
+/// short. Returning the mutated dataset either way is exactly what
+/// never-fabricate wants: the recorded facts are the user's OWN answers
+/// already folded in, and discarding them on abort would lose real work, not
+/// prevent any invention. Only the outcome *counts* are unknown once the error
+/// interrupts the run, so the caller passes them zeroed and this stamps
+/// `aborted: true` plus the error's `Display` as `message`; a clean finish
+/// passes the real counts and stamps `aborted: false`.
+#[cfg(target_arch = "wasm32")]
+fn interactive_result(
+    dataset: &ResumeDataset,
+    before_json: &str,
+    counts: serde_json::Value,
+    aborted: Option<String>,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "dataset".to_string(),
+        serde_json::to_value(dataset).unwrap_or(serde_json::Value::Null),
+    );
+    // Whether the interview actually changed the dataset, decided HERE — one
+    // serializer, one process, the same evolving map instance — because the JS
+    // host cannot compare reliably: its GET copy and this module's copy
+    // serialize HashMaps (e.g. `skills.aliases`) in different orders, so a
+    // stringify-compare over there reads "always changed". `before_json` is the
+    // export's own serialization captured right after parse; an untouched
+    // dataset re-serializes identically.
+    let after = serde_json::to_string(dataset).unwrap_or_default();
+    obj.insert(
+        "mutated".to_string(),
+        serde_json::Value::Bool(!before_json.is_empty() && after != before_json),
+    );
+    if let serde_json::Value::Object(fields) = counts {
+        obj.extend(fields);
+    }
+    obj.insert(
+        "aborted".to_string(),
+        serde_json::Value::Bool(aborted.is_some()),
+    );
+    if let Some(message) = aborted {
+        obj.insert("message".to_string(), serde_json::Value::String(message));
+    }
+    serde_json::Value::Object(obj)
+}
+
 /// Interview the person for a real number on each bullet the reviewer flagged
 /// as missing one (FR-3.x). `report_json` is an `AdversarialReport`; the
 /// `NoMetric` objections targeting a bullet become the interview's targets
@@ -714,8 +765,11 @@ pub async fn refine_layout_llm(
 /// The model only phrases the question — the figure is the person's own, folded
 /// onto the bullet's `metric` field, so nothing here can fabricate a number.
 ///
-/// Returns `{ "dataset": ResumeDataset, "added": <count> }`: the mutated
-/// dataset for the host to persist, and how many bullets gained a metric.
+/// Returns `{ "dataset": ResumeDataset, "added": <count>, "aborted": <bool> }`:
+/// the mutated dataset for the host to persist, and how many bullets gained a
+/// metric. If the interview is aborted mid-ask, the dataset still carries the
+/// numbers already recorded; `added` is 0, `aborted` is true, and a `message`
+/// field carries the reason.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn capture_metrics_interactive(
@@ -726,6 +780,9 @@ pub async fn capture_metrics_interactive(
     user: js_sys::Function,
 ) -> Result<String, JsValue> {
     let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    // This module's own serialization of the just-parsed dataset — the
+    // "before" side of the `mutated` compare in `interactive_result`.
+    let before = serde_json::to_string(&dataset).unwrap_or_default();
     let report: AdversarialReport = parse(&report_json, "adversarial report").map_err(throw)?;
     let models = Models::from_json(&models_json).map_err(throw)?;
     let (client, llm_rx) = BridgeClient::new();
@@ -754,7 +811,10 @@ pub async fn capture_metrics_interactive(
         })
         .collect();
 
-    let added = aarg_domain::metric::capture_metrics(
+    // An `AskError` mid-interview keeps the metrics already recorded (they're
+    // the user's own numbers, folded into `dataset` as answered); only the
+    // count is lost, so it zeroes and reports `aborted`.
+    let json = match aarg_domain::metric::capture_metrics(
         &mut dataset,
         &targets,
         &user_handle,
@@ -762,9 +822,21 @@ pub async fn capture_metrics_interactive(
         AnchorStyle::PLAIN,
     )
     .await
-    .map_err(|e| throw(e.to_string()))?;
-
-    dump(&serde_json::json!({ "dataset": dataset, "added": added })).map_err(throw)
+    {
+        Ok(added) => interactive_result(
+            &dataset,
+            &before,
+            serde_json::json!({ "added": added }),
+            None,
+        ),
+        Err(e) => interactive_result(
+            &dataset,
+            &before,
+            serde_json::json!({ "added": 0 }),
+            Some(e.to_string()),
+        ),
+    };
+    dump(&json).map_err(throw)
 }
 
 /// Interview the person to restate, in their own words, each bullet the
@@ -774,8 +846,11 @@ pub async fn capture_metrics_interactive(
 /// second agent formats the person's typed facts into a crisp line they approve,
 /// fenced by the shared digit guard so it can rephrase but never inflate.
 ///
-/// Returns `{ "dataset": ResumeDataset, "changed": <count> }`: the mutated
-/// dataset for the host to persist, and how many bullets the person rewrote.
+/// Returns `{ "dataset": ResumeDataset, "changed": <count>, "aborted": <bool>
+/// }`: the mutated dataset for the host to persist, and how many bullets the
+/// person rewrote. An aborted interview still returns the rewrites already
+/// recorded; `changed` is 0, `aborted` is true, and `message` carries the
+/// reason.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn strengthen_interactive(
@@ -786,6 +861,9 @@ pub async fn strengthen_interactive(
     user: js_sys::Function,
 ) -> Result<String, JsValue> {
     let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    // This module's own serialization of the just-parsed dataset — the
+    // "before" side of the `mutated` compare in `interactive_result`.
+    let before = serde_json::to_string(&dataset).unwrap_or_default();
     let report: AdversarialReport = parse(&report_json, "adversarial report").map_err(throw)?;
     let models = Models::from_json(&models_json).map_err(throw)?;
     let (client, llm_rx) = BridgeClient::new();
@@ -815,7 +893,9 @@ pub async fn strengthen_interactive(
 
     // The PRD's 3/3 interview caps (`InterviewLimits::default`) — a browser has
     // no config file to override them from, so the tuned defaults stand.
-    let changed = strengthen::strengthen_bullets(
+    // A cut-short interview keeps the bullets the person already rewrote (their
+    // own words, already folded into `dataset`); only the count is lost.
+    let json = match strengthen::strengthen_bullets(
         &mut dataset,
         &targets,
         &user_handle,
@@ -824,9 +904,21 @@ pub async fn strengthen_interactive(
         AnchorStyle::PLAIN,
     )
     .await
-    .map_err(|e| throw(e.to_string()))?;
-
-    dump(&serde_json::json!({ "dataset": dataset, "changed": changed })).map_err(throw)
+    {
+        Ok(changed) => interactive_result(
+            &dataset,
+            &before,
+            serde_json::json!({ "changed": changed }),
+            None,
+        ),
+        Err(e) => interactive_result(
+            &dataset,
+            &before,
+            serde_json::json!({ "changed": 0 }),
+            Some(e.to_string()),
+        ),
+    };
+    dump(&json).map_err(throw)
 }
 
 /// Refine the resume summary the reviewer flagged (FR-3.x): draft a stronger
@@ -836,8 +928,11 @@ pub async fn strengthen_interactive(
 /// reviewer's summary-objection message; the digit guard and no-new-facts prompt
 /// keep every draft honest.
 ///
-/// Returns `{ "dataset": ResumeDataset, "changed": <bool> }`: the mutated
-/// dataset for the host to persist, and whether the summary changed.
+/// Returns `{ "dataset": ResumeDataset, "changed": <bool>, "aborted": <bool>
+/// }`: the mutated dataset for the host to persist, and whether the summary
+/// changed. An aborted interview keeps any summary confirmed on an earlier
+/// turn; `changed` is false, `aborted` is true, and `message` carries the
+/// reason.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn refine_summary_interactive(
@@ -848,6 +943,9 @@ pub async fn refine_summary_interactive(
     user: js_sys::Function,
 ) -> Result<String, JsValue> {
     let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    // This module's own serialization of the just-parsed dataset — the
+    // "before" side of the `mutated` compare in `interactive_result`.
+    let before = serde_json::to_string(&dataset).unwrap_or_default();
     let models = Models::from_json(&models_json).map_err(throw)?;
     let (client, llm_rx) = BridgeClient::new();
     bridge::spawn_pump(llm_rx, llm);
@@ -863,7 +961,10 @@ pub async fn refine_summary_interactive(
     // The PRD's default revision cap (`InterviewLimits::default().revises`),
     // since a browser has no config file to tune it from.
     let max_revises = strengthen::InterviewLimits::default().revises;
-    let changed = aarg_domain::summary::refine_summary(
+    // If the person aborts before accepting, a summary they'd already confirmed
+    // in an earlier turn stays on `dataset`; `changed` is a bool, so its zeroed
+    // form is `false`.
+    let json = match aarg_domain::summary::refine_summary(
         &mut dataset,
         &concern,
         &user_handle,
@@ -871,9 +972,21 @@ pub async fn refine_summary_interactive(
         max_revises,
     )
     .await
-    .map_err(|e| throw(e.to_string()))?;
-
-    dump(&serde_json::json!({ "dataset": dataset, "changed": changed })).map_err(throw)
+    {
+        Ok(changed) => interactive_result(
+            &dataset,
+            &before,
+            serde_json::json!({ "changed": changed }),
+            None,
+        ),
+        Err(e) => interactive_result(
+            &dataset,
+            &before,
+            serde_json::json!({ "changed": false }),
+            Some(e.to_string()),
+        ),
+    };
+    dump(&json).map_err(throw)
 }
 
 /// Enrich the person's thin work-history roles (the history copilot): for each
@@ -883,8 +996,10 @@ pub async fn refine_summary_interactive(
 /// a posting. The targets are the dataset's own thin roles (`enrich::thin_roles`).
 ///
 /// Returns `{ "dataset": ResumeDataset, "bullets_added": <count>,
-/// "roles_touched": <count> }`: the mutated dataset for the host to persist, and
-/// what the session accomplished.
+/// "roles_touched": <count>, "aborted": <bool> }`: the mutated dataset for the
+/// host to persist, and what the session accomplished. An aborted interview
+/// still returns the bullets already typed; both counts are 0, `aborted` is
+/// true, and `message` carries the reason.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn enrich_roles_interactive(
@@ -894,6 +1009,9 @@ pub async fn enrich_roles_interactive(
     user: js_sys::Function,
 ) -> Result<String, JsValue> {
     let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    // This module's own serialization of the just-parsed dataset — the
+    // "before" side of the `mutated` compare in `interactive_result`.
+    let before = serde_json::to_string(&dataset).unwrap_or_default();
     let models = Models::from_json(&models_json).map_err(throw)?;
     let (client, llm_rx) = BridgeClient::new();
     bridge::spawn_pump(llm_rx, llm);
@@ -907,16 +1025,27 @@ pub async fn enrich_roles_interactive(
     };
 
     let targets = aarg_domain::enrich::thin_roles(&dataset);
-    let outcome = aarg_domain::enrich::enrich_roles(&mut dataset, &targets, &user_handle, &ctx)
-        .await
-        .map_err(|e| throw(e.to_string()))?;
-
-    dump(&serde_json::json!({
-        "dataset": dataset,
-        "bullets_added": outcome.bullets_added,
-        "roles_touched": outcome.roles_touched,
-    }))
-    .map_err(throw)
+    // A cut-short interview keeps the bullets the person already typed (their
+    // own words, folded into `dataset` per role); only the tallies are lost.
+    let json =
+        match aarg_domain::enrich::enrich_roles(&mut dataset, &targets, &user_handle, &ctx).await {
+            Ok(outcome) => interactive_result(
+                &dataset,
+                &before,
+                serde_json::json!({
+                    "bullets_added": outcome.bullets_added,
+                    "roles_touched": outcome.roles_touched,
+                }),
+                None,
+            ),
+            Err(e) => interactive_result(
+                &dataset,
+                &before,
+                serde_json::json!({ "bullets_added": 0, "roles_touched": 0 }),
+                Some(e.to_string()),
+            ),
+        };
+    dump(&json).map_err(throw)
 }
 
 /// Run the conversational "tune" session over a finished canonical draft —
@@ -957,6 +1086,13 @@ pub async fn enrich_roles_interactive(
 /// canonical draft, whether it actually changed (so the host knows to
 /// re-render and re-score, matching `TuneOutcome::changed_draft`), and the
 /// session's total token cost across every request it handled.
+///
+/// Unlike the dataset-mutating copilots this export carries **no `aborted`
+/// field**: `run_session` returns `(bool, TokenUsage)`, never an `AskError`.
+/// It ends a session the ordinary way — a declined opening confirm or a blank
+/// request line — which reads as "changed nothing", not as an interrupted run
+/// with recorded work to preserve. There is no partial-outcome to salvage, so
+/// there is nothing for an abort sentinel to guard here.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn tune_interactive(
@@ -1032,9 +1168,11 @@ pub async fn tune_interactive(
 ///
 /// Returns `{ "dataset": ResumeDataset, "verified": <count>, "removed":
 /// <count>, "skipped": <count>, "bullets_added": <count>, "declined":
-/// <count> }`: the mutated dataset for the host to persist (both the newly
-/// recorded skills and the declined-keyword list live in it), and
-/// `VerifyOutcome`'s tallies of what the session accomplished.
+/// <count>, "aborted": <bool> }`: the mutated dataset for the host to persist
+/// (both the newly recorded skills and the declined-keyword list live in it),
+/// and `VerifyOutcome`'s tallies of what the session accomplished. An aborted
+/// interview still returns the skills already verified; every count is 0,
+/// `aborted` is true, and `message` carries the reason.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn verify_skills_interactive(
@@ -1046,6 +1184,9 @@ pub async fn verify_skills_interactive(
     user: js_sys::Function,
 ) -> Result<String, JsValue> {
     let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    // This module's own serialization of the just-parsed dataset — the
+    // "before" side of the `mutated` compare in `interactive_result`.
+    let before = serde_json::to_string(&dataset).unwrap_or_default();
     let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
     let gap: GapReport = parse(&gap_json, "gap report").map_err(throw)?;
     let models = Models::from_json(&models_json).map_err(throw)?;
@@ -1061,20 +1202,51 @@ pub async fn verify_skills_interactive(
     };
 
     let candidates = aarg_domain::verify::unbacked_keywords(&dataset, &jd, &gap);
-    let outcome =
-        aarg_domain::verify::verify_keywords(&mut dataset, &candidates, &user_handle, Some(&ctx))
-            .await
-            .map_err(|e| throw(e.to_string()))?;
+    // A cut-short checklist keeps the skills already verified and the keywords
+    // already declined (both live on `dataset`, recorded as answered); only the
+    // tallies are lost.
+    let json = match aarg_domain::verify::verify_keywords(
+        &mut dataset,
+        &candidates,
+        &user_handle,
+        Some(&ctx),
+    )
+    .await
+    {
+        Ok(outcome) => interactive_result(&dataset, &before, verify_counts(&outcome), None),
+        Err(e) => interactive_result(
+            &dataset,
+            &before,
+            verify_counts_zeroed(),
+            Some(e.to_string()),
+        ),
+    };
+    dump(&json).map_err(throw)
+}
 
-    dump(&serde_json::json!({
-        "dataset": dataset,
+/// The `VerifyOutcome`'s five tallies as a JSON object — shared by the batch
+/// and single-keyword verify exports, which return the same shape.
+#[cfg(target_arch = "wasm32")]
+fn verify_counts(outcome: &aarg_domain::verify::VerifyOutcome) -> serde_json::Value {
+    serde_json::json!({
         "verified": outcome.verified,
         "removed": outcome.removed,
         "skipped": outcome.skipped,
         "bullets_added": outcome.bullets_added,
         "declined": outcome.declined,
-    }))
-    .map_err(throw)
+    })
+}
+
+/// The same five tallies zeroed, for an aborted verify interview.
+#[cfg(target_arch = "wasm32")]
+fn verify_counts_zeroed() -> serde_json::Value {
+    serde_json::json!({
+        "verified": 0,
+        "removed": 0,
+        "skipped": 0,
+        "bullets_added": 0,
+        "declined": 0,
+    })
 }
 
 /// Verify a **single** JD requirement the user clicked (the coverage map's
@@ -1084,7 +1256,8 @@ pub async fn verify_skills_interactive(
 /// the evidence interview reads right — and re-offers it even if
 /// `unbacked_keywords` would have dropped it (already declined, or collapsed
 /// into a broader recorded skill): the user explicitly asked to fill *this*
-/// gap. Same `{dataset, verified, …}` shape as the batch export.
+/// gap. Same `{dataset, verified, …, aborted}` shape as the batch export,
+/// abort semantics included.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn verify_skill_interactive(
@@ -1096,6 +1269,9 @@ pub async fn verify_skill_interactive(
     user: js_sys::Function,
 ) -> Result<String, JsValue> {
     let mut dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    // This module's own serialization of the just-parsed dataset — the
+    // "before" side of the `mutated` compare in `interactive_result`.
+    let before = serde_json::to_string(&dataset).unwrap_or_default();
     let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
     let models = Models::from_json(&models_json).map_err(throw)?;
     let (client, llm_rx) = BridgeClient::new();
@@ -1122,24 +1298,25 @@ pub async fn verify_skill_interactive(
         category,
     };
 
-    let outcome = aarg_domain::verify::verify_keywords(
+    // Same abort semantics as the batch export: a skill verified before an
+    // abort stays recorded on `dataset`; only the tallies are lost.
+    let json = match aarg_domain::verify::verify_keywords(
         &mut dataset,
         std::slice::from_ref(&candidate),
         &user_handle,
         Some(&ctx),
     )
     .await
-    .map_err(|e| throw(e.to_string()))?;
-
-    dump(&serde_json::json!({
-        "dataset": dataset,
-        "verified": outcome.verified,
-        "removed": outcome.removed,
-        "skipped": outcome.skipped,
-        "bullets_added": outcome.bullets_added,
-        "declined": outcome.declined,
-    }))
-    .map_err(throw)
+    {
+        Ok(outcome) => interactive_result(&dataset, &before, verify_counts(&outcome), None),
+        Err(e) => interactive_result(
+            &dataset,
+            &before,
+            verify_counts_zeroed(),
+            Some(e.to_string()),
+        ),
+    };
+    dump(&json).map_err(throw)
 }
 
 /// Voice-anchored rewrite of a canonical draft (FR-3.6's autonomous half,
@@ -1273,7 +1450,16 @@ impl Evaluator for ReviewOnlyEvaluator {
         };
         let run = AdversarialReviewerAgent.run(ctx, input).await?;
         let report = run.output;
+        // Score from the *full* report — accepting an objection stops the
+        // churn, it must not inflate the honest assessment (the CLI evaluator
+        // scores the full report the same way).
         let score = report.overall_score;
+        // Then drop the objections the user already dismissed, exactly as the
+        // CLI evaluator does (`without_dismissed`), so the loop's stop
+        // conditions (`has_blocking_or_major`) and each revision prompt see the
+        // filtered set — a browser build never re-litigates an accepted
+        // objection.
+        let report = report.without_dismissed(&dataset.metadata.dismissed_objections);
         Ok(Evaluation {
             resume,
             report,
@@ -1340,10 +1526,19 @@ impl LoopObserver<()> for WasmProgressObserver {
         }));
     }
 
-    fn revision_drafted(&self, iteration: usize) {
+    fn revision_drafted(&self, iteration: usize, usage: &TokenUsage) {
+        // Carry the revision draft call's own tokens so the live-cost ticker
+        // meters every model call, not only the reviews. The running invariant
+        // the UI accumulates: initial draft (`drafting`) + initial review
+        // (iteration-0 `evaluated`) + each revision draft (this event) + each
+        // revision review (`evaluated`) = the final `usage` total.
         self.emit(serde_json::json!({
             "phase": "revision_drafted",
             "iteration": iteration,
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+            },
             "message": "revision drafted; scoring it",
         }));
     }
@@ -1448,7 +1643,10 @@ struct RawLoopParams {
 /// "message" }` — see [`WasmProgressObserver`]), so a UI can render a live
 /// iteration list and cost ticker instead of waiting for the single final
 /// result. Events are best-effort narration: a throwing callback never affects
-/// the loop's outcome.
+/// the loop's outcome. Every model call carries its `usage` on an event — the
+/// `drafting` (initial tailor) and `evaluated` (initial + revision reviews)
+/// and `revision_drafted` (revision tailors) phases — so a ticker that sums
+/// each event's `usage` arrives at exactly the final `usage` total below.
 ///
 /// **Cancellation stops between passes.** [`cancel_tailor_loop`] sets a module
 /// cancel flag that `WasmProgressObserver::should_continue` reads; the domain
@@ -1542,9 +1740,18 @@ pub async fn tailor_loop(
         passes: std::sync::atomic::AtomicUsize::new(0),
         progress: progress_tx,
     };
+    // The initial TAILOR draft's own tokens stream here (the loop's hooks only
+    // cover the revision calls), so the ticker's accumulation is complete:
+    // initial draft (this event) + initial review (iteration-0 `evaluated`) +
+    // each revision draft (`revision_drafted`) + each revision review
+    // (`evaluated`) = the flow-wide `usage` total returned below.
     observer.emit(serde_json::json!({
         "phase": "drafting",
         "iteration": 0,
+        "usage": {
+            "input_tokens": initial_tailor_usage.input_tokens,
+            "output_tokens": initial_tailor_usage.output_tokens,
+        },
         "message": "first draft ready; scoring it",
     }));
 

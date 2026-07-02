@@ -298,10 +298,13 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
   switch (kind) {
     case 'confirm':
       return JSON.stringify({ confirm: false });
+    // A dismissed choice modal is a deliberate bail-out, not "decline everything":
+    // resolving `{abort:true}` tells the bridge to end the session cleanly and keep
+    // whatever evidence was recorded so far, instead of losing it (`select`) or
+    // silently declining every keyword (`multi_select`).
     case 'multi_select':
-      return JSON.stringify({ choices: [] });
     case 'select':
-      return JSON.stringify({ choice: '' });
+      return JSON.stringify({ abort: true });
     default:
       return JSON.stringify({ text: '' });
   }
@@ -318,13 +321,18 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (host.question(); as q) {
-      <div class="scrim" (click)="host.cancel()"></div>
+      <div
+        class="scrim"
+        [attr.title]="isChoice(q.env.kind) ? 'Click outside or press Escape to end this session' : null"
+        (click)="host.cancel()"
+      ></div>
       <div
         #dialog
         class="modal"
         role="dialog"
         aria-modal="true"
         [attr.aria-label]="q.env.prompt"
+        [attr.aria-description]="isChoice(q.env.kind) ? 'Press Escape or click outside to end this session.' : null"
         (keydown)="onKeydown($event)"
       >
         <p class="prompt">{{ q.env.prompt }}</p>
@@ -337,6 +345,11 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
                   {{ opt }}
                 </button>
               }
+            </div>
+            <div class="foot bail">
+              <button class="btn btn-ghost end" type="button" (click)="host.cancel()">
+                End session
+              </button>
             </div>
           }
           @case ('multi_select') {
@@ -353,7 +366,9 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
               }
             </div>
             <div class="foot">
-              <button class="btn btn-ghost" type="button" (click)="host.cancel()">Cancel</button>
+              <button class="btn btn-ghost end" type="button" (click)="host.cancel()">
+                End session
+              </button>
               <button class="btn primary" type="button" (click)="submitMulti(q.env.options)">
                 Done
               </button>
@@ -529,6 +544,18 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
     .foot.confirm {
       justify-content: flex-end;
     }
+    /* The bail-out row for a single select has no other action, so the
+       End session link sits on its own, quietly, to the right. */
+    .foot.bail {
+      margin-top: -4px;
+    }
+    .btn.end {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .btn.end:hover {
+      color: var(--fg);
+    }
     .btn {
       display: inline-flex;
       align-items: center;
@@ -699,6 +726,12 @@ export class CopilotOverlay {
         this.opener = null;
       }
     });
+  }
+
+  /** True for the choice kinds whose dismissal ends the whole session (rather
+   *  than being a safe per-prompt skip), so the overlay can label the bail-out. */
+  protected isChoice(kind: QuestionEnvelope['kind']): boolean {
+    return kind === 'select' || kind === 'multi_select';
   }
 
   /** Read a form control's current value off an input event. */

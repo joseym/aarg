@@ -1061,7 +1061,9 @@ impl LoopObserver<AtsReport> for CliLoopObserver {
         );
     }
 
-    fn revision_drafted(&self, iteration: usize) {
+    fn revision_drafted(&self, iteration: usize, _usage: &TokenUsage) {
+        // The live-cost sink already streams this draft's tokens as they
+        // arrive, so the narration ignores the usage and just marks the pass.
         eprintln!("{}", style::dim(format!("revision {iteration} drafted")));
     }
 

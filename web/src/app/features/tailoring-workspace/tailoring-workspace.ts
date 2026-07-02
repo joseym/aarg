@@ -322,6 +322,10 @@ export class TailoringWorkspace {
   protected readonly view = signal<'preview' | 'coverage'>('preview');
   protected readonly infoOpen = signal(false);
   protected readonly edits = signal<Record<string, string>>({});
+  /** Edit keys already recorded to the dataset this session. Kept IN `edits` (so
+   *  the preview text persists rather than snapping back), but excluded from the
+   *  pending `editCount` — re-editing a key re-pends it (see {@link onEdit}). */
+  protected readonly recordedKeys = signal<ReadonlySet<string>>(new Set());
   protected readonly accepted = signal<ReadonlySet<string>>(new Set());
   /** Objections whose refine copilot recorded evidence this session. */
   protected readonly refinedIds = signal<ReadonlySet<string>>(new Set());
@@ -337,7 +341,12 @@ export class TailoringWorkspace {
   protected readonly toast = this._toast.asReadonly();
 
   // ── derived view state ───────────────────────────────────────────────
-  protected readonly editCount = computed(() => Object.keys(this.edits()).length);
+  // Pending edits drive the Record button: an edit already recorded stays in the
+  // preview (in `edits`) but no longer counts as pending.
+  protected readonly editCount = computed(() => {
+    const recorded = this.recordedKeys();
+    return Object.keys(this.edits()).filter((k) => !recorded.has(k)).length;
+  });
   protected readonly jd = computed<JobRequirements | null>(() => this.bundle()?.jd ?? null);
   protected readonly report = computed<AdversarialReport | null>(() => this.bundle()?.adversarial_report ?? null);
   protected readonly coverage = computed(() => this.coverageReport());
@@ -459,6 +468,7 @@ export class TailoringWorkspace {
     this.coverageReport.set(null);
     this.claimsFlagged.set(false);
     this.edits.set({});
+    this.recordedKeys.set(new Set());
     this.accepted.set(new Set());
     this.refinedIds.set(new Set());
     this.leftIds.set(new Set());
@@ -542,6 +552,8 @@ export class TailoringWorkspace {
   // ── free edit ────────────────────────────────────────────────────────
   protected onEdit(e: { key: string; text: string }): void {
     this.edits.update((m) => ({ ...m, [e.key]: e.text }));
+    // A re-edit of an already-recorded line is pending again until re-recorded.
+    this.recordedKeys.update((s) => withRemoved(s, e.key));
     // Per the UI decision: re-run the deterministic provenance check on edit.
     // The edited line is shown as "your own edit" locally; a later wave will
     // rebuild an edited canonical so the core can re-check the changed line too.
@@ -557,7 +569,10 @@ export class TailoringWorkspace {
   protected async recordEdits(): Promise<void> {
     const ds = this.dataset();
     const editMap = this.edits();
-    const keys = Object.keys(editMap);
+    // Only pending edits are recordable — keys already recorded this session stay
+    // in `edits` for the preview but must not be re-written (they match editCount).
+    const recordedSet = this.recordedKeys();
+    const keys = Object.keys(editMap).filter((k) => !recordedSet.has(k));
     if (!ds || keys.length === 0) return;
 
     const payload = this.previewPayload();
@@ -601,14 +616,16 @@ export class TailoringWorkspace {
 
     this.recording.set(true);
     try {
-      const saved = await firstValueFrom(this.api.putDataset(next));
-      this.dataset.set(saved);
-      // Drop the now-saved keys; anything skipped/unresolved stays a local edit.
-      this.edits.update((m) => {
-        const copy = { ...m };
-        for (const k of recorded) delete copy[k];
-        return copy;
-      });
+      // The PUT responds with an ack ({status:"saved"}), not the dataset —
+      // keep the object we sent, or every later check parses the ack as a
+      // dataset and wedges.
+      await firstValueFrom(this.api.putDataset(next));
+      this.dataset.set(next);
+      // Keep the recorded keys IN `edits` so the preview text persists (it no
+      // longer snaps back to the payload's pre-edit prose); mark them recorded so
+      // they drop out of the pending `editCount`. Skipped/unresolved keys stay
+      // pending local edits. A later re-edit re-pends the key (see `onEdit`).
+      this.recordedKeys.update((s) => recorded.reduce((acc, k) => withAdded(acc, k), s));
       // Re-run the deterministic checks against the enriched dataset.
       await this.recompute();
 
@@ -720,6 +737,7 @@ export class TailoringWorkspace {
         // the new payload re-projects those positions, so a stale key could write
         // an edit onto the wrong dataset bullet. Drop pending edits on the swap.
         this.edits.set({});
+        this.recordedKeys.set(new Set());
         this.showToast('Layout refined — preview updated (not saved to this build). Unsaved edits were cleared by the layout change.');
         return;
       }
@@ -736,12 +754,40 @@ export class TailoringWorkspace {
    *  skipped through (no counts) records nothing and stays open. */
   private async applyDatasetRefine(o: ObjectionVM, result: unknown): Promise<void> {
     const r = (result ?? {}) as RefineResult;
-    const summary = refineSummaryText(o.copilot, r);
-    if (!summary || !r.dataset) {
+    if (r.aborted) {
+      await this.applyAbortedRefine(r);
+      return;
+    }
+    const outcome = refineOutcome(o.copilot, r);
+    if (!outcome || !r.dataset) {
       this.showToast('No changes recorded.');
       return;
     }
-    await this.persistEnrichedDataset(r.dataset, summary, [o.id]);
+    // Only mark the objection refined when actual evidence was recorded — a
+    // declined-only outcome persists the declines but leaves the objection open.
+    await this.persistEnrichedDataset(r.dataset, outcome.summary, outcome.recorded ? [o.id] : []);
+  }
+
+  /** The user ended a copilot session early. Keep whatever they recorded: if the
+   *  returned (partially-enriched) dataset differs from the current one, PUT it
+   *  via the validated path — but NEVER mark the objection refined, since the
+   *  session didn't complete. Toast honestly either way. */
+  private async applyAbortedRefine(r: RefineResult): Promise<void> {
+    // `mutated` is decided wasm-side (one serializer, same map instance) — a
+    // JS stringify-compare against our GET copy is unreliable because the two
+    // processes serialize HashMap fields (skills.aliases) in different orders,
+    // which read as "always changed".
+    const changed = r.mutated === true;
+    if (changed && r.dataset) {
+      // markIds empty: kept the evidence, but the objection is NOT refined.
+      await this.persistEnrichedDataset(
+        r.dataset,
+        'Session ended — kept what you recorded so far.',
+        [],
+      );
+    } else {
+      this.showToast('Session ended — nothing recorded.');
+    }
   }
 
   /** PUT an enriched dataset (validate-gated, 422 surfaces findings), re-run the
@@ -753,8 +799,9 @@ export class TailoringWorkspace {
     markIds: string[],
   ): Promise<void> {
     try {
-      const saved = await firstValueFrom(this.api.putDataset(dataset));
-      this.dataset.set(saved);
+      // Ack response — keep the dataset we sent (see recordEdits).
+      await firstValueFrom(this.api.putDataset(dataset));
+      this.dataset.set(dataset);
       // Provenance may now trace a previously-unrecorded line.
       void this.recompute();
       this.refinedIds.update((s) => markIds.reduce((acc, id) => withAdded(acc, id), s));
@@ -788,17 +835,24 @@ export class TailoringWorkspace {
         this.wasm.verifySkill(ds, jd, name),
       );
       const r = (result ?? {}) as RefineResult;
-      const summary = refineSummaryText('skills', r);
-      if (!summary || !r.dataset) {
+      if (r.aborted) {
+        await this.applyAbortedRefine(r);
+        return;
+      }
+      const outcome = refineOutcome('skills', r);
+      if (!outcome || !r.dataset) {
         this.showToast(`Nothing recorded for “${name}”.`);
         return;
       }
-      // Mark any open skills objection that names this requirement as refined.
+      // Mark any open skills objection that names this requirement as refined —
+      // but only when evidence was actually recorded (declined-only leaves them open).
       const needle = name.toLowerCase();
-      const ids = this.objectionVMs()
-        .filter((o) => o.copilot === 'skills' && o.targetLabel.toLowerCase().includes(needle))
-        .map((o) => o.id);
-      await this.persistEnrichedDataset(r.dataset, summary, ids);
+      const ids = outcome.recorded
+        ? this.objectionVMs()
+            .filter((o) => o.copilot === 'skills' && o.targetLabel.toLowerCase().includes(needle))
+            .map((o) => o.id)
+        : [];
+      await this.persistEnrichedDataset(r.dataset, outcome.summary, ids);
     } catch (err) {
       this.showToast(errMessage(err));
     }
@@ -812,6 +866,9 @@ export class TailoringWorkspace {
     const needle = e.name.toLowerCase();
     const match = this.objectionVMs().find(
       (o) =>
+        // Only objections a copilot can actually act on — the coverage map must
+        // not route around the drawer's runnable gate into a guaranteed no-op.
+        o.runnable &&
         !this.refinedIds().has(o.id) &&
         !this.accepted().has(o.id) &&
         (o.targetLabel.toLowerCase().includes(needle) ||
@@ -844,8 +901,9 @@ export class TailoringWorkspace {
     const next = withDismissal(ds, { target: targetKey(o.objection.target), kind: o.objection.kind });
     this.busy.set(o.id);
     this.api.putDataset(next).subscribe({
-      next: (saved) => {
-        this.dataset.set(saved);
+      // Ack response — keep the dataset we sent (see recordEdits).
+      next: () => {
+        this.dataset.set(next);
         this.accepted.update((s) => withAdded(s, o.id));
         this.leftIds.update((s) => withRemoved(s, o.id));
         this.busy.set(null);
@@ -954,6 +1012,9 @@ interface DismissedObjection {
  *  optional; each copilot populates the counts relevant to it). */
 interface RefineResult {
   dataset?: ResumeDataset;
+  /** Whether the interview actually changed the dataset — computed wasm-side
+   *  (a JS compare against the GET copy is serialization-order unreliable). */
+  mutated?: boolean;
   changed?: boolean;
   added?: number;
   verified?: number;
@@ -961,28 +1022,59 @@ interface RefineResult {
   skipped?: number;
   bullets_added?: number;
   declined?: number;
+  /** The user ended the session early (dismissed a choice modal). `dataset`, if
+   *  present, is the PARTIALLY-enriched dataset — their already-recorded answers,
+   *  which must be kept. Never mark the objection refined on an abort. */
+  aborted?: boolean;
+  message?: string;
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** A plain human summary from a copilot's counts, or null if it recorded nothing
- *  (the user skipped every prompt). Layout never reaches here. */
-function refineSummaryText(kind: CopilotKind, r: RefineResult): string | null {
+/** The persistable result of a dataset-enriching copilot: a plain summary to
+ *  toast, plus whether any *evidence* was recorded — which is what marks the
+ *  objection refined. A declined-only skills session is persistable (the declines
+ *  are saved so they aren't re-offered) but records no evidence, so `recorded`
+ *  is false and the objection stays open. Null = the user skipped everything. */
+interface RefineOutcome {
+  summary: string;
+  recorded: boolean;
+}
+
+function refineOutcome(kind: CopilotKind, r: RefineResult): RefineOutcome | null {
   switch (kind) {
     case 'strengthen':
-      return r.changed ? 'Recorded a stronger line as evidence — it lands on your next build.' : null;
+      return r.changed
+        ? { summary: 'Recorded a stronger line as evidence — it lands on your next build.', recorded: true }
+        : null;
     case 'summary':
-      return r.changed ? 'Updated summary saved to your dataset.' : null;
+      return r.changed ? { summary: 'Updated summary saved to your dataset.', recorded: true } : null;
     case 'metric':
-      return (r.added ?? 0) > 0 ? `Recorded ${plural(r.added ?? 0, 'metric')} as evidence.` : null;
+      return (r.added ?? 0) > 0
+        ? { summary: `Recorded ${plural(r.added ?? 0, 'metric')} as evidence.`, recorded: true }
+        : null;
     case 'skills': {
       const parts: string[] = [];
       if (r.verified) parts.push(`verified ${plural(r.verified, 'skill')}`);
       if (r.bullets_added) parts.push(`added ${plural(r.bullets_added, 'bullet')}`);
       if (r.removed) parts.push(`removed ${plural(r.removed, 'skill')}`);
-      if (parts.length === 0) return null;
-      const s = parts.join(', ');
-      return `${s.charAt(0).toUpperCase()}${s.slice(1)}.`;
+      const recorded = parts.length > 0;
+      const declined = r.declined ?? 0;
+      // Declined-only: nothing was recorded as evidence, but the declines ARE
+      // saved (so they won't be offered again) — a persistable, non-refining
+      // outcome with its own honest message.
+      if (!recorded) {
+        return declined > 0
+          ? {
+              summary: `Noted — ${plural(declined, 'keyword')} declined; they won’t be offered again.`,
+              recorded: false,
+            }
+          : null;
+      }
+      // Real evidence, optionally alongside declines ("Verified 1 skill · 2 declined").
+      if (declined > 0) parts.push(`${declined} declined`);
+      const s = parts.join(' · ');
+      return { summary: `${s.charAt(0).toUpperCase()}${s.slice(1)}.`, recorded };
     }
     case 'layout':
       return null;
