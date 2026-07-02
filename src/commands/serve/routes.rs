@@ -170,6 +170,15 @@ pub(super) async fn render(req: Request<Incoming>) -> Resp {
             Err(error) => return error_response(500, "internal", error.to_string()),
         },
     };
+    // Accept both the bare template name ("classic") and the prefixed id every
+    // stored artifact carries ("ats/classic" in meta.json and the payloads'
+    // `template` stamps) — an API that rejects its own artifacts' ids just
+    // makes every client re-derive the bare name. A prefix that contradicts
+    // the requested variant is a real mistake and stays a 400.
+    let template_name = match strip_variant_prefix(&template_name, variant) {
+        Ok(name) => name,
+        Err(message) => return error_response(400, "bad_template", message),
+    };
     let template = match templates::resolve(&template_name, variant) {
         Ok(template) => template,
         Err(error) => return error_response(400, "bad_template", error.to_string()),
@@ -193,6 +202,32 @@ pub(super) async fn render(req: Request<Incoming>) -> Resp {
             format!("the render task did not complete: {join}"),
         ),
     }
+}
+
+/// Normalize a template reference to the bare name `templates::resolve` takes.
+/// Stored artifacts stamp the prefixed id (`ats/classic`, `human/modern` — see
+/// `resolve_ats_template`'s `format!("ats/{name}")`), so the API accepts that
+/// form too: a matching prefix is stripped; a prefix contradicting the
+/// requested variant is refused with a message that names both sides; a bare
+/// name passes through untouched.
+fn strip_variant_prefix(name: &str, variant: Variant) -> Result<String, String> {
+    let (own, other) = match variant {
+        Variant::Ats => ("ats/", "human/"),
+        Variant::Human => ("human/", "ats/"),
+    };
+    if let Some(bare) = name.strip_prefix(own) {
+        return Ok(bare.to_string());
+    }
+    if name.starts_with(other) {
+        return Err(format!(
+            "template {name:?} belongs to the other variant; this is a {} render",
+            match variant {
+                Variant::Ats => "ats",
+                Variant::Human => "human",
+            }
+        ));
+    }
+    Ok(name.to_string())
 }
 
 /// The blocking half of [`render`]: stage into a unique scratch dir under the
@@ -1083,6 +1118,30 @@ mod tests {
             "usage": { "input_tokens": 100, "output_tokens": 50 }
         }))
         .unwrap()
+    }
+
+    /// The render route must accept both the bare template name and the
+    /// prefixed id stored artifacts carry — and refuse a cross-variant prefix.
+    #[test]
+    fn template_prefix_is_stripped_matched_or_refused() {
+        // Bare names pass through untouched.
+        assert_eq!(
+            strip_variant_prefix("classic", Variant::Ats).as_deref(),
+            Ok("classic")
+        );
+        // The stored id form ("ats/classic" in meta.json / payload stamps)
+        // strips to the bare name templates::resolve takes.
+        assert_eq!(
+            strip_variant_prefix("ats/classic", Variant::Ats).as_deref(),
+            Ok("classic")
+        );
+        assert_eq!(
+            strip_variant_prefix("human/modern", Variant::Human).as_deref(),
+            Ok("modern")
+        );
+        // A prefix contradicting the requested variant is a real mistake.
+        assert!(strip_variant_prefix("ats/classic", Variant::Human).is_err());
+        assert!(strip_variant_prefix("human/modern", Variant::Ats).is_err());
     }
 
     /// The persist step writes the same artifacts `aarg tailor` finalizes, into

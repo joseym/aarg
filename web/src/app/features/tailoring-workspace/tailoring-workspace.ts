@@ -1051,9 +1051,13 @@ export class TailoringWorkspace {
     const done = () => this.downloading.set(false);
     if (payload) {
       // Render the variant actually being previewed (human when present, else
-      // the ATS payload), not a hardcoded "human" — otherwise an ATS-only build
-      // would ask the server to render ATS content with the human template.
-      this.api.render(payload.variant, payload, b.meta?.template).subscribe({
+      // the ATS payload) with the payload's OWN template stamp — never
+      // meta.template, which by convention records the ATS template id and
+      // 400s a human render. The stamp is the prefixed id ("human/modern");
+      // send the bare name the resolver takes (the server also accepts the
+      // prefixed form now, but the bare name works on older servers too).
+      const templateName = payload.template?.replace(/^(ats|human)\//, '') || undefined;
+      this.api.render(payload.variant, payload, templateName).subscribe({
         next: (blob) => {
           triggerDownload(blob, `${this.id()}-${payload.variant}.pdf`);
           done();
