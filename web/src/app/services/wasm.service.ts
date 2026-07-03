@@ -27,7 +27,7 @@ function delay(ms: number): Promise<void> {
 type SseEvent =
   | { delta: string }
   | { done: { stop_reason: string | null; usage: unknown; model: string } }
-  | { error: string };
+  | { error: string; retryable?: boolean };
 
 /** A streamed `/api/llm` response that died mid-flight — a read error, or the
  *  stream ending before its `done` frame. Transient like a dropped POST, so the
@@ -425,6 +425,10 @@ export class WasmService {
               usage: evt.done.usage,
             });
           } else if ('error' in evt) {
+            // The server tags transient upstream failures (in-stream
+            // overloads, the streaming twin of a 529) so they re-enter the
+            // retry budget instead of aborting the run.
+            if (evt.retryable) throw new TypeError(evt.error);
             throw new StreamAppError(evt.error);
           }
         }
