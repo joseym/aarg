@@ -1,12 +1,12 @@
 [package]
 name = "aarg-domain"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "AARG's resume-tailoring domain: the data model, JD parsing, gap analysis, tailoring, adversarial review, and variant projection — portable over the aarg-core runtime"
 authors = ["Josey Morton <me@joseymorton.com>"]
-repository = "https://github.com/joseymorton/aarg"
+repository = "https://github.com/joseym/aarg"
 
 [features]
 # Forwarded to aarg-core: on by default for the binary, off for a wasm build
@@ -17,7 +17,7 @@ default = ["native"]
 native = ["aarg-core/native"]
 
 [dependencies]
-aarg-core = { path = "../aarg-core", default-features = false }
+aarg-core = { path = "../aarg-core", version = "0.2.0", default-features = false }
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
