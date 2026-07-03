@@ -176,7 +176,7 @@ Beyond the core loop:
   it without paying for a new tailor.
 - **Flexible input.** Ingest a résumé from text, Markdown, or a PDF, including
   scanned ones read with the model's vision. Give a posting as a file, a
-  Greenhouse/Lever URL, stdin, or a paste.
+  Greenhouse, Lever, or LinkedIn URL, stdin, or a paste.
 - **A browser workspace.** The whole build screen, served locally by
   `aarg serve`. See [The browser workspace](#the-browser-workspace).
 - **Use it from Claude.** Run AARG as an MCP server and drive it by chatting with
@@ -246,7 +246,7 @@ the run cost. Run `aarg` with no arguments to drop into an interactive shell tha
 takes the same commands without the prefix.
 
 You don't have to keep job postings in files. `tailor` and `gap` also accept a
-Greenhouse/Lever URL or `-` for stdin, and with no argument at all they let you
+Greenhouse, Lever, or LinkedIn URL or `-` for stdin, and with no argument at all they let you
 paste a posting in or reuse one you've already entered.
 
 If you'd rather work in a browser: once you have a dataset, run `aarg serve`.

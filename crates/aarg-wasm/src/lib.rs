@@ -90,6 +90,34 @@ fn dump<T: serde::Serialize>(value: &T) -> Result<String, String> {
     serde_json::to_string(value).map_err(|e| format!("could not serialize result: {e}"))
 }
 
+/// Render an error and its full cause chain into one line, joined with `: `.
+///
+/// A `#[source]`/`#[from]` cause never reaches the browser through
+/// `to_string()` alone — that prints only the top error's `Display`, which for
+/// a wrapper like `LoopError::Evaluate` is the bare "the draft evaluator
+/// failed" with the real reason (an LLM transport error, a reply that failed
+/// validation) buried underneath. Walking `std::error::Error::source()` and
+/// joining every level surfaces the whole story, so a rejected export carries
+/// e.g. "the draft evaluator failed: the LLM transport failed: the JS LLM
+/// callback rejected: Load failed" instead of just the first clause. Every
+/// export that rejects with a Rust error routes through here, so the browser
+/// always sees the full chain, never a lone opaque headline.
+///
+/// Not gated to wasm alone: the native `cargo test` build exercises it (the
+/// wasm exports that call it are wasm-only, but the rendering logic is plain
+/// Rust worth testing on the host).
+#[cfg(any(target_arch = "wasm32", test))]
+fn error_chain<E: std::error::Error>(err: &E) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
 fn validate_impl(dataset_json: &str) -> Result<String, String> {
     let dataset: ResumeDataset = parse(dataset_json, "dataset")?;
     dump(&aarg_domain::dataset::validate::validate(&dataset))
@@ -411,7 +439,7 @@ pub async fn parse_jd_llm(
     };
     let jd = aarg_domain::jd::parse_jd(&ctx, &jd_text)
         .await
-        .map_err(|e| throw(e.to_string()))?;
+        .map_err(|e| throw(error_chain(&e)))?;
     dump(&jd).map_err(throw)
 }
 
@@ -439,7 +467,7 @@ pub async fn analyze_gap_llm(
     };
     let report = aarg_domain::gap::analyze_gap(&ctx, &jd, &dataset)
         .await
-        .map_err(|e| throw(e.to_string()))?;
+        .map_err(|e| throw(error_chain(&e)))?;
     dump(&report).map_err(throw)
 }
 
@@ -495,7 +523,7 @@ pub async fn tailor_draft(
         None,
     )
     .await
-    .map_err(|e| throw(e.to_string()))?;
+    .map_err(|e| throw(error_chain(&e)))?;
     // Punctuation-only, no claim changes — the same finalize step the CLI
     // runs on the best draft before it ever hands one out (src/commands/tailor.rs).
     aarg_domain::tailor::scrub_resume_text(&mut outcome.resume);
@@ -534,7 +562,7 @@ pub async fn review_draft(
     };
     let report = aarg_domain::review::review_draft(&ctx, draft, jd, dataset)
         .await
-        .map_err(|e| throw(e.to_string()))?;
+        .map_err(|e| throw(error_chain(&e)))?;
     dump(&report).map_err(throw)
 }
 
@@ -589,7 +617,7 @@ pub async fn project_human_llm(
             },
         )
         .await
-        .map_err(|e| throw(e.to_string()))?;
+        .map_err(|e| throw(error_chain(&e)))?;
     // The reworded human variant runs the same two-stage never-fabricate
     // backstop every CLI build does: `vet_human` reverts prose that inflates a
     // claim without changing a number (which the digit guard alone can't catch),
@@ -597,8 +625,8 @@ pub async fn project_human_llm(
     let (mut payload, _review_usage) =
         aarg_domain::variant::vet_human(&ctx, &draft, run.output, &jd, &dataset)
             .await
-            .map_err(|e| throw(e.to_string()))?;
-    aarg_domain::variant::check_claims(&draft, &payload).map_err(|e| throw(e.to_string()))?;
+            .map_err(|e| throw(error_chain(&e)))?;
+    aarg_domain::variant::check_claims(&draft, &payload).map_err(|e| throw(error_chain(&e)))?;
     aarg_domain::variant::scrub_variant_text(&mut payload);
     dump(&payload).map_err(throw)
 }
@@ -673,15 +701,15 @@ pub async fn refine_layout_llm(
             },
         )
         .await
-        .map_err(|e| throw(e.to_string()))?;
+        .map_err(|e| throw(error_chain(&e)))?;
     // Same two-stage backstop as `project_human_llm`: the directive is free text
     // derived from client-supplied objection JSON, so run `vet_human` (catches
     // non-numeric prose inflation) before the `check_claims` lint.
     let (mut payload, _review_usage) =
         aarg_domain::variant::vet_human(&ctx, &draft, run.output, &jd, &dataset)
             .await
-            .map_err(|e| throw(e.to_string()))?;
-    aarg_domain::variant::check_claims(&draft, &payload).map_err(|e| throw(e.to_string()))?;
+            .map_err(|e| throw(error_chain(&e)))?;
+    aarg_domain::variant::check_claims(&draft, &payload).map_err(|e| throw(error_chain(&e)))?;
     aarg_domain::variant::scrub_variant_text(&mut payload);
     dump(&payload).map_err(throw)
 }
@@ -833,7 +861,7 @@ pub async fn capture_metrics_interactive(
             &dataset,
             &before,
             serde_json::json!({ "added": 0 }),
-            Some(e.to_string()),
+            Some(error_chain(&e)),
         ),
     };
     dump(&json).map_err(throw)
@@ -915,7 +943,7 @@ pub async fn strengthen_interactive(
             &dataset,
             &before,
             serde_json::json!({ "changed": 0 }),
-            Some(e.to_string()),
+            Some(error_chain(&e)),
         ),
     };
     dump(&json).map_err(throw)
@@ -983,7 +1011,7 @@ pub async fn refine_summary_interactive(
             &dataset,
             &before,
             serde_json::json!({ "changed": false }),
-            Some(e.to_string()),
+            Some(error_chain(&e)),
         ),
     };
     dump(&json).map_err(throw)
@@ -1042,7 +1070,7 @@ pub async fn enrich_roles_interactive(
                 &dataset,
                 &before,
                 serde_json::json!({ "bullets_added": 0, "roles_touched": 0 }),
-                Some(e.to_string()),
+                Some(error_chain(&e)),
             ),
         };
     dump(&json).map_err(throw)
@@ -1218,7 +1246,7 @@ pub async fn verify_skills_interactive(
             &dataset,
             &before,
             verify_counts_zeroed(),
-            Some(e.to_string()),
+            Some(error_chain(&e)),
         ),
     };
     dump(&json).map_err(throw)
@@ -1313,7 +1341,7 @@ pub async fn verify_skill_interactive(
             &dataset,
             &before,
             verify_counts_zeroed(),
-            Some(e.to_string()),
+            Some(error_chain(&e)),
         ),
     };
     dump(&json).map_err(throw)
@@ -1371,7 +1399,7 @@ pub async fn voice_rewrite(
 
     let (mut voiced, stats) = aarg_domain::voice::rewrite_to_voice(&ctx, &draft, &samples)
         .await
-        .map_err(|e| throw(e.to_string()))?;
+        .map_err(|e| throw(error_chain(&e)))?;
     aarg_domain::tailor::scrub_resume_text(&mut voiced);
 
     dump(&serde_json::json!({
@@ -1718,7 +1746,7 @@ pub async fn tailor_loop(
         None,
     )
     .await
-    .map_err(|e| throw(e.to_string()))?;
+    .map_err(|e| throw(error_chain(&e)))?;
     // Move each field out separately — the initial draft feeds the evaluator,
     // its warnings and dropped skills are reported alongside the best draft.
     // `usage` is `Copy`, so pulling it out here doesn't disturb the other
@@ -1759,7 +1787,7 @@ pub async fn tailor_loop(
     let initial_eval = evaluator
         .evaluate(&ctx, 0, initial_resume, &jd, &dataset, &gap)
         .await
-        .map_err(|e| throw(e.to_string()))?;
+        .map_err(|e| throw(error_chain(&e)))?;
     // Also `Copy`: the initial review call's token cost, taken before
     // `initial_eval` moves into `run_loop` below.
     let initial_review_usage = initial_eval.review_usage;
@@ -1798,7 +1826,7 @@ pub async fn tailor_loop(
             initial_eval,
         )
         .await
-        .map_err(|e| throw(e.to_string()))?
+        .map_err(|e| throw(error_chain(&e)))?
     };
 
     let mut best = outcome.best;
@@ -1888,6 +1916,63 @@ mod tests {
         assert_eq!(
             normalize_dashes_impl("Led the team — shipped it"),
             "Led the team, shipped it"
+        );
+    }
+
+    // A three-level error whose top `Display` hides the two causes beneath it —
+    // exactly the shape (`LoopError::Evaluate` → `ReviewError` → `LlmError`)
+    // that used to reach the browser as the lone "the draft evaluator failed".
+    #[derive(Debug)]
+    struct Cause;
+    impl std::fmt::Display for Cause {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "the JS LLM callback rejected: Load failed")
+        }
+    }
+    impl std::error::Error for Cause {}
+
+    #[derive(Debug)]
+    struct Middle(Cause);
+    impl std::fmt::Display for Middle {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "the reviewer failed")
+        }
+    }
+    impl std::error::Error for Middle {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[derive(Debug)]
+    struct Top(Middle);
+    impl std::fmt::Display for Top {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "the draft evaluator failed")
+        }
+    }
+    impl std::error::Error for Top {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn error_chain_joins_every_cause_not_just_the_headline() {
+        let err = Top(Middle(Cause));
+        assert_eq!(
+            error_chain(&err),
+            "the draft evaluator failed: the reviewer failed: \
+             the JS LLM callback rejected: Load failed"
+        );
+    }
+
+    #[test]
+    fn error_chain_of_a_lone_error_is_just_its_message() {
+        // No source: the chain is exactly the one Display line, no trailing `: `.
+        assert_eq!(
+            error_chain(&Cause),
+            "the JS LLM callback rejected: Load failed"
         );
     }
 

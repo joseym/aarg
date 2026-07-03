@@ -18,6 +18,11 @@ import type {
 type StringCallback = (json: string) => string | Promise<string>;
 type ProgressCallback = (json: string) => void;
 
+/** Resolve after `ms` milliseconds — the backoff wait between LLM-proxy retries. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** The subset of the generated `aarg_wasm.js` exports this service wraps. Typed
  *  locally (rather than importing the generated `.d.ts`) so the app still
  *  type-checks in a clone where `src/wasm/pkg` hasn't been built yet — the
@@ -226,21 +231,50 @@ export class WasmService {
 
   /** JSON callback bound to the LLM proxy. Posts the `CompletionRequest` string
    *  the core produced straight to `/api/llm` and returns the raw
-   *  `CompletionResponse` JSON string the core expects. */
+   *  `CompletionResponse` JSON string the core expects.
+   *
+   *  A single completion can run 60-90s, and on a phone iOS Safari kills a
+   *  long in-flight POST when the screen locks or the tab is backgrounded — it
+   *  surfaces as a fetch `TypeError` ("Load failed"). Providers also shed load
+   *  with a 429/529. Both are transient, so retry a bounded number of times
+   *  with backoff before giving up. Real application errors (a bad request, a
+   *  missing credential, a 500 with a body) are not transient and reject at
+   *  once — retrying them would only stall the run. Each attempt is a fresh
+   *  `fetch` with no client-side timeout, so backoff waits never stack onto a
+   *  call's own duration. */
   private readonly llm: StringCallback = async (requestJson) => {
-    const res = await fetch('/api/llm', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: requestJson,
-    });
-    if (!res.ok) {
-      // Include the server's body so an actionable message (a missing
-      // credential, a Typst failure, …) survives to the caller's toast instead
-      // of being flattened to a bare status code.
+    // Backoff before the 1st and 2nd retry; its length is the retry budget (2).
+    const backoffMs = [2000, 5000];
+    for (let attempt = 0; ; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch('/api/llm', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: requestJson,
+        });
+      } catch (err) {
+        // Transport-level failure (network dropped, request aborted by the OS).
+        if (attempt < backoffMs.length) {
+          console.warn(`/api/llm transport error; retry ${attempt + 1} after backoff`, err);
+          await delay(backoffMs[attempt]);
+          continue;
+        }
+        throw err instanceof Error ? err : new Error(String(err));
+      }
+      if (res.ok) return res.text();
+      // A provider overload (429 rate limit / 529 overloaded) is transient too.
+      if ((res.status === 429 || res.status === 529) && attempt < backoffMs.length) {
+        console.warn(`/api/llm overloaded (${res.status}); retry ${attempt + 1} after backoff`);
+        await delay(backoffMs[attempt]);
+        continue;
+      }
+      // Any other non-2xx (or an exhausted overload budget) is surfaced with the
+      // server's body so an actionable message (a missing credential, a Typst
+      // failure, an overload note) survives to the caller instead of a bare code.
       const body = await res.text().catch(() => '');
       throw new Error(body || `/api/llm returned ${res.status}`);
     }
-    return res.text();
   };
 
   private modelsJson(): string {

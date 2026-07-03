@@ -80,7 +80,7 @@ pub enum Command {
     },
     /// Compare your dataset against a job description's requirements
     Gap {
-        /// JD file, Greenhouse/Lever URL, `jd parse --json` output, or "-"; omit to pick a past one
+        /// JD file, Greenhouse/Lever/LinkedIn URL, `jd parse --json` output, or "-"; omit to pick a past one
         jd: Option<std::path::PathBuf>,
         /// Print the report as JSON instead of a summary
         #[arg(long)]
@@ -88,7 +88,7 @@ pub enum Command {
     },
     /// Tailor your resume to a job description and render the PDF(s)
     Tailor {
-        /// JD file, Greenhouse/Lever URL, `jd parse --json` output, or "-"; omit to pick a past one
+        /// JD file, Greenhouse/Lever/LinkedIn URL, `jd parse --json` output, or "-"; omit to pick a past one
         jd: Option<std::path::PathBuf>,
         /// Which PDF(s) to render: ats, human, or both (default)
         #[arg(long, value_enum, default_value_t = VariantArg::Both)]
@@ -365,7 +365,7 @@ pub enum TraceCommand {
 pub enum JdCommand {
     /// Parse a job description into structured requirements
     Parse {
-        /// JD text file, Greenhouse/Lever posting URL, or "-" for stdin
+        /// JD text file, Greenhouse/Lever/LinkedIn posting URL, or "-" for stdin
         path: std::path::PathBuf,
         /// Print the parsed requirements as JSON instead of a summary
         #[arg(long)]
@@ -373,7 +373,7 @@ pub enum JdCommand {
     },
     /// Rate how well your profile fits a posting (a tight coverage score)
     Rate {
-        /// JD file, Greenhouse/Lever URL, `jd parse --json` output, or "-"; omit to pick a past one
+        /// JD file, Greenhouse/Lever/LinkedIn URL, `jd parse --json` output, or "-"; omit to pick a past one
         jd: Option<std::path::PathBuf>,
         /// Print the rating as JSON instead of a summary
         #[arg(long)]
