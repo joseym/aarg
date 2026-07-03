@@ -125,8 +125,43 @@ export class CopilotHost {
    *  tokens arrive. Reset to 0 at each run start and at each new llm call, so it
    *  reads per-call progress. Display only — usage/cost stay milestone-driven. */
   readonly streamChars = signal(0);
+  /** Wall-clock ms of the most recent streamed delta for the in-flight call, or
+   *  0 when no delta has arrived since the call (or run) began. Drives the live
+   *  pulse and the stall note. */
+  readonly lastDeltaAt = signal(0);
+  /** True once at least one delta has arrived for the current call. Guards the
+   *  stall note so it never fires for a buffered (non-streaming) call, which
+   *  never ticks a delta. Reset at each call start and on every milestone. */
+  private readonly sawDelta = signal(false);
+  /** A coarse wall-clock tick refreshed by a light interval while a run is
+   *  active, so `streamingLive`/`stalled` re-evaluate as time passes. 0 when no
+   *  run holds the interval. */
+  private readonly nowTick = signal(0);
+  /** A transient, dim note while the LLM proxy is in a retry backoff. Cleared on
+   *  the next delta, the next milestone, or a short timer. */
+  readonly retryNote = signal<string | null>(null);
+
+  /** True while deltas are fresh (arrived within the last 2s): the pulse beats
+   *  and the `~N words` suffix shows. A buffered call never sets `lastDeltaAt`,
+   *  so it reads as not-live. */
+  readonly streamingLive = computed(() => {
+    const last = this.lastDeltaAt();
+    return last !== 0 && this.nowTick() - last < 2000;
+  });
+  /** True when a streaming call has gone quiet: at least one delta arrived, then
+   *  nothing for over 4s. Never true for a buffered call (`sawDelta` stays
+   *  false). */
+  readonly stalled = computed(() => {
+    const last = this.lastDeltaAt();
+    return this.sawDelta() && last !== 0 && this.nowTick() - last >= 4000;
+  });
+  /** A friendly word estimate of the in-flight stream (~5 chars per word).
+   *  Display only, shown while `streamingLive`. */
+  readonly streamWords = computed(() => Math.round(this.streamChars() / 5));
 
   private noticeTimer?: ReturnType<typeof setTimeout>;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private liveClock?: ReturnType<typeof setInterval>;
 
   /** The in-flight screen wake lock (a promise resolving to the sentinel), or
    *  null when no cancellable run holds one. See {@link acquireWakeLock}. */
@@ -137,7 +172,8 @@ export class CopilotHost {
     // streams progress into it. Instantiating the host is what wires them up.
     this.wasm.userHandler = (json) => this.ask(json);
     this.wasm.progressHandler = (json) => this.onProgress(json);
-    this.wasm.streamHandler = (chars) => this.streamChars.set(chars);
+    this.wasm.streamHandler = (chars) => this.onStreamTick(chars);
+    this.wasm.retryNotify = (msg) => this.showRetry(msg);
     // Harness hook: lets a headless (Playwright) test drive the modal directly,
     // e.g. `__copilotHost.ask('{"kind":"text","prompt":"hi"}')`. Dev convenience.
     (globalThis as unknown as { __copilotHost?: CopilotHost }).__copilotHost = this;
@@ -204,6 +240,54 @@ export class CopilotHost {
     this.noticeTimer = setTimeout(() => this.notice.set(null), ms);
   }
 
+  /** The `streamHandler` seam: record the cumulative char count and stamp the
+   *  delta's arrival time. A `chars === 0` tick marks a fresh call/retry — reset
+   *  the per-call delta state so a prior call's stall/live state can't bleed in.
+   *  A real delta (`chars > 0`) refreshes `lastDeltaAt`, marks the call as
+   *  streaming, and clears any lingering retry note. */
+  private onStreamTick(chars: number): void {
+    this.streamChars.set(chars);
+    if (chars > 0) {
+      this.lastDeltaAt.set(Date.now());
+      this.sawDelta.set(true);
+      this.clearRetryNote();
+    } else {
+      this.lastDeltaAt.set(0);
+      this.sawDelta.set(false);
+    }
+  }
+
+  /** The `retryNotify` seam: surface a transient, dim backoff note. Auto-clears
+   *  after 6s (a touch past the longest backoff) so it never lingers; a resumed
+   *  stream or a milestone clears it sooner. */
+  private showRetry(message: string): void {
+    this.retryNote.set(normalizeDashes(message));
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => this.retryNote.set(null), 6000);
+  }
+
+  /** Clear the retry note and disarm its timer. */
+  private clearRetryNote(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    this.retryNote.set(null);
+  }
+
+  /** Start the light interval that ticks `nowTick`, so the time-based computeds
+   *  (`streamingLive`, `stalled`) re-evaluate while a run is active. Idempotent:
+   *  it clears any prior interval first, so a second run can't leak one. */
+  private startLiveClock(): void {
+    this.stopLiveClock();
+    this.nowTick.set(Date.now());
+    this.liveClock = setInterval(() => this.nowTick.set(Date.now()), 500);
+  }
+
+  /** Stop the `nowTick` interval (run teardown). */
+  private stopLiveClock(): void {
+    if (this.liveClock) clearInterval(this.liveClock);
+    this.liveClock = undefined;
+  }
+
   /** `select` answer → the chosen option's exact text. */
   answerSelect(optionText: string): void {
     this.settle(JSON.stringify({ choice: optionText }));
@@ -250,9 +334,13 @@ export class CopilotHost {
     } catch {
       return;
     }
-    // A milestone means the model call behind the counter is over; clear it
-    // so a finished call's total does not read as live streaming.
+    // A milestone means the model call behind the counter is over; clear the
+    // per-call streaming state so a finished call's total does not read as live
+    // streaming, the pulse goes quiet, and any stall/retry note clears.
     this.streamChars.set(0);
+    this.lastDeltaAt.set(0);
+    this.sawDelta.set(false);
+    this.clearRetryNote();
     // MODEL text: the progress line is model-phrased; normalize it before it
     // reaches the overlay (see shared/normalize-dashes).
     if (ev.message) ev.message = normalizeDashes(ev.message);
@@ -296,6 +384,12 @@ export class CopilotHost {
     this.usage.set({ input: 0, output: 0 });
     this.costLabel.set('');
     this.streamChars.set(0);
+    this.lastDeltaAt.set(0);
+    this.sawDelta.set(false);
+    this.clearRetryNote();
+    // A light interval drives the time-based streaming computeds while the run
+    // is active; torn down in the finally so it never outlives the run.
+    this.startLiveClock();
     // Hold a screen wake lock for the duration of a cancellable (multi-minute)
     // run: a phone whose screen locks mid-loop backgrounds the page, and iOS
     // Safari then kills the in-flight /api/llm completion. Keeping the screen
@@ -312,6 +406,11 @@ export class CopilotHost {
       return await fn();
     } finally {
       this.releaseWakeLock();
+      this.stopLiveClock();
+      this.clearRetryNote();
+      this.streamChars.set(0);
+      this.lastDeltaAt.set(0);
+      this.sawDelta.set(false);
       this.running.set(null);
       this.cancellable.set(false);
       this.stopping.set(false);
@@ -506,6 +605,9 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
         </div>
         @if (latest(); as ev) {
           <div class="prog-line">
+            @if (host.streamingLive()) {
+              <span class="cp-pulse" aria-hidden="true"></span>
+            }
             <span>{{ ev.message || ev.phase }}</span>
             @if (ev.iteration != null) {
               <span class="dim">· iter {{ ev.iteration }}</span>
@@ -513,14 +615,24 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
             @if (ev.score != null) {
               <span class="dim">· score {{ ev.score }}</span>
             }
-            @if (host.streamChars(); as chars) {
-              <span class="dim">· {{ chars }} chars</span>
+            @if (host.streamingLive()) {
+              <span class="dim">· ~{{ host.streamWords() }} words</span>
+            }
+            @if (host.stalled()) {
+              <span class="dim">· waiting on the model</span>
             }
           </div>
-        } @else if (host.streamChars(); as chars) {
+        } @else if (host.streamingLive()) {
           <div class="prog-line">
-            <span class="dim">{{ chars }} chars</span>
+            <span class="cp-pulse" aria-hidden="true"></span>
+            <span class="dim">~{{ host.streamWords() }} words</span>
+            @if (host.stalled()) {
+              <span class="dim">· waiting on the model</span>
+            }
           </div>
+        }
+        @if (host.retryNote(); as note) {
+          <div class="prog-retry" role="status">{{ note }}</div>
         }
         @if (host.costLabel()) {
           <div class="cost">· {{ host.costLabel() }}</div>
@@ -743,6 +855,23 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
     .prog-line .dim {
       color: var(--muted);
     }
+    /* Activity pulse: beats while deltas arrive (rendered only when live), goes
+       quiet the moment streaming stops. Mirrors the edit-bar's .pulse dot. */
+    .cp-pulse {
+      display: inline-block;
+      vertical-align: middle;
+      width: 8px;
+      height: 8px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 55%, transparent);
+      animation: cp-pulse 1.4s ease-out infinite;
+    }
+    .prog-retry {
+      font-size: 12px;
+      color: var(--muted);
+    }
     .cost {
       font-family: var(--font-mono);
       font-size: 12px;
@@ -765,11 +894,25 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
         transform: rotate(360deg);
       }
     }
-    /* No spinner animation when the user prefers reduced motion. */
+    @keyframes cp-pulse {
+      0% {
+        box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 50%, transparent);
+      }
+      70% {
+        box-shadow: 0 0 0 7px transparent;
+      }
+      100% {
+        box-shadow: 0 0 0 0 transparent;
+      }
+    }
+    /* No spinner/pulse animation when the user prefers reduced motion. */
     @media (prefers-reduced-motion: reduce) {
       .spinner {
         animation: none;
         border-top-color: var(--border);
+      }
+      .cp-pulse {
+        animation: none;
       }
     }
   `,
