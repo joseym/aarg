@@ -142,7 +142,7 @@ export class CopilotHost {
   readonly retryNote = signal<string | null>(null);
 
   /** True while deltas are fresh (arrived within the last 2s): the pulse beats
-   *  and the `~N words` suffix shows. A buffered call never sets `lastDeltaAt`,
+   *  and the pulse beats. A buffered call never sets `lastDeltaAt`,
    *  so it reads as not-live. */
   readonly streamingLive = computed(() => {
     const last = this.lastDeltaAt();
@@ -157,7 +157,6 @@ export class CopilotHost {
   });
   /** A friendly word estimate of the in-flight stream (~5 chars per word).
    *  Display only, shown while `streamingLive`. */
-  readonly streamWords = computed(() => Math.round(this.streamChars() / 5));
 
   private noticeTimer?: ReturnType<typeof setTimeout>;
   private retryTimer?: ReturnType<typeof setTimeout>;
@@ -615,9 +614,6 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
             @if (ev.score != null) {
               <span class="dim">· score {{ ev.score }}</span>
             }
-            @if (host.streamingLive()) {
-              <span class="dim">· ~{{ host.streamWords() }} words</span>
-            }
             @if (host.stalled()) {
               <span class="dim">· waiting on the model</span>
             }
@@ -625,7 +621,6 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
         } @else if (host.streamingLive()) {
           <div class="prog-line">
             <span class="cp-pulse" aria-hidden="true"></span>
-            <span class="dim">~{{ host.streamWords() }} words</span>
             @if (host.stalled()) {
               <span class="dim">· waiting on the model</span>
             }
