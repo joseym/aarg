@@ -207,6 +207,11 @@ cd aarg
 cargo install --path .
 ```
 
+A from-source install embeds the browser workspace only if you build the web
+app first (the wasm-pack and npm steps under
+[Running the browser workspace](#running-the-browser-workspace)). Skip that
+and you get the full CLI with `aarg serve` in API-only mode.
+
 ### A first run
 
 ```sh
@@ -224,45 +229,38 @@ You don't have to keep job postings in files. `tailor` and `gap` also accept a
 Greenhouse/Lever URL or `-` for stdin, and with no argument at all they let you
 paste a posting in or reuse one you've already entered.
 
-If you'd rather work in a browser: once you have a dataset, `aarg serve --dir web/dist/aarg/browser`
-starts the companion server on `http://127.0.0.1:8787`, and everything in
+If you'd rather work in a browser: once you have a dataset, run `aarg serve`.
+When the binary carries the embedded app (release installs do; from-source
+installs do after the web build above), the server starts on
+`http://127.0.0.1:8787` with the workspace already served, and everything in
 [The browser workspace](#the-browser-workspace) runs from the page, the loop
-included. It stays on loopback unless you ask otherwise. Building that app and
-reaching it from a phone are covered next in
+included. It stays on loopback unless you ask otherwise. Reaching it from a
+phone, and building the app from source, are covered in
 [Running the browser workspace](#running-the-browser-workspace).
 
 ### Running the browser workspace
 
-The browser app is built from source; its WebAssembly bundle and compiled output
-are not checked in, so build both once from a fresh clone:
+Run `aarg serve` and open the URL it prints:
 
 ```sh
-# Compile the domain pipeline to the WebAssembly bundle the page runs on.
-wasm-pack build crates/aarg-wasm --target web --out-dir ../../web/src/wasm/pkg --out-name aarg_wasm
-
-# Install the web app's dependencies (first build only) and compile it.
-cd web && npm install && npm run build && cd ..
+aarg serve   # http://127.0.0.1:8787
 ```
 
-The Angular build lands in `web/dist/aarg/browser`. Point the server at it and
-open the URL it prints:
-
-```sh
-aarg serve --dir web/dist/aarg/browser   # http://127.0.0.1:8787
-```
+The browser app is compiled into the binary, so there is nothing to point the
+server at. It opens on loopback and serves the workspace at `/`.
 
 Flags:
 
 - `--port <PORT>` (default `8787`): the port to bind.
-- `--dir <PATH>`: serve the built web app at `/`; omit it to expose the JSON API alone.
 - `--bind <ADDR>` (default `127.0.0.1`): loopback only by default; `0.0.0.0` reaches the server from another device on your network.
 - `--allow-host <HOST>` (repeatable): extra `Host` header values to accept once bound past loopback; this machine's own hostname is allowed automatically.
+- `--dir <PATH>`: serve a different web app build at `/` instead of the built-in one, for developing the app (see below).
 
 To open the workspace from a phone on a network you trust, bind past loopback and
 name your host:
 
 ```sh
-aarg serve --dir web/dist/aarg/browser --bind 0.0.0.0 --allow-host <your-hostname>
+aarg serve --bind 0.0.0.0 --allow-host <your-hostname>
 ```
 
 Then browse to `http://<your-hostname>.local:8787` from the phone. Binding past
@@ -273,8 +271,36 @@ cross-origin `POST`s, and it sends no CORS headers, so only the page it serves
 can talk to it.
 
 `aarg serve` is a long-running process, so a newly installed binary does not take
-effect until you stop and restart it. Rebuild the web app the same way after
-changing it.
+effect until you stop and restart it.
+
+#### Developing the web app
+
+The app that gets embedded is built from source; its WebAssembly bundle and
+compiled output are not checked in. The binary embeds whatever is in
+`web/dist/aarg/browser` at compile time, so a build script bakes those files in.
+Two consequences follow: a `cargo install --path .` from a fresh clone ships an
+app-less binary (API only) until you build the web dist first, and after
+rebuilding the app you reinstall to pick up the change.
+
+Build the WebAssembly bundle and the Angular app:
+
+```sh
+# Compile the domain pipeline to the WebAssembly bundle the page runs on.
+wasm-pack build crates/aarg-wasm --target web --out-dir ../../web/src/wasm/pkg --out-name aarg_wasm
+
+# Install the web app's dependencies (first build only) and compile it.
+cd web && npm install && npm run build && cd ..
+```
+
+The Angular build lands in `web/dist/aarg/browser`. To iterate on the app
+without reinstalling the binary each time, serve that directory directly:
+
+```sh
+aarg serve --dir web/dist/aarg/browser   # http://127.0.0.1:8787
+```
+
+`--dir` overrides the embedded app, so a rebuild of the web dist shows up on the
+next page load with no reinstall.
 
 ## Authentication
 
