@@ -26,6 +26,7 @@ function loadSidebarCollapsed(): boolean {
   imports: [RouterOutlet, Topbar, Sidebar, CopilotOverlay],
   templateUrl: './app.html',
   styleUrl: './app.css',
+  host: { '(document:keydown.escape)': 'closeNav()' },
 })
 export class App implements OnInit {
   private readonly store = inject(BuildsStore);
@@ -33,6 +34,12 @@ export class App implements OnInit {
 
   /** Drawer open state (only meaningful ≤1080px). */
   protected readonly navOpen = signal(false);
+
+  /** Dismiss the mobile drawer on Escape. A no-op when it is already closed, so
+   *  the key stays free for anything else listening on wider layouts. */
+  protected closeNav(): void {
+    if (this.navOpen()) this.navOpen.set(false);
+  }
 
   /** Desktop sidebar collapse (only meaningful above 1080px; ignored by the
    *  ≤1080px drawer, which always opens full-width regardless). */
