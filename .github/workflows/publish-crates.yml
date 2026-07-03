@@ -68,11 +68,17 @@ jobs:
           #   2. A just-published dependency has not propagated to the sparse
           #      index yet, so cargo cannot resolve it. That is transient; back
           #      off and retry a bounded number of times.
+          # The aarg package embeds the freshly built (gitignored) web dist;
+          # cargo's dirty-check treats packaged-but-uncommitted files as an
+          # error, so that one crate publishes with --allow-dirty. The pure
+          # library crates stay strict.
           publish() {
-            local crate=$1 attempt=1 max=10 out rc
+            local crate=$1 attempt=1 max=10 out rc dirty=""
+            [ "$crate" = "aarg" ] && dirty="--allow-dirty"
             while :; do
               set +e
-              out=$(cargo publish -p "$crate" 2>&1)
+              # shellcheck disable=SC2086
+              out=$(cargo publish -p "$crate" $dirty 2>&1)
               rc=$?
               set -e
               printf '%s\n' "$out"
