@@ -121,6 +121,10 @@ export class CopilotHost {
   readonly usage = signal<{ input: number; output: number }>({ input: 0, output: 0 });
   /** A display cost — a dollar figure, a subscription note, or empty. */
   readonly costLabel = signal<string>('');
+  /** Characters streamed so far by the in-flight `/api/llm` call, ticked live as
+   *  tokens arrive. Reset to 0 at each run start and at each new llm call, so it
+   *  reads per-call progress. Display only — usage/cost stay milestone-driven. */
+  readonly streamChars = signal(0);
 
   private noticeTimer?: ReturnType<typeof setTimeout>;
 
@@ -133,6 +137,7 @@ export class CopilotHost {
     // streams progress into it. Instantiating the host is what wires them up.
     this.wasm.userHandler = (json) => this.ask(json);
     this.wasm.progressHandler = (json) => this.onProgress(json);
+    this.wasm.streamHandler = (chars) => this.streamChars.set(chars);
     // Harness hook: lets a headless (Playwright) test drive the modal directly,
     // e.g. `__copilotHost.ask('{"kind":"text","prompt":"hi"}')`. Dev convenience.
     (globalThis as unknown as { __copilotHost?: CopilotHost }).__copilotHost = this;
@@ -287,6 +292,7 @@ export class CopilotHost {
     this.progress.set([]);
     this.usage.set({ input: 0, output: 0 });
     this.costLabel.set('');
+    this.streamChars.set(0);
     // Hold a screen wake lock for the duration of a cancellable (multi-minute)
     // run: a phone whose screen locks mid-loop backgrounds the page, and iOS
     // Safari then kills the in-flight /api/llm completion. Keeping the screen
@@ -504,6 +510,13 @@ function skipAnswer(kind: QuestionEnvelope['kind']): string {
             @if (ev.score != null) {
               <span class="dim">· score {{ ev.score }}</span>
             }
+            @if (host.streamChars(); as chars) {
+              <span class="dim">· {{ chars }} chars</span>
+            }
+          </div>
+        } @else if (host.streamChars(); as chars) {
+          <div class="prog-line">
+            <span class="dim">{{ chars }} chars</span>
           </div>
         }
         @if (host.costLabel()) {
