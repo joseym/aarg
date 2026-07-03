@@ -8,8 +8,8 @@ with [Typst](https://typst.app) into two PDFs, one formatted to survive
 applicant tracking systems and one designed for a person to read.
 
 It runs on your machine, against your own career data, and it will not invent
-experience you don't have. Three separate layers enforce that: the validation
-types, the assembly step, and the adversarial review.
+experience you don't have. [It won't make things up](#it-wont-make-things-up)
+explains how that's enforced.
 
 You can drive it from a command-line tool or from a local browser workspace,
 which runs the same Rust in the page via WebAssembly alongside a small
@@ -51,7 +51,7 @@ review loop to the exported PDFs.
 When an objection can't be satisfied without lying ("this bullet states an
 outcome with no number"), the loop stops guessing and asks you. A short
 interview folds your real figures back into the dataset, then re-tailors.
-Anything factual has to come from you; the model only gets to rephrase it.
+The facts have to come from you. The model is only allowed to rephrase them.
 
 The full write-up is in [docs/design/adversarial-loop.md](docs/design/adversarial-loop.md).
 
@@ -121,17 +121,17 @@ on a phone, too:
 ## It won't make things up
 
 Every skill, date, employer, and number in the output traces to evidence in your
-dataset. The model isn't trusted to follow that rule on its own; three separate
+dataset. The model isn't trusted to follow that rule on its own. Three separate
 mechanisms hold it:
 
-- **At the type level.** A skill with no backing evidence fails validation and
-  never reaches a draft.
-- **In assembly.** The model speaks in evidence IDs; a number it introduces that
-  the source bullet doesn't contain is reverted, and an unbacked skill is
-  dropped. The same checks run on the first draft and on every revision, because
-  both go through the same code.
-- **At review.** The reviewer flags unsupported claims, and a separate lint
-  refuses to ship the build if the two PDFs ever diverge on what they claim.
+- A skill with no backing evidence fails type-level validation and never
+  reaches a draft.
+- During assembly, the model speaks in evidence IDs: a number it introduces
+  that the source bullet doesn't contain is reverted, and an unbacked skill is
+  dropped. The same checks run on the first draft and on every revision,
+  because both go through the same code.
+- At review, the reviewer flags unsupported claims, and a separate lint refuses
+  to ship the build if the two PDFs ever diverge on what they claim.
 
 Keyword-coverage gaps, where the posting wants something you didn't surface, are
 reported to you and stop there. They never feed back into a prompt, which closes
@@ -154,8 +154,8 @@ The server re-checks everything anyway: a draft or edit submitted by a page
 deterministic divergence guard before anything is written, a saved dataset is
 re-validated the way `aarg dataset validate` would, and a variant that claims
 more than the canonical draft is rejected with a `422`. A page could be buggy
-or tampered with; the process that owns the disk and the key doesn't rely on
-it.
+or tampered with, so the process that owns the disk and the key checks for
+itself.
 
 ## Features
 
@@ -189,16 +189,16 @@ Beyond the core loop:
 
 ### Prerequisites
 
-- **[Typst](https://github.com/typst/typst)** on your `PATH`, needed by every
-  install channel; rendering shells out to it. If the binary is missing you get
-  a clear message telling you how to install it.
+- **[Typst](https://github.com/typst/typst)** on your `PATH`, however you
+  install aarg; rendering shells out to it. If it's missing, aarg says so and
+  tells you how to install it.
 - **Rust 1.89 or newer** (2024 edition) to build from source, whether with
   `cargo install aarg` or from a clone. The installer script needs no toolchain.
 - An **Anthropic API key**, or a Claude Pro/Max subscription (see
   [Authentication](#authentication)).
 - **[wasm-pack](https://rustwasm.github.io/wasm-pack/) and Node.js with npm**,
-  only for developing the web app. Every install channel already carries the
-  built workspace, so skip these unless you're changing the front end.
+  only for developing the web app. Every install already carries the built
+  workspace, so skip these unless you're changing the front end.
 
 ### Install
 
@@ -213,7 +213,7 @@ Install [Typst](https://github.com/typst/typst) separately (`brew install typst`
 on a Mac); rendering shells out to it.
 
 `cargo install aarg` from crates.io compiles the same binary locally, workspace
-and all, and the Typst note applies the same way:
+and all. You still need Typst:
 
 ```sh
 cargo install aarg
@@ -250,13 +250,13 @@ Greenhouse/Lever URL or `-` for stdin, and with no argument at all they let you
 paste a posting in or reuse one you've already entered.
 
 If you'd rather work in a browser: once you have a dataset, run `aarg serve`.
-When the binary carries the embedded app (release installs do; from-source
-installs do after the web build above), the server starts on
-`http://127.0.0.1:8787` with the workspace already served, and everything in
+The server starts on `http://127.0.0.1:8787` with the workspace already served,
+and everything in
 [The browser workspace](#the-browser-workspace) runs from the page, the loop
-included. It stays on loopback unless you ask otherwise. Reaching it from a
-phone, and building the app from source, are covered in
-[Running the browser workspace](#running-the-browser-workspace).
+included. Release installs carry the app; a from-source install picks it up
+after the web build described later. It stays on loopback unless you ask
+otherwise. Reaching it from a phone, and building the app from source, are
+covered in [Running the browser workspace](#running-the-browser-workspace).
 
 ### Running the browser workspace
 
@@ -295,12 +295,11 @@ effect until you stop and restart it.
 
 #### Developing the web app
 
-The app that gets embedded is built from source; its WebAssembly bundle and
-compiled output are not checked in. The binary embeds whatever is in
-`web/dist/aarg/browser` at compile time, so a build script bakes those files in.
-Two consequences follow: a `cargo install --path .` from a fresh clone ships an
-app-less binary (API only) until you build the web dist first, and after
-rebuilding the app you reinstall to pick up the change.
+The WebAssembly bundle and the compiled app are not checked in. At compile
+time a build script bakes whatever is in `web/dist/aarg/browser` into the
+binary. That means a `cargo install --path .` from a fresh clone ships an
+API-only binary until you build the web dist, and after rebuilding the app you
+reinstall to pick up the change.
 
 Build the WebAssembly bundle and the Angular app:
 
@@ -370,8 +369,8 @@ Two ATS templates (`classic`, `minimal`) and three human ones (`modern`,
 `technical`, `editorial`) ship built-in; point `tailor --template <file.typ>` at
 your own to render the human variant however you like.
 
-`aarg serve` runs the companion server for the browser workspace; its build
-steps, flags, and the phone-on-your-network recipe are in
+Flags for `aarg serve`, the phone-on-your-network recipe, and the web app
+build steps are in
 [Running the browser workspace](#running-the-browser-workspace).
 
 ## How it's built
@@ -429,7 +428,7 @@ real domain agents run unchanged over the browser's own model calls.
 
 One difference to know about: the in-browser loop's improve-or-stop gate scores
 on the reviewer's verdict alone, while the CLI blends in deterministic ATS
-keyword coverage. The agents and drafts are identical; the browser just weighs
+keyword coverage. The agents and drafts are identical. The browser just weighs
 a revision slightly differently.
 
 ### Where the agent runtime came from
