@@ -250,6 +250,9 @@ export class CopilotHost {
     } catch {
       return;
     }
+    // A milestone means the model call behind the counter is over; clear it
+    // so a finished call's total does not read as live streaming.
+    this.streamChars.set(0);
     // MODEL text: the progress line is model-phrased; normalize it before it
     // reaches the overlay (see shared/normalize-dashes).
     if (ev.message) ev.message = normalizeDashes(ev.message);

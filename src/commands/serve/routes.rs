@@ -174,7 +174,7 @@ fn sse_stream_body(stream: crate::llm::TokenStream, model: String) -> super::Bod
                     "/api/llm upstream failed: {}",
                     clip(&error_chain(&error), 200)
                 ));
-                sse_error_frame(&error_chain(&error))
+                sse_error_frame(&error_chain(&error), is_transient(&error))
             }
         };
         Ok::<_, std::convert::Infallible>(Frame::data(bytes))
@@ -239,8 +239,17 @@ fn sse_done_frame(
 /// A mid-stream error frame: `data: {"error":"<chain>"}\n\n`. The message is
 /// the full cause chain (see [`error_chain`]); like every other error surface
 /// here, it never carries key material.
-fn sse_error_frame(message: &str) -> hyper::body::Bytes {
-    sse_data_frame(&json!({ "error": message }))
+fn sse_error_frame(message: &str, retryable: bool) -> hyper::body::Bytes {
+    sse_data_frame(&json!({ "error": message, "retryable": retryable }))
+}
+
+/// Whether an in-stream failure is the transient class a client should retry.
+/// Anthropic delivers overloads inside the stream (the streaming twin of an
+/// HTTP 529), so without this tag a browser run would abort at peak hours
+/// where the buffered path would have backed off and continued.
+fn is_transient(error: &crate::llm::LlmError) -> bool {
+    let chain = error_chain(error).to_lowercase();
+    chain.contains("overloaded") || chain.contains("rate_limit") || chain.contains("rate limit")
 }
 
 /// Render an error with its full cause chain ("top: cause: cause"), because
@@ -1563,8 +1572,9 @@ mod tests {
         assert_eq!(payload["done"]["usage"]["output_tokens"], 34);
         assert_eq!(payload["done"]["model"], "claude-opus-4-8");
 
-        // An error frame carries the chained message verbatim.
-        let err = sse_error_frame("could not reach the LLM API: connection refused");
+        // An error frame carries the chained message verbatim, tagged with
+        // whether the client should retry it.
+        let err = sse_error_frame("could not reach the LLM API: connection refused", false);
         let payload: Value = serde_json::from_str(
             std::str::from_utf8(&err)
                 .unwrap()
@@ -1576,6 +1586,22 @@ mod tests {
             payload["error"],
             "could not reach the LLM API: connection refused"
         );
+        assert_eq!(payload["retryable"], false);
+
+        // In-stream overloads are the streaming twin of an HTTP 529 and get
+        // tagged for the client's retry budget.
+        let overload = sse_error_frame("the stream reported an error: overloaded_error", true);
+        let payload: Value = serde_json::from_str(
+            std::str::from_utf8(&overload)
+                .unwrap()
+                .trim_start_matches("data: ")
+                .trim_end(),
+        )
+        .unwrap();
+        assert_eq!(payload["retryable"], true);
+        assert!(is_transient(&crate::llm::LlmError::Stream(
+            "overloaded_error: try again".into()
+        )));
 
         // A done frame with no stop reason nulls it rather than omitting it.
         let done = sse_done_frame(None, &TokenUsage::default(), "m");
