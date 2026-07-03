@@ -66,6 +66,16 @@ export interface PendingQuestion {
   choices: { display: string; value: string }[];
 }
 
+/** The slice of the Screen Wake Lock API this host uses. Typed locally (rather
+ *  than relying on lib.dom's `WakeLockSentinel`) so it compiles on any target
+ *  lib and a test can stub `navigator.wakeLock` with the same shape. */
+interface WakeLockSentinelLike {
+  release(): Promise<void>;
+}
+interface WakeLockLike {
+  request(type: 'screen'): Promise<WakeLockSentinelLike>;
+}
+
 /** A live progress event from `tailor_loop`. */
 export interface ProgressEvent {
   phase:
@@ -113,6 +123,10 @@ export class CopilotHost {
   readonly costLabel = signal<string>('');
 
   private noticeTimer?: ReturnType<typeof setTimeout>;
+
+  /** The in-flight screen wake lock (a promise resolving to the sentinel), or
+   *  null when no cancellable run holds one. See {@link acquireWakeLock}. */
+  private wakeLock: Promise<WakeLockSentinelLike | null> | null = null;
 
   constructor() {
     // Install the seams: the core now asks the user through this host, and
@@ -273,6 +287,11 @@ export class CopilotHost {
     this.progress.set([]);
     this.usage.set({ input: 0, output: 0 });
     this.costLabel.set('');
+    // Hold a screen wake lock for the duration of a cancellable (multi-minute)
+    // run: a phone whose screen locks mid-loop backgrounds the page, and iOS
+    // Safari then kills the in-flight /api/llm completion. Keeping the screen
+    // awake stops the suspend that would drop the request. Released in finally.
+    if (opts?.cancellable) this.acquireWakeLock();
     try {
       // Arm the run's cancel flag here — the single reset point. Clearing it now
       // (before `fn`, which for a build begins with gap analysis) means a Stop
@@ -283,11 +302,40 @@ export class CopilotHost {
       if (opts?.cancellable) await this.wasm.resetTailorLoopCancel();
       return await fn();
     } finally {
+      this.releaseWakeLock();
       this.running.set(null);
       this.cancellable.set(false);
       this.stopping.set(false);
       this.question.set(null);
     }
+  }
+
+  /** Re-acquire the wake lock when the page returns to the foreground: the
+   *  browser auto-releases a screen lock on hide, so a phone unlocked mid-run
+   *  needs a fresh one to stay awake for the rest of the loop. */
+  private readonly onVisibility = (): void => {
+    if (document.visibilityState === 'visible' && this.running()) {
+      this.wakeLock = null; // the prior sentinel was auto-released on hide
+      this.acquireWakeLock();
+    }
+  };
+
+  /** Request a `'screen'` wake lock, feature-detected (iOS Safari 16.4+ and
+   *  every evergreen desktop browser support it; older ones simply skip it).
+   *  A rejected request (e.g. the page isn't visible yet) is non-fatal. */
+  private acquireWakeLock(): void {
+    const nav = navigator as Navigator & { wakeLock?: WakeLockLike };
+    if (!nav.wakeLock || this.wakeLock) return;
+    document.addEventListener('visibilitychange', this.onVisibility);
+    this.wakeLock = nav.wakeLock.request('screen').catch(() => null);
+  }
+
+  /** Release the wake lock (best-effort) and stop re-acquiring it. */
+  private releaseWakeLock(): void {
+    document.removeEventListener('visibilitychange', this.onVisibility);
+    const pending = this.wakeLock;
+    this.wakeLock = null;
+    if (pending) void pending.then((lock) => lock?.release()).catch(() => undefined);
   }
 
   /**
