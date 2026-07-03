@@ -87,11 +87,27 @@ pub(super) async fn llm(req: Request<Incoming>) -> Resp {
             // only a bounded snippet of the error itself.
             log(&format!(
                 "/api/llm upstream failed: {}",
-                clip(&error.to_string(), 200)
+                clip(&error_chain(&error), 200)
             ));
             llm_error_response(error)
         }
     }
+}
+
+/// Render an error with its full cause chain ("top: cause: cause"), because
+/// the top Display alone can be content-free: reqwest's "could not reach the
+/// LLM API" hides whether DNS failed, the connection was refused, or a
+/// timeout fired, and that cause is exactly what an operator (or the browser
+/// toast) needs.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
 }
 
 /// Clip a message to at most `max` characters (on a char boundary) for a log
@@ -122,7 +138,7 @@ fn llm_error_response(error: LlmError) -> Resp {
             let code = StatusCode::from_u16(status).map_or(502, |_| status);
             error_response(code, kind, message.clone())
         }
-        other => error_response(502, "upstream", other.to_string()),
+        other => error_response(502, "upstream", error_chain(&other)),
     }
 }
 
@@ -1127,9 +1143,9 @@ pub(super) async fn fetch_jd(req: Request<Incoming>) -> Resp {
             // stderr line. The URL is the user's own input, not sensitive.
             log(&format!(
                 "/api/fetch-jd upstream failed: {}",
-                clip(&error.to_string(), 200)
+                clip(&error_chain(&error), 200)
             ));
-            error_response(502, "fetch_failed", error.to_string())
+            error_response(502, "fetch_failed", error_chain(&error))
         }
     }
 }
