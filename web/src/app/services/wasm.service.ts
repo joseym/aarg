@@ -268,6 +268,11 @@ export class WasmService {
    *  it to a signal. Display only — cost/usage stay milestone-driven. */
   streamHandler: ((chars: number) => void) | null = null;
 
+  /** Called with a short, plain note when the LLM proxy enters a retry backoff,
+   *  so the overlay can surface the otherwise-silent wait. Null by default;
+   *  `CopilotHost` wires it to a transient status line. Display only. */
+  retryNotify: ((message: string) => void) | null = null;
+
   /** Lazy-load + init the wasm module exactly once. */
   private async load(): Promise<WasmExports> {
     if (this.mod) return this.mod;
@@ -334,6 +339,7 @@ export class WasmService {
         // Transport-level failure (network dropped, request aborted by the OS).
         if (attempt < backoffMs.length) {
           console.warn(`/api/llm transport error; retry ${attempt + 1} after backoff`, err);
+          this.retryNotify?.('model call interrupted, retrying');
           await delay(backoffMs[attempt]);
           continue;
         }
@@ -343,6 +349,7 @@ export class WasmService {
         // A provider overload (429 rate limit / 529 overloaded) is transient too.
         if ((res.status === 429 || res.status === 529) && attempt < backoffMs.length) {
           console.warn(`/api/llm overloaded (${res.status}); retry ${attempt + 1} after backoff`);
+          this.retryNotify?.('model call interrupted, retrying');
           await delay(backoffMs[attempt]);
           continue;
         }
@@ -368,6 +375,7 @@ export class WasmService {
         if (err instanceof StreamAppError) throw new Error(err.message);
         if (err instanceof StreamTransportError && attempt < backoffMs.length) {
           console.warn(`/api/llm ${err.message}; retry ${attempt + 1} after backoff`);
+          this.retryNotify?.('model call interrupted, retrying');
           await delay(backoffMs[attempt]);
           continue;
         }
