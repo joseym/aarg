@@ -14,11 +14,10 @@ repository = "https://github.com/joseym/aarg"
 homepage = "https://github.com/joseym/aarg"
 include = [
   "src/*.rs",
-  "src/*.teach.md",
-  "src/commands/**",
-  "src/dataset/**",
-  "src/evals/**",
-  "src/mcp/**",
+  "src/commands/**/*.rs",
+  "src/dataset/**/*.rs",
+  "src/evals/**/*.rs",
+  "src/mcp/**/*.rs",
   "/build.rs",
   "templates/**",
   "web/dist/aarg/browser/**",
@@ -92,3 +91,8 @@ tempfile = "3.27.0"
 [profile.release.package.aarg-wasm]
 opt-level = "z"
 codegen-units = 1
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
