@@ -149,7 +149,7 @@ different tool, or answering without one. The only fatal outcome is a
 model that keeps reaching for tools past a fixed round cap, which
 fails the run with a typed error instead of spending indefinitely.
 The first real tool is `fetch_jd`, offered by the JD parser for input
-that merely links to a job posting; notably, the tool's *implementation*
+that merely links to a job posting; the tool's *implementation*
 lives in the binary crate, because knowing about job boards is domain
 knowledge: the runtime defines the capability, the domain provides it.
 
