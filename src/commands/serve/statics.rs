@@ -16,21 +16,26 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{AppState, Resp, bytes_response, error_response};
+use super::{AppState, Resp, StaticSource, bytes_response, embedded, error_response};
 
 /// Serve a static file for a non-`/api` GET. `path` is the request path
-/// (e.g. `/`, `/index.html`, `/assets/app.wasm`). A `404` when no `--dir` was
-/// given, when the file doesn't exist, or when the path tried to escape the
-/// root.
+/// (e.g. `/`, `/index.html`, `/assets/app.wasm`). Dispatches on where the app
+/// lives: an on-disk `--dir`, the app baked into the binary, or nothing.
 pub(super) fn serve(state: &AppState, path: &str) -> Resp {
-    let Some(root) = state.static_root.as_deref() else {
-        return error_response(
+    match &state.source {
+        StaticSource::Dir(root) => serve_from_dir(root, path),
+        StaticSource::Embedded => serve_embedded(path),
+        StaticSource::None => error_response(
             404,
             "not_found",
-            "static serving is off; start the server with `--dir <path>` to serve a browser app",
-        );
-    };
+            "static serving is off; this build has no embedded browser app, start the server with --dir <path> to serve one",
+        ),
+    }
+}
 
+/// Serve a file from an on-disk `--dir` root. A `404` when the file doesn't
+/// exist or when the path tried to escape the root.
+fn serve_from_dir(root: &Path, path: &str) -> Resp {
     let file = match resolve(root, path) {
         Some(file) => file,
         // SPA fallback: a request for a client-side route (no file extension,
@@ -58,6 +63,28 @@ pub(super) fn serve(state: &AppState, path: &str) -> Resp {
         // Resolve already confirmed it's a file under the root, so a read error
         // here is a genuine IO fault, not a missing/forbidden path.
         Err(error) => error_response(500, "internal", format!("could not read the file: {error}")),
+    }
+}
+
+/// Serve a file baked into the binary (see [`super::embedded`]). No filesystem
+/// and no traversal defense needed — the table is fixed at build time — but the
+/// content-type and cache rules are the same ones the on-disk path applies,
+/// keyed off the asset's own name.
+fn serve_embedded(path: &str) -> Resp {
+    match embedded::lookup(path) {
+        Some((name, bytes)) => {
+            let asset = Path::new(name);
+            // `bytes` is `&'static [u8]`; the response body owns its bytes, so
+            // copy the slice into it. The static data itself stays in the
+            // binary image, shared across every request.
+            let mut resp = bytes_response(200, content_type_for(asset), bytes.to_vec());
+            if let Ok(value) = hyper::header::HeaderValue::from_str(cache_control_for(asset)) {
+                resp.headers_mut()
+                    .insert(hyper::header::CACHE_CONTROL, value);
+            }
+            resp
+        }
+        None => error_response(404, "not_found", format!("no static file for {path}")),
     }
 }
 
@@ -95,7 +122,8 @@ fn resolve(root: &Path, path: &str) -> Option<PathBuf> {
 /// sufficient: an asset has a file extension in its last segment
 /// (`/main-ABC.js`, `/aarg_wasm_bg.wasm`), a route does not (`/build/051/tailor`,
 /// `/`). A missing asset stays a 404; a missing route serves the app.
-fn is_spa_route(path: &str) -> bool {
+/// `pub(super)` so the embedded server ([`super::embedded`]) reuses this rule.
+pub(super) fn is_spa_route(path: &str) -> bool {
     let last = path.rsplit('/').next().unwrap_or("");
     !last.contains('.')
 }
@@ -244,5 +272,37 @@ mod tests {
         assert_eq!(resolve(&root, "/assets/../../secret.txt"), None);
         // A directory is not a servable file.
         assert_eq!(resolve(&root, "/"), Some(root.join("index.html")));
+    }
+
+    /// The content type of a response, as a string.
+    fn content_type(resp: &Resp) -> &str {
+        resp.headers()
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+    }
+
+    #[test]
+    fn embedded_serves_index_and_wasm_with_the_right_types() {
+        // Only meaningful when a web dist was embedded at build time. On a fresh
+        // clone the table is empty, so skip rather than fail.
+        if !embedded::available() {
+            eprintln!("skipping embedded static test: no browser app was embedded in this build");
+            return;
+        }
+
+        // `/` serves index.html as HTML, no-cache (it names the current chunks).
+        assert_eq!(
+            embedded::lookup("/").map(|(name, _)| name),
+            Some("index.html")
+        );
+        let root = serve_embedded("/");
+        assert_eq!(root.status(), 200);
+        assert_eq!(content_type(&root), "text/html; charset=utf-8");
+
+        // The wasm module must carry application/wasm for streaming compilation.
+        let wasm = serve_embedded("/aarg_wasm_bg.wasm");
+        assert_eq!(wasm.status(), 200);
+        assert_eq!(content_type(&wasm), "application/wasm");
     }
 }
