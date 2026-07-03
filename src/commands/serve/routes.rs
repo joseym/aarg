@@ -13,13 +13,18 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use hyper::body::Incoming;
+use futures_util::StreamExt;
+use http_body_util::{BodyExt, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::{Request, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use super::{AppState, Resp, bytes_response, error_response, json_response, log, read_body};
+use super::{
+    AppState, Resp, bytes_response, error_response, event_stream_response, json_response, log,
+    read_body,
+};
 use crate::ats;
 use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::configured_client;
@@ -31,7 +36,9 @@ use crate::dataset::validate;
 use crate::fetch::{self, FetchError};
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
-use crate::llm::{CompletionRequest, LlmClient, LlmError, TokenUsage};
+use crate::llm::{
+    AnthropicClient, CompletionRequest, LlmClient, LlmError, StreamEvent, TokenUsage,
+};
 use crate::pricing;
 use crate::render::{self, RenderError};
 use crate::review::AdversarialReport;
@@ -43,14 +50,25 @@ use crate::variant::{self, TemplateId, Variant, VariantPayload};
 // POST /api/llm — proxy one completion through the server's credentials
 // ---------------------------------------------------------------------
 
-/// Run one non-streaming completion. The body is a `CompletionRequest` (the
-/// `aarg-core` wire type the browser's bridge callback already produces); the
-/// server builds a client with the *same* credential resolution the CLI uses
-/// ([`configured_client`], which reads env / keychain / a CLI-delegated token)
-/// and returns the `CompletionResponse`. The key never crosses to the browser
-/// — that's the whole reason this route exists. Streaming (SSE) is a later
-/// slice.
+/// Run one completion. The body is a `CompletionRequest` (the `aarg-core` wire
+/// type the browser's bridge callback already produces); the server builds a
+/// client with the *same* credential resolution the CLI uses
+/// ([`configured_client`], which reads env / keychain / a CLI-delegated token).
+/// The key never crosses to the browser — that's the whole reason this route
+/// exists.
+///
+/// Two modes, decided by [`stream_mode`]: a client that sends
+/// `Accept: text/event-stream` and whose request carries no tools gets the
+/// completion streamed as server-sent events, one frame per token; everything
+/// else (no Accept, or a tool-bearing request) gets the whole
+/// `CompletionResponse` buffered in one JSON response. A tool-bearing request
+/// is never streamed because the SSE parser drops non-text content deltas and
+/// would silently lose its tool calls.
 pub(super) async fn llm(req: Request<Incoming>) -> Resp {
+    // Whether the client asked for SSE — read from the headers before
+    // `read_body` consumes the request.
+    let accepts_event_stream = wants_event_stream(req.headers());
+
     let body = match read_body(req).await {
         Ok(body) => body,
         Err(resp) => return resp,
@@ -77,6 +95,17 @@ pub(super) async fn llm(req: Request<Incoming>) -> Resp {
         }
     };
 
+    if stream_mode(accepts_event_stream, &request) {
+        llm_stream(client, request).await
+    } else {
+        llm_buffered(client, request).await
+    }
+}
+
+/// The buffered path: wait for the whole completion and return it as one JSON
+/// response. This is the original `/api/llm` behavior, unchanged, for a client
+/// that sent no `Accept: text/event-stream` (or a tool-bearing request).
+async fn llm_buffered(client: AnthropicClient, request: CompletionRequest) -> Resp {
     match client.complete(request).await {
         Ok(response) => json_response(200, &response),
         Err(error) => {
@@ -92,6 +121,126 @@ pub(super) async fn llm(req: Request<Incoming>) -> Resp {
             llm_error_response(error)
         }
     }
+}
+
+/// The streaming path: open the provider stream and forward each `StreamEvent`
+/// as one SSE frame, flushed the moment the model produces it. The stream ends
+/// after the terminal `Done` frame (or an error frame). If the stream can't
+/// even be *opened* (a 401, a 429, an unreachable host), that surfaces the same
+/// way the buffered path surfaces it — a normal JSON error response the
+/// browser's non-2xx path handles — because no `200` has been sent yet.
+async fn llm_stream(client: AnthropicClient, request: CompletionRequest) -> Resp {
+    // The stream's own `Done` event doesn't echo the model, so capture it from
+    // the request before `stream` consumes it — the `done` frame needs it.
+    let model = request.model.clone();
+
+    let stream = match client.stream(request).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            log(&format!(
+                "/api/llm upstream failed: {}",
+                clip(&error_chain(&error), 200)
+            ));
+            return llm_error_response(error);
+        }
+    };
+
+    event_stream_response(sse_stream_body(stream, model))
+}
+
+/// Turn a provider `TokenStream` into the SSE response body: each `StreamEvent`
+/// becomes exactly one `data:` frame, emitted the moment it's polled off the
+/// stream (`StreamBody` polls one item at a time, so hyper flushes per event
+/// rather than buffering the whole completion). Split from [`llm_stream`] so a
+/// test can drive it with a hand-built stream — the route's own `TokenStream`
+/// comes from `configured_client`, which isn't injectable.
+///
+/// The provider task ends the `TokenStream` right after a `Done` or an error,
+/// so the mapped stream ends naturally after its terminal frame. The body error
+/// type is `Infallible`: a mid-stream provider failure becomes an `error`
+/// *frame* (data on the already-`200` stream), never a transport error on the
+/// body.
+fn sse_stream_body(stream: crate::llm::TokenStream, model: String) -> super::Body {
+    let frames = stream.map(move |item| {
+        let bytes = match item {
+            Ok(StreamEvent::TextDelta(text)) => sse_delta_frame(&text),
+            Ok(StreamEvent::Done { stop_reason, usage }) => {
+                sse_done_frame(stop_reason.as_deref(), &usage, &model)
+            }
+            Err(error) => {
+                // Same operator-visible line the buffered path writes, then the
+                // full chain goes to the browser as an error frame.
+                log(&format!(
+                    "/api/llm upstream failed: {}",
+                    clip(&error_chain(&error), 200)
+                ));
+                sse_error_frame(&error_chain(&error))
+            }
+        };
+        Ok::<_, std::convert::Infallible>(Frame::data(bytes))
+    });
+
+    StreamBody::new(frames).boxed_unsync()
+}
+
+/// Whether a request's `Accept` header asks for an SSE stream. A browser
+/// `fetch` sets exactly `text/event-stream`; the parse is lenient (split the
+/// comma list, drop any `;q=` parameter) so it also matches when the type is
+/// offered among several.
+fn wants_event_stream(headers: &hyper::HeaderMap) -> bool {
+    headers
+        .get(hyper::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(accept_has_event_stream)
+}
+
+/// Whether an `Accept` header value lists `text/event-stream` among its media
+/// types (ignoring any `;q=`/other parameter on each).
+fn accept_has_event_stream(accept: &str) -> bool {
+    accept
+        .split(',')
+        .any(|media| media.split(';').next().map(str::trim) == Some("text/event-stream"))
+}
+
+/// The streaming decision: stream only when the client asked for SSE AND the
+/// request carries no tools. A tool-bearing request must be buffered — the SSE
+/// parser skips non-text content deltas, so streaming one would silently drop
+/// its tool calls (a correctness bug, not just a formatting one).
+fn stream_mode(accepts_event_stream: bool, request: &CompletionRequest) -> bool {
+    accepts_event_stream && request.tools.is_empty()
+}
+
+/// One SSE `data:` frame: `data: <json>\n\n`. The blank line terminates the
+/// event, which is what makes hyper (and any intermediary) flush it.
+fn sse_data_frame(payload: &Value) -> hyper::body::Bytes {
+    hyper::body::Bytes::from(format!("data: {payload}\n\n"))
+}
+
+/// A token-delta frame: `data: {"delta":"<text>"}\n\n`. `serde_json` does the
+/// escaping, so a delta with a quote, newline, or backslash stays valid JSON.
+fn sse_delta_frame(text: &str) -> hyper::body::Bytes {
+    sse_data_frame(&json!({ "delta": text }))
+}
+
+/// The terminal frame: `data: {"done":{...}}\n\n`, carrying the final stop
+/// reason, the token usage, and the model the request named (the stream's own
+/// `Done` event doesn't echo the model, so it's threaded through from the
+/// request).
+fn sse_done_frame(
+    stop_reason: Option<&str>,
+    usage: &TokenUsage,
+    model: &str,
+) -> hyper::body::Bytes {
+    sse_data_frame(&json!({
+        "done": { "stop_reason": stop_reason, "usage": usage, "model": model }
+    }))
+}
+
+/// A mid-stream error frame: `data: {"error":"<chain>"}\n\n`. The message is
+/// the full cause chain (see [`error_chain`]); like every other error surface
+/// here, it never carries key material.
+fn sse_error_frame(message: &str) -> hyper::body::Bytes {
+    sse_data_frame(&json!({ "error": message }))
 }
 
 /// Render an error with its full cause chain ("top: cause: cause"), because
@@ -1344,6 +1493,163 @@ mod tests {
     use http_body_util::BodyExt;
 
     use super::*;
+
+    /// A tool-free `CompletionRequest`, the shape a browser build sends for
+    /// every streamable call.
+    fn tool_free_request() -> CompletionRequest {
+        serde_json::from_value(json!({
+            "model": "claude-opus-4-8",
+            "max_tokens": 64,
+            "system": null,
+            "messages": [{ "role": "user", "content": "hi" }],
+            "temperature": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn accept_header_detects_event_stream_leniently() {
+        assert!(accept_has_event_stream("text/event-stream"));
+        // Offered among several types, with a q-value, still counts.
+        assert!(accept_has_event_stream(
+            "text/html, text/event-stream;q=0.9"
+        ));
+        assert!(accept_has_event_stream("text/event-stream; charset=utf-8"));
+        // A plain JSON or wildcard accept does not opt into streaming.
+        assert!(!accept_has_event_stream("application/json"));
+        assert!(!accept_has_event_stream("*/*"));
+        assert!(!accept_has_event_stream(""));
+    }
+
+    #[test]
+    fn stream_mode_needs_both_the_accept_header_and_no_tools() {
+        // The happy case: the client asked for SSE and the request is tool-free.
+        assert!(stream_mode(true, &tool_free_request()));
+        // No Accept header: buffered, even without tools.
+        assert!(!stream_mode(false, &tool_free_request()));
+        // A tool-bearing request is buffered even when SSE was requested — the
+        // SSE parser drops non-text deltas and would lose the tool calls.
+        let mut with_tools = tool_free_request();
+        with_tools.tools.push(crate::llm::ToolSpec {
+            name: "lookup".into(),
+            description: "look something up".into(),
+            input_schema: json!({ "type": "object" }),
+        });
+        assert!(!stream_mode(true, &with_tools));
+    }
+
+    #[test]
+    fn sse_frames_serialize_to_the_documented_wire_shape() {
+        // A delta frame: `data: {"delta":"..."}\n\n`, with JSON escaping.
+        let delta = sse_delta_frame("he\"llo\n");
+        assert_eq!(
+            std::str::from_utf8(&delta).unwrap(),
+            "data: {\"delta\":\"he\\\"llo\\n\"}\n\n"
+        );
+
+        // A done frame carries stop_reason, usage, and the threaded-through model.
+        let usage = TokenUsage {
+            input_tokens: 12,
+            output_tokens: 34,
+        };
+        let done = sse_done_frame(Some("end_turn"), &usage, "claude-opus-4-8");
+        let text = std::str::from_utf8(&done).unwrap();
+        assert!(text.starts_with("data: "));
+        assert!(text.ends_with("\n\n"));
+        let payload: Value =
+            serde_json::from_str(text.trim_start_matches("data: ").trim_end()).unwrap();
+        assert_eq!(payload["done"]["stop_reason"], "end_turn");
+        assert_eq!(payload["done"]["usage"]["input_tokens"], 12);
+        assert_eq!(payload["done"]["usage"]["output_tokens"], 34);
+        assert_eq!(payload["done"]["model"], "claude-opus-4-8");
+
+        // An error frame carries the chained message verbatim.
+        let err = sse_error_frame("could not reach the LLM API: connection refused");
+        let payload: Value = serde_json::from_str(
+            std::str::from_utf8(&err)
+                .unwrap()
+                .trim_start_matches("data: ")
+                .trim_end(),
+        )
+        .unwrap();
+        assert_eq!(
+            payload["error"],
+            "could not reach the LLM API: connection refused"
+        );
+
+        // A done frame with no stop reason nulls it rather than omitting it.
+        let done = sse_done_frame(None, &TokenUsage::default(), "m");
+        let payload: Value = serde_json::from_str(
+            std::str::from_utf8(&done)
+                .unwrap()
+                .trim_start_matches("data: ")
+                .trim_end(),
+        )
+        .unwrap();
+        assert!(payload["done"]["stop_reason"].is_null());
+    }
+
+    /// Collect a boxed body into one string — the bytes hyper would write to
+    /// the socket, concatenated.
+    async fn body_to_string(body: super::super::Body) -> String {
+        let bytes = body.collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn sse_stream_body_emits_one_frame_per_event_in_order() {
+        // A hand-built provider stream: two text deltas then a Done — the shape
+        // `AnthropicClient::stream` produces. `sse_stream_body` isn't reachable
+        // through a live socket without a credential, so drive it directly.
+        let events: Vec<Result<StreamEvent, LlmError>> = vec![
+            Ok(StreamEvent::TextDelta("Hel".into())),
+            Ok(StreamEvent::TextDelta("lo".into())),
+            Ok(StreamEvent::Done {
+                stop_reason: Some("end_turn".into()),
+                usage: TokenUsage {
+                    input_tokens: 3,
+                    output_tokens: 2,
+                },
+            }),
+        ];
+        let stream: crate::llm::TokenStream = Box::pin(futures_util::stream::iter(events));
+        let body = sse_stream_body(stream, "claude-mock".into());
+        let wire = body_to_string(body).await;
+
+        // Exactly three frames, each its own `data: ...\n\n`, in order.
+        let frames: Vec<&str> = wire.split_terminator("\n\n").collect();
+        assert_eq!(frames.len(), 3, "wire = {wire:?}");
+        assert_eq!(frames[0], r#"data: {"delta":"Hel"}"#);
+        assert_eq!(frames[1], r#"data: {"delta":"lo"}"#);
+        let done: Value = serde_json::from_str(frames[2].trim_start_matches("data: ")).unwrap();
+        assert_eq!(done["done"]["stop_reason"], "end_turn");
+        assert_eq!(done["done"]["model"], "claude-mock");
+        assert_eq!(done["done"]["usage"]["output_tokens"], 2);
+    }
+
+    #[tokio::test]
+    async fn sse_stream_body_forwards_a_midstream_error_as_a_final_error_frame() {
+        // One delta, then the provider stream yields an error: it must reach the
+        // browser as a trailing `error` frame, not tear the body.
+        let events: Vec<Result<StreamEvent, LlmError>> = vec![
+            Ok(StreamEvent::TextDelta("partial".into())),
+            Err(LlmError::Stream("the upstream fell over".into())),
+        ];
+        let stream: crate::llm::TokenStream = Box::pin(futures_util::stream::iter(events));
+        let wire = body_to_string(sse_stream_body(stream, "m".into())).await;
+
+        let frames: Vec<&str> = wire.split_terminator("\n\n").collect();
+        assert_eq!(frames.len(), 2, "wire = {wire:?}");
+        assert_eq!(frames[0], r#"data: {"delta":"partial"}"#);
+        let err: Value = serde_json::from_str(frames[1].trim_start_matches("data: ")).unwrap();
+        assert!(
+            err["error"]
+                .as_str()
+                .unwrap()
+                .contains("the upstream fell over"),
+            "error frame = {frames:?}"
+        );
+    }
 
     #[test]
     fn a_render_request_deserializes_variant_payload_and_optional_template() {
