@@ -19,7 +19,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use super::{AppState, Resp, bytes_response, error_response, json_response, read_body};
+use super::{AppState, Resp, bytes_response, error_response, json_response, log, read_body};
 use crate::ats;
 use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::configured_client;
@@ -79,7 +79,30 @@ pub(super) async fn llm(req: Request<Incoming>) -> Resp {
 
     match client.complete(request).await {
         Ok(response) => json_response(200, &response),
-        Err(error) => llm_error_response(error),
+        Err(error) => {
+            // One stderr line so an operator running `aarg serve` can see an
+            // upstream failure (a provider overload, an outage, an auth reject)
+            // that the browser only ever surfaces as a chained rejection. The
+            // request body carries the resume and JD, so it is never logged —
+            // only a bounded snippet of the error itself.
+            log(&format!(
+                "/api/llm upstream failed: {}",
+                clip(&error.to_string(), 200)
+            ));
+            llm_error_response(error)
+        }
+    }
+}
+
+/// Clip a message to at most `max` characters (on a char boundary) for a log
+/// line, appending an ellipsis when it was longer, so one upstream error can't
+/// spill a wall of text to stderr.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let head: String = text.chars().take(max).collect();
+        format!("{head}…")
     }
 }
 
@@ -1098,7 +1121,16 @@ pub(super) async fn fetch_jd(req: Request<Incoming>) -> Resp {
         Err(error @ FetchError::UnsupportedUrl { .. }) => {
             error_response(422, "unsupported_url", error.to_string())
         }
-        Err(error) => error_response(502, "fetch_failed", error.to_string()),
+        Err(error) => {
+            // Same operator-visible line as the LLM proxy: an upstream fetch
+            // failure (a timeout, a 5xx from the posting host) is worth one
+            // stderr line. The URL is the user's own input, not sensitive.
+            log(&format!(
+                "/api/fetch-jd upstream failed: {}",
+                clip(&error.to_string(), 200)
+            ));
+            error_response(502, "fetch_failed", error.to_string())
+        }
     }
 }
 
