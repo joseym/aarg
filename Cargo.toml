@@ -3,18 +3,32 @@ members = ["crates/aarg-core", "crates/aarg-domain", "crates/aarg-wasm"]
 
 [package]
 name = "aarg"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # File::try_lock in the dataset store needs 1.89's stabilized file locking.
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "The Adversarial Agentic Resume Generator - a local-first CLI that tailors resumes to job descriptions without fabricating experience"
 authors = ["Josey Morton <me@joseymorton.com>"]
-repository = "https://github.com/joseymorton/aarg"
+repository = "https://github.com/joseym/aarg"
+homepage = "https://github.com/joseym/aarg"
+include = [
+  "src/*.rs",
+  "src/commands/**/*.rs",
+  "src/dataset/**/*.rs",
+  "src/evals/**/*.rs",
+  "src/mcp/**/*.rs",
+  "/build.rs",
+  "templates/**",
+  "web/dist/aarg/browser/**",
+  "/README.md",
+  "/LICENSE-MIT",
+  "/LICENSE-APACHE",
+]
 
 [dependencies]
-aarg-core = { path = "crates/aarg-core" }
-aarg-domain = { path = "crates/aarg-domain" }
+aarg-core = { path = "crates/aarg-core", version = "0.2.0" }
+aarg-domain = { path = "crates/aarg-domain", version = "0.2.0" }
 async-trait = "0.1.89"
 # Encode image/PDF bytes for the vision content blocks sent to the model.
 base64 = "0.22"
@@ -77,3 +91,8 @@ tempfile = "3.27.0"
 [profile.release.package.aarg-wasm]
 opt-level = "z"
 codegen-units = 1
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

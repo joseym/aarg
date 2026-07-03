@@ -207,7 +207,7 @@ then restart your shell.")]
         /// Port to bind; defaults to 8787
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
-        /// Serve static files (the browser app) from this directory at `/`; omit to expose the API alone
+        /// Serve a different web app build at `/` instead of the built-in one (development override)
         #[arg(long, value_name = "PATH")]
         dir: Option<std::path::PathBuf>,
         /// Bind address; defaults to 127.0.0.1 (localhost only). Pass 0.0.0.0 to reach the server from another device on your network (e.g. a phone) — this also exposes your dataset and the key-spending LLM proxy to that network, so use only a trusted one

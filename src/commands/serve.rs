@@ -74,6 +74,7 @@ use tokio::net::TcpListener;
 use crate::commands::CliError;
 use crate::style;
 
+mod embedded;
 mod routes;
 mod statics;
 
@@ -111,13 +112,27 @@ pub enum ServeError {
     },
 }
 
+/// Where `aarg serve` gets the browser app's files, resolved once at startup.
+#[derive(Clone)]
+pub(super) enum StaticSource {
+    /// A directory on disk, canonicalized, from an explicit `--dir`. Its path
+    /// is the prefix every served file is checked against for traversal.
+    Dir(Arc<PathBuf>),
+    /// The app baked into this binary at build time (see [`embedded`]). The
+    /// default when no `--dir` is given and a web dist was embedded.
+    Embedded,
+    /// Nothing to serve: API-only. No `--dir`, and no app was embedded (a
+    /// clone built before the web app was compiled).
+    None,
+}
+
 /// Everything a request handler needs, cheap to `clone` into each connection
-/// task: an `Arc`-shared static root and a write-serializing lock.
+/// task: an `Arc`-shared static source and a write-serializing lock.
 #[derive(Clone)]
 struct AppState {
-    /// The canonicalized directory static files are served from, or `None`
-    /// when `--dir` was not given (API-only mode).
-    static_root: Option<Arc<PathBuf>>,
+    /// Where static files come from: an on-disk `--dir`, the embedded app, or
+    /// nothing (API-only).
+    source: StaticSource,
     /// Serializes `PUT /api/dataset` writes. The on-disk store already takes an
     /// advisory file lock (so it can never *corrupt* on a race — a second
     /// writer fails fast with `Locked`), but two concurrent browser saves
@@ -164,18 +179,21 @@ pub async fn run(
     let bind = bind.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let addr = SocketAddr::new(bind, port);
 
-    // Canonicalize `--dir` once, up front: it's the prefix every served path is
-    // checked against to refuse directory traversal, so it must be absolute and
-    // real. A missing/unreadable dir is a clear bootstrap error, not a 404 per
-    // request later.
-    let static_root = match dir {
+    // Resolve where the browser app comes from. An explicit `--dir` wins: it's
+    // canonicalized once up front (it's the prefix every served path is checked
+    // against to refuse directory traversal, so it must be absolute and real; a
+    // missing/unreadable dir is a clear bootstrap error, not a 404 per request
+    // later). With no `--dir`, serve the app baked into the binary when one was
+    // embedded at build time, otherwise run API-only.
+    let source = match dir {
         Some(dir) => {
             let canonical = dir
                 .canonicalize()
                 .map_err(|source| ServeError::StaticDir { path: dir, source })?;
-            Some(Arc::new(canonical))
+            StaticSource::Dir(Arc::new(canonical))
         }
-        None => None,
+        None if embedded::available() => StaticSource::Embedded,
+        None => StaticSource::None,
     };
 
     let listener = TcpListener::bind(addr)
@@ -224,7 +242,7 @@ pub async fn run(
     };
 
     let state = AppState {
-        static_root: static_root.clone(),
+        source,
         dataset_write: Arc::new(tokio::sync::Mutex::new(())),
         build_write: Arc::new(tokio::sync::Mutex::new(())),
         bound_port,
@@ -257,15 +275,21 @@ pub async fn run(
             );
         }
     }
-    match &static_root {
-        Some(root) => eprintln!(
+    match &state.source {
+        StaticSource::Dir(root) => eprintln!(
             "{}",
             style::bullet(format!("serving {} at {url}/", root.display()))
         ),
-        None => eprintln!(
+        StaticSource::Embedded => eprintln!(
             "{}",
             style::bullet(format!(
-                "API only at {url}/api (pass --dir <path> to also serve a browser app at /)"
+                "serving the built-in browser workspace at {url}/ (pass --dir <path> to serve a different build)"
+            ))
+        ),
+        StaticSource::None => eprintln!(
+            "{}",
+            style::bullet(format!(
+                "API only at {url}/api (this build has no embedded browser app; pass --dir <path> to serve one)"
             ))
         ),
     }
@@ -808,7 +832,7 @@ mod tests {
             .unwrap();
         let addr = listener.local_addr().unwrap();
         let state = AppState {
-            static_root: Some(Arc::new(root)),
+            source: StaticSource::Dir(Arc::new(root)),
             dataset_write: Arc::new(tokio::sync::Mutex::new(())),
             build_write: Arc::new(tokio::sync::Mutex::new(())),
             bound_port: addr.port(),
@@ -925,7 +949,7 @@ mod tests {
             .unwrap();
         let addr = listener.local_addr().unwrap();
         let state = AppState {
-            static_root: None,
+            source: StaticSource::None,
             dataset_write: Arc::new(tokio::sync::Mutex::new(())),
             build_write: Arc::new(tokio::sync::Mutex::new(())),
             bound_port: addr.port(),
