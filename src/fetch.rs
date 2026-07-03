@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -21,11 +22,25 @@ use crate::agent::{Tool, ToolError};
 /// Everything that can go wrong while fetching a JD.
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
-    #[error("aarg can only fetch JDs from Greenhouse or Lever job boards; {url} is neither")]
+    #[error(
+        "aarg can only fetch JDs from Greenhouse, Lever, or LinkedIn job boards; {url} is neither"
+    )]
     UnsupportedUrl { url: String },
 
     #[error("could not determine this user's home directory")]
     NoHomeDir,
+
+    #[error("could not build the HTTP client for fetching {url}")]
+    Client {
+        url: String,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error(
+        "aarg couldn't read LinkedIn's posting page at {url}; its layout may have changed. Paste the JD text instead."
+    )]
+    LinkedIn { url: String },
 
     #[error("could not reach {url}")]
     Http {
@@ -57,7 +72,7 @@ static FETCH_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(|| {
         "properties": {
             "url": {
                 "type": "string",
-                "description": "A Greenhouse (boards.greenhouse.io) or Lever (jobs.lever.co) posting URL"
+                "description": "A Greenhouse (boards.greenhouse.io), Lever (jobs.lever.co), or LinkedIn (linkedin.com/jobs/view) posting URL"
             }
         },
         "required": ["url"]
@@ -70,7 +85,7 @@ impl Tool for FetchJdTool {
         "fetch_jd"
     }
     fn description(&self) -> &'static str {
-        "Fetch the text of a job posting from a Greenhouse or Lever URL"
+        "Fetch the text of a job posting from a Greenhouse, Lever, or LinkedIn URL"
     }
     fn input_schema(&self) -> &serde_json::Value {
         &FETCH_SCHEMA
@@ -95,12 +110,28 @@ impl Tool for FetchJdTool {
 enum Board {
     Greenhouse { company: String, job_id: String },
     Lever { company: String, posting_id: String },
+    LinkedIn { job_id: String },
 }
 
 /// Fetch (or recall from cache) the text of a job posting.
 pub async fn fetch_jd(url: &str) -> Result<String, FetchError> {
     let cache = cache_dir()?;
-    fetch_jd_with(&reqwest::Client::new(), &cache, url).await
+    let http = http_client(url)?;
+    fetch_jd_with(&http, &cache, url).await
+}
+
+/// The module's HTTP client: a 20-second timeout so a job board that hangs
+/// can't stall the whole run, rather than the default (no timeout at all).
+/// `build` can fail if the runtime's TLS backend won't initialize, so it
+/// returns a `Result` we surface as a typed error instead of unwrapping.
+fn http_client(url: &str) -> Result<reqwest::Client, FetchError> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|source| FetchError::Client {
+            url: url.to_string(),
+            source,
+        })
 }
 
 /// The testable core: HTTP client and cache directory are parameters.
@@ -127,6 +158,7 @@ async fn fetch_jd_with(
     let response = http
         .get(&api_url)
         .header(reqwest::header::USER_AGENT, "aarg")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
         .send()
         .await
         .map_err(http_err)?;
@@ -155,6 +187,9 @@ async fn fetch_jd_with(
 /// - `https://boards.greenhouse.io/<company>/jobs/<id>`
 ///   (also the newer `job-boards.greenhouse.io`)
 /// - `https://jobs.lever.co/<company>/<posting-id>`
+/// - `https://www.linkedin.com/jobs/view/<slug-or-id>` where the last
+///   path segment ends in the numeric posting id (a bare id, or a
+///   hyphenated slug like `...-at-prepass-4395937732`)
 // EXERCISE(EX-013)
 fn classify(url: &str) -> Option<Board> {
     let rest = url
@@ -181,7 +216,34 @@ fn classify(url: &str) -> Option<Board> {
             }),
             _ => None,
         },
+        "www.linkedin.com" | "linkedin.com" => match segments.as_slice() {
+            // The last segment is either the bare numeric id or a slug that
+            // ends in it; pull the trailing digits and reject if there are
+            // none (that's some other LinkedIn page, not a job posting).
+            ["jobs", "view", segment] => {
+                linkedin_job_id(segment).map(|job_id| Board::LinkedIn { job_id })
+            }
+            _ => None,
+        },
         _ => None,
+    }
+}
+
+/// Pull the trailing run of digits off a LinkedIn `jobs/view` segment.
+/// Works for a bare id (`4395937732`) and for a slug that ends in one
+/// (`director-of-software-engineering-at-prepass-4395937732`). Returns
+/// `None` when the segment has no trailing digits at all.
+fn linkedin_job_id(segment: &str) -> Option<String> {
+    // Take digits from the end, then flip them back into reading order.
+    let reversed: String = segment
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if reversed.is_empty() {
+        None
+    } else {
+        Some(reversed.chars().rev().collect())
     }
 }
 
@@ -196,6 +258,9 @@ impl Board {
                 company,
                 posting_id,
             } => format!("https://api.lever.co/v0/postings/{company}/{posting_id}"),
+            Board::LinkedIn { job_id } => {
+                format!("https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}")
+            }
         }
     }
 
@@ -240,8 +305,104 @@ impl Board {
                 }
                 Ok(text)
             }
+            // LinkedIn's guest endpoint answers with an HTML fragment, not
+            // JSON, so there's no serde here: we scan the markup by hand.
+            Board::LinkedIn { .. } => {
+                let linkedin_err = || FetchError::LinkedIn {
+                    url: self.api_url(),
+                };
+
+                // The description is the one field we require. Its markup
+                // div holds nested p/ul/li/strong, so run it through the
+                // same HTML-to-text pass the other boards use.
+                let markup =
+                    div_inner_html(body, "show-more-less-html__markup").ok_or_else(linkedin_err)?;
+                let description = html_to_text(&unescape(markup));
+
+                // The three topcard fields are best-effort: each is plain
+                // text sitting directly inside a leaf element, so read from
+                // the class to the next tag.
+                let company = text_inside_class(body, "topcard__org-name-link");
+                let title = text_inside_class(body, "topcard__title");
+                let location = text_inside_class(body, "topcard__flavor--bullet");
+
+                // Compose "company - title (location)" from whatever fields
+                // came through, then the description below it.
+                let mut header = String::new();
+                if let Some(company) = &company {
+                    header.push_str(company);
+                }
+                if let Some(title) = &title {
+                    if !header.is_empty() {
+                        header.push_str(" - ");
+                    }
+                    header.push_str(title);
+                }
+                if let Some(location) = &location {
+                    header.push_str(&format!(" ({location})"));
+                }
+
+                let mut text = String::new();
+                if !header.is_empty() {
+                    text.push_str(header.trim());
+                    text.push_str("\n\n");
+                }
+                text.push_str(&description);
+
+                // A near-empty body means the markup div was there but the
+                // scan came up short (a layout change, an interstitial):
+                // fail loudly rather than hand the parser nothing.
+                if text.trim().chars().count() < 100 {
+                    return Err(linkedin_err());
+                }
+                Ok(text)
+            }
         }
     }
+}
+
+/// Return the inner HTML of the first element whose opening tag carries
+/// `class_marker`, balancing nested `<div>`s so a child div can't end the
+/// scan early. `None` if the class isn't found or the tags don't balance.
+fn div_inner_html<'a>(html: &'a str, class_marker: &str) -> Option<&'a str> {
+    // Find the class, then the `>` that closes its opening tag. The inner
+    // HTML starts right after that `>`.
+    let marker = html.find(class_marker)?;
+    let open_end = marker + html[marker..].find('>')? + 1;
+
+    // Walk forward, counting `<div` openings against `</div` closings, until
+    // the matching close brings the depth back to zero.
+    let mut depth = 1usize;
+    let mut pos = open_end;
+    while depth > 0 {
+        let next_close = html[pos..].find("</div")?;
+        match html[pos..].find("<div") {
+            Some(next_open) if next_open < next_close => {
+                depth += 1;
+                pos += next_open + "<div".len();
+            }
+            _ => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&html[open_end..pos + next_close]);
+                }
+                pos += next_close + "</div".len();
+            }
+        }
+    }
+    None
+}
+
+/// Return the plain text sitting directly inside the first element whose
+/// opening tag carries `class_marker` — from that tag's `>` to the next `<`.
+/// Good enough for LinkedIn's leaf topcard fields, which hold text with no
+/// child tags. `None` if the class is absent or the text is blank.
+fn text_inside_class(html: &str, class_marker: &str) -> Option<String> {
+    let marker = html.find(class_marker)?;
+    let open_end = marker + html[marker..].find('>')? + 1;
+    let close = html[open_end..].find('<')?;
+    let text = unescape(html[open_end..open_end + close].trim());
+    if text.is_empty() { None } else { Some(text) }
 }
 
 // The slices of each API's response that aarg actually reads. Everything
@@ -412,6 +573,38 @@ mod tests {
     }
 
     #[test]
+    fn linkedin_urls_are_recognized() {
+        // Bare id, with and without a trailing slash.
+        assert_eq!(
+            classify("https://www.linkedin.com/jobs/view/4395937732"),
+            Some(Board::LinkedIn {
+                job_id: "4395937732".into()
+            })
+        );
+        assert_eq!(
+            classify("https://www.linkedin.com/jobs/view/4395937732/"),
+            Some(Board::LinkedIn {
+                job_id: "4395937732".into()
+            })
+        );
+        // Hyphenated slug ending in the id, and the bare `linkedin.com` host.
+        assert_eq!(
+            classify(
+                "https://www.linkedin.com/jobs/view/director-of-software-engineering-at-prepass-4395937732"
+            ),
+            Some(Board::LinkedIn {
+                job_id: "4395937732".into()
+            })
+        );
+        assert_eq!(
+            classify("https://linkedin.com/jobs/view/4395937732?refId=abc&trk=xyz"),
+            Some(Board::LinkedIn {
+                job_id: "4395937732".into()
+            })
+        );
+    }
+
+    #[test]
     fn everything_else_is_unsupported() {
         for url in [
             "https://jobs.ashbyhq.com/amplo/some-id",
@@ -420,6 +613,10 @@ mod tests {
             "https://boards.greenhouse.io/acme/jobs/1/extra",
             "not a url at all",
             "ftp://boards.greenhouse.io/acme/jobs/1",
+            // LinkedIn pages that aren't job postings, or a slug with no id.
+            "https://www.linkedin.com/feed/",
+            "https://www.linkedin.com/jobs/view/software-engineer",
+            "https://www.linkedin.com/in/someone",
         ] {
             assert_eq!(classify(url), None, "{url:?} should not classify");
         }
@@ -467,6 +664,77 @@ mod tests {
         assert!(text.contains("Requirements"));
         assert!(text.contains("- Rust"));
         assert!(text.contains("Benefits included."));
+    }
+
+    #[test]
+    fn linkedin_api_url_is_the_guest_endpoint() {
+        let board = Board::LinkedIn {
+            job_id: "4395937732".into(),
+        };
+        assert_eq!(
+            board.api_url(),
+            "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/4395937732"
+        );
+    }
+
+    // A trimmed but realistic guest-endpoint fragment: the topcard fields
+    // plus a description with entities and a list.
+    const LINKEDIN_FRAGMENT: &str = r#"
+<div class="top-card-layout__card">
+  <h2 class="topcard__title">Director of Software Engineering</h2>
+  <a class="topcard__org-name-link" href="https://www.linkedin.com/company/prepass">PrePass</a>
+  <span class="topcard__flavor topcard__flavor--bullet">Phoenix, Arizona, United States</span>
+  <span class="topcard__flavor topcard__flavor--metadata">2 weeks ago</span>
+</div>
+<div class="show-more-less-html">
+  <div class="show-more-less-html__markup show-more-less-html__markup--clamp-after-5">
+    <p>We are looking for a <strong>Director of Software Engineering</strong> to lead &amp; scale our platform team.</p>
+    <p>You will own architecture, mentoring, and delivery across several squads.</p>
+    <ul>
+      <li>10+ years building production software</li>
+      <li>Deep experience with Rust &amp; distributed systems</li>
+    </ul>
+    <p>Join us at PrePass to keep freight moving.</p>
+  </div>
+</div>"#;
+
+    #[test]
+    fn linkedin_fragment_composes_header_and_description() {
+        let board = Board::LinkedIn {
+            job_id: "4395937732".into(),
+        };
+        let text = board.extract(LINKEDIN_FRAGMENT).unwrap();
+        assert!(text.starts_with(
+            "PrePass - Director of Software Engineering (Phoenix, Arizona, United States)"
+        ));
+        assert!(text.contains("lead & scale our platform team."));
+        assert!(text.contains("- 10+ years building production software"));
+        assert!(text.contains("- Deep experience with Rust & distributed systems"));
+        assert!(text.contains("Join us at PrePass"));
+        // The metadata flavor (posted date) is not the bullet flavor.
+        assert!(!text.contains("2 weeks ago"));
+        assert!(!text.contains('<'));
+    }
+
+    #[test]
+    fn linkedin_missing_markup_is_a_loud_error() {
+        let board = Board::LinkedIn { job_id: "1".into() };
+        let no_markup = r#"<div class="top-card-layout__card">
+            <h2 class="topcard__title">Some Role</h2></div>"#;
+        assert!(matches!(
+            board.extract(no_markup),
+            Err(FetchError::LinkedIn { .. })
+        ));
+    }
+
+    #[test]
+    fn linkedin_short_description_is_a_loud_error() {
+        let board = Board::LinkedIn { job_id: "1".into() };
+        let thin = r#"<div class="show-more-less-html__markup"><p>Apply now.</p></div>"#;
+        assert!(matches!(
+            board.extract(thin),
+            Err(FetchError::LinkedIn { .. })
+        ));
     }
 
     #[test]
@@ -527,7 +795,7 @@ mod tests {
             .call(serde_json::json!({"url": "https://example.com/x"}))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("Greenhouse or Lever"));
+        assert!(err.to_string().contains("Greenhouse, Lever, or LinkedIn"));
     }
 
     #[test]
