@@ -91,7 +91,7 @@ pub(super) async fn llm(req: Request<Incoming>) -> Resp {
     let client = match configured_client().await {
         Ok((client, _config)) => client,
         Err(error) => {
-            return error_response(503, "no_credentials", error.to_string());
+            return error_response(503, "no_credentials", error_chain(&error));
         }
     };
 
@@ -285,7 +285,9 @@ fn clip(text: &str, max: usize) -> String {
 /// its own HTTP status through; anything else is a 502 upstream error.
 fn llm_error_response(error: LlmError) -> Resp {
     match error {
-        LlmError::MissingApiKey { .. } => error_response(503, "no_credentials", error.to_string()),
+        LlmError::MissingApiKey { .. } => {
+            error_response(503, "no_credentials", error_chain(&error))
+        }
         LlmError::Api {
             status,
             ref kind,
