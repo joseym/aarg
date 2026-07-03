@@ -31,20 +31,32 @@
   margin-inline: auto;
 }
 
-/* Dismiss scrim behind the mobile drawer (hidden until nav-open). */
+/* Dismiss scrim behind the mobile drawer (hidden until nav-open).
+ *
+ * The blur and the touch surface both live only in the open state. iOS Safari
+ * keeps a fixed element with backdrop-filter in the hit test even when
+ * pointer-events is none, so an always-on backdrop-filter here silently
+ * swallowed every tap on the topbar (New Build, the hamburger) at phone width
+ * while the scrim sat invisible above it. visibility:hidden takes the closed
+ * scrim out of hit-testing on every engine and collapses the blur layer with
+ * it; the delayed visibility transition lets the fade-out still play. */
 .nav-scrim {
   position: fixed;
   inset: 0;
   z-index: 39;
   background: color-mix(in oklch, var(--fg) 30%, transparent);
-  backdrop-filter: blur(2px);
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, visibility 0s linear 0.2s;
 }
 .shell.nav-open .nav-scrim {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  transition: opacity 0.2s, visibility 0s;
 }
 
 @media (max-width: 1080px) {
