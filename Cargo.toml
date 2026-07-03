@@ -39,6 +39,10 @@ clap_complete = "4.6.1"
 # Already built as a transitive dep of indicatif, so this adds no compile cost.
 console = "0.16.3"
 directories = "6.0.0"
+# Stream combinators (`StreamExt::map`) for turning the LLM `TokenStream` into
+# the `/api/llm` SSE response body. Already compiles as a transitive dep of
+# reqwest and aarg-core, so promoting it to a direct one adds no new crate.
+futures-util = "0.3.32"
 # The `aarg serve` companion server is hand-rolled on hyper (no web framework),
 # the same portfolio move as the hand-written MCP server and reqwest clients.
 # hyper + hyper-util + http-body-util already compile as transitive deps of

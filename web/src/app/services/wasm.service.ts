@@ -23,6 +23,72 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** One parsed SSE `data:` payload from `/api/llm`'s streaming mode. */
+type SseEvent =
+  | { delta: string }
+  | { done: { stop_reason: string | null; usage: unknown; model: string } }
+  | { error: string; retryable?: boolean };
+
+/** A streamed `/api/llm` response that died mid-flight — a read error, or the
+ *  stream ending before its `done` frame. Transient like a dropped POST, so the
+ *  retry wrapper restarts from zero. `chunks` is how many deltas had arrived, so
+ *  the surfaced message can say "after N streamed chunks". */
+class StreamTransportError extends Error {
+  constructor(
+    message: string,
+    readonly chunks: number,
+  ) {
+    super(message);
+    this.name = 'StreamTransportError';
+  }
+}
+
+/** An `error` FRAME the server sent mid-stream — an application failure (a
+ *  provider reject, an outage), NOT a transport blip, so the retry wrapper does
+ *  not retry it. Carries the server's own chained message. */
+class StreamAppError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StreamAppError';
+  }
+}
+
+/** Best-effort text for a thrown value. */
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The earliest SSE frame boundary in `buffer`: a blank line, written either as
+ *  `\n\n` or `\r\n\r\n`. The Rust SSE parser only splits on `\n\n` (EX-003), so
+ *  this reader handles both endings itself. Returns the boundary's start index
+ *  and length, or null when no complete frame is buffered yet. */
+function nextFrameSep(buffer: string): { index: number; length: number } | null {
+  const crlf = buffer.indexOf('\r\n\r\n');
+  const lf = buffer.indexOf('\n\n');
+  if (crlf === -1 && lf === -1) return null;
+  if (crlf === -1) return { index: lf, length: 2 };
+  if (lf === -1) return { index: crlf, length: 4 };
+  // Both present: take whichever ends the earlier frame.
+  return crlf <= lf ? { index: crlf, length: 4 } : { index: lf, length: 2 };
+}
+
+/** Parse one SSE frame's `data:` payload(s) into an event, or null for a frame
+ *  with no data line or an unparseable one (a comment/heartbeat, say). Multiple
+ *  `data:` lines join with a newline, per the SSE spec. */
+function parseSseFrame(frame: string): SseEvent | null {
+  const data = frame
+    .split(/\r\n|\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).replace(/^ /, ''))
+    .join('\n');
+  if (!data) return null;
+  try {
+    return JSON.parse(data) as SseEvent;
+  } catch {
+    return null;
+  }
+}
+
 /** The subset of the generated `aarg_wasm.js` exports this service wraps. Typed
  *  locally (rather than importing the generated `.d.ts`) so the app still
  *  type-checks in a clone where `src/wasm/pkg` hasn't been built yet — the
@@ -196,6 +262,17 @@ export class WasmService {
    *  is a no-op; the tailoring wave points this at the loop UI. */
   progressHandler: ProgressCallback = () => {};
 
+  /** Ticks the cumulative character count of the in-flight streamed `/api/llm`
+   *  completion, so the overlay can show tokens arriving. Reset to 0 at the
+   *  start of each call (and each retry). Null by default; `CopilotHost` wires
+   *  it to a signal. Display only — cost/usage stay milestone-driven. */
+  streamHandler: ((chars: number) => void) | null = null;
+
+  /** Called with a short, plain note when the LLM proxy enters a retry backoff,
+   *  so the overlay can surface the otherwise-silent wait. Null by default;
+   *  `CopilotHost` wires it to a transient status line. Display only. */
+  retryNotify: ((message: string) => void) | null = null;
+
   /** Lazy-load + init the wasm module exactly once. */
   private async load(): Promise<WasmExports> {
     if (this.mod) return this.mod;
@@ -246,36 +323,131 @@ export class WasmService {
     // Backoff before the 1st and 2nd retry; its length is the retry budget (2).
     const backoffMs = [2000, 5000];
     for (let attempt = 0; ; attempt++) {
+      // Each attempt starts the stream tick from zero — a retry re-accumulates.
+      this.streamHandler?.(0);
       let res: Response;
       try {
         res = await fetch('/api/llm', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          // Ask for SSE; the server streams when it can (a tool-free request)
+          // and falls back to a buffered JSON body otherwise. We branch on the
+          // RESPONSE content type below, never on this request header.
+          headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
           body: requestJson,
         });
       } catch (err) {
         // Transport-level failure (network dropped, request aborted by the OS).
         if (attempt < backoffMs.length) {
           console.warn(`/api/llm transport error; retry ${attempt + 1} after backoff`, err);
+          this.retryNotify?.('model call interrupted, retrying');
           await delay(backoffMs[attempt]);
           continue;
         }
         throw err instanceof Error ? err : new Error(String(err));
       }
-      if (res.ok) return res.text();
-      // A provider overload (429 rate limit / 529 overloaded) is transient too.
-      if ((res.status === 429 || res.status === 529) && attempt < backoffMs.length) {
-        console.warn(`/api/llm overloaded (${res.status}); retry ${attempt + 1} after backoff`);
-        await delay(backoffMs[attempt]);
-        continue;
+      if (!res.ok) {
+        // A provider overload (429 rate limit / 529 overloaded) is transient too.
+        if ((res.status === 429 || res.status === 529) && attempt < backoffMs.length) {
+          console.warn(`/api/llm overloaded (${res.status}); retry ${attempt + 1} after backoff`);
+          this.retryNotify?.('model call interrupted, retrying');
+          await delay(backoffMs[attempt]);
+          continue;
+        }
+        // Any other non-2xx (or an exhausted overload budget) is surfaced with
+        // the server's body so an actionable message (a missing credential, a
+        // Typst failure, an overload note) survives instead of a bare code.
+        const body = await res.text().catch(() => '');
+        throw new Error(body || `/api/llm returned ${res.status}`);
       }
-      // Any other non-2xx (or an exhausted overload budget) is surfaced with the
-      // server's body so an actionable message (a missing credential, a Typst
-      // failure, an overload note) survives to the caller instead of a bare code.
-      const body = await res.text().catch(() => '');
-      throw new Error(body || `/api/llm returned ${res.status}`);
+
+      // Buffered fallback: no `text/event-stream` content type means the server
+      // returned the whole `CompletionResponse` as JSON — exactly today's path.
+      const ctype = res.headers.get('content-type') ?? '';
+      if (!ctype.includes('text/event-stream')) return res.text();
+
+      // Streamed: read the SSE frames, accumulate the text, and resolve with a
+      // full `CompletionResponse` JSON string (the unchanged wasm bridge
+      // contract). A stream that dies mid-flight is a retryable transport
+      // failure; an `error` frame is an application error and is not retried.
+      try {
+        return await this.readSseStream(res);
+      } catch (err) {
+        if (err instanceof StreamAppError) throw new Error(err.message);
+        if (err instanceof StreamTransportError && attempt < backoffMs.length) {
+          console.warn(`/api/llm ${err.message}; retry ${attempt + 1} after backoff`);
+          this.retryNotify?.('model call interrupted, retrying');
+          await delay(backoffMs[attempt]);
+          continue;
+        }
+        throw err instanceof Error ? err : new Error(String(err));
+      }
     }
   };
+
+  /** Read an SSE `/api/llm` response to completion: accumulate `delta` frames
+   *  (ticking `streamHandler` with the running char count), resolve with a
+   *  `CompletionResponse` JSON string on the `done` frame, throw a
+   *  {@link StreamAppError} on an `error` frame, and throw a
+   *  {@link StreamTransportError} if the stream dies or ends without `done`. */
+  private async readSseStream(res: Response): Promise<string> {
+    if (!res.body) throw new StreamTransportError('the streamed response had no body', 0);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+    let chunks = 0;
+    try {
+      for (;;) {
+        let read: ReadableStreamReadResult<Uint8Array>;
+        try {
+          read = await reader.read();
+        } catch (err) {
+          throw new StreamTransportError(
+            `the stream failed after ${chunks} streamed chunks: ${errText(err)}`,
+            chunks,
+          );
+        }
+        if (read.done) {
+          // The stream closed before a `done` frame — an incomplete completion.
+          throw new StreamTransportError(
+            `the stream ended without a done frame after ${chunks} streamed chunks`,
+            chunks,
+          );
+        }
+        buffer += decoder.decode(read.value, { stream: true });
+        for (let sep = nextFrameSep(buffer); sep; sep = nextFrameSep(buffer)) {
+          const frame = buffer.slice(0, sep.index);
+          buffer = buffer.slice(sep.index + sep.length);
+          const evt = parseSseFrame(frame);
+          if (!evt) continue;
+          if ('delta' in evt) {
+            accumulated += evt.delta;
+            chunks++;
+            this.streamHandler?.(accumulated.length);
+          } else if ('done' in evt) {
+            return JSON.stringify({
+              text: accumulated,
+              tool_calls: [],
+              model: evt.done.model,
+              stop_reason: evt.done.stop_reason ?? null,
+              usage: evt.done.usage,
+            });
+          } else if ('error' in evt) {
+            // The server tags transient upstream failures (in-stream
+            // overloads, the streaming twin of a 529) so they re-enter the
+            // retry budget instead of aborting the run.
+            if (evt.retryable) throw new TypeError(evt.error);
+            throw new StreamAppError(evt.error);
+          }
+        }
+      }
+    } finally {
+      // Best-effort: release the connection whether we resolved, errored, or the
+      // caller stopped reading. `cancel` rejects only on an already-errored
+      // stream, which is fine to ignore.
+      void reader.cancel().catch(() => undefined);
+    }
+  }
 
   private modelsJson(): string {
     return JSON.stringify(this.models);

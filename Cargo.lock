@@ -15,6 +15,7 @@ dependencies = [
  "clap_complete",
  "console",
  "directories",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
