@@ -2,7 +2,7 @@
 
 A one-page demo that runs `aarg-wasm`'s deterministic functions
 (`validate`, `analyze_gap`, `project_ats`, `check_claims`) entirely in the
-browser — no network, no server, no API key. The third panel demonstrates the
+browser: no network, no server, no API key. The third panel demonstrates the
 point: AARG's never-fabricate check running client-side.
 
 ## Build and run
@@ -19,6 +19,6 @@ python3 -m http.server 8000
 ```
 
 Panels 1 and 2 work out of the box with the embedded sample. Panel 3 wants a
-canonical draft — paste one from a real build (`~/aarg/builds/NN/canonical.json`),
+canonical draft. Paste one from a real build (`~/aarg/builds/NN/canonical.json`),
 project its ATS payload, then "Tamper & check" to watch a fabricated skill get
 flagged.

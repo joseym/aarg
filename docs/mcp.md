@@ -99,7 +99,7 @@ Two things make this reliable:
   and break it.
 - **Nothing may print to stdout around the server.** A login banner, MOTD, or a
   shell rc file that echoes corrupts the stream. `-q` silences SSH's own output;
-  the robust fix is a dedicated key locked to the command in the server's
+  the durable fix is a dedicated key locked to the command in the server's
   `~/.ssh/authorized_keys`, which bypasses the login shell entirely:
 
   ```
