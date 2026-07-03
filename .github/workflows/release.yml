@@ -145,10 +145,6 @@ jobs:
           cd web && npm ci && npm run build
           cd ..
           test -f web/dist/aarg/browser/index.html
-      - uses: swatinem/rust-cache@v2
-        with:
-          key: ${{ join(matrix.targets, '-') }}
-          cache-provider: ${{ matrix.cache_provider }}
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

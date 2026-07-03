@@ -17,9 +17,9 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-# Rehearsal mode: PRs build and upload artifacts without releasing.
-# Flip back to "plan" once the distribution PR proves green.
-pr-run-mode = "upload"
+# PRs validate the release config without building; the full pipeline was
+# rehearsed in upload mode on the distribution PR (all three targets green).
+pr-run-mode = "plan"
 # Extra CI steps injected before the build: they compile the wasm bundle and
 # the Angular frontend so build.rs can embed web/dist into the binary. Kept in
 # .github/ (not .github/workflows/) because dist resolves this path relative to
