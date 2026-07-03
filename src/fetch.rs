@@ -37,9 +37,7 @@ pub enum FetchError {
         source: reqwest::Error,
     },
 
-    #[error(
-        "aarg couldn't read LinkedIn's posting page at {url}; its layout may have changed. Paste the JD text instead."
-    )]
+    #[error("aarg couldn't read LinkedIn's posting page at {url}; its layout may have changed")]
     LinkedIn { url: String },
 
     #[error("could not reach {url}")]
@@ -216,15 +214,20 @@ fn classify(url: &str) -> Option<Board> {
             }),
             _ => None,
         },
-        "www.linkedin.com" | "linkedin.com" => match segments.as_slice() {
-            // The last segment is either the bare numeric id or a slug that
-            // ends in it; pull the trailing digits and reject if there are
-            // none (that's some other LinkedIn page, not a job posting).
-            ["jobs", "view", segment] => {
-                linkedin_job_id(segment).map(|job_id| Board::LinkedIn { job_id })
+        host if host == "linkedin.com" || host.ends_with(".linkedin.com") => {
+            // Any LinkedIn subdomain works: phones share m.linkedin.com
+            // links, Google serves country ones (uk.linkedin.com), and
+            // email notifications add a /comm prefix to the same path.
+            match segments.as_slice() {
+                // The last segment is either the bare numeric id or a slug
+                // that ends in it; pull the trailing digits and reject if
+                // there are none (some other LinkedIn page, not a posting).
+                ["jobs", "view", segment] | ["comm", "jobs", "view", segment] => {
+                    linkedin_job_id(segment).map(|job_id| Board::LinkedIn { job_id })
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         _ => None,
     }
 }
@@ -317,7 +320,12 @@ impl Board {
                 // same HTML-to-text pass the other boards use.
                 let markup =
                     div_inner_html(body, "show-more-less-html__markup").ok_or_else(linkedin_err)?;
-                let description = html_to_text(&unescape(markup));
+                // Unlike Greenhouse's double-encoded `content`, this fragment
+                // is raw HTML: entities inside it are literal JD text (a
+                // requirement like "Vec&lt;String&gt;" must survive). So no
+                // unescape pass before tag stripping; html_to_text decodes
+                // entities once, at the end.
+                let description = html_to_text(markup);
 
                 // The three topcard fields are best-effort: each is plain
                 // text sitting directly inside a leaf element, so read from
@@ -587,6 +595,25 @@ mod tests {
                 job_id: "4395937732".into()
             })
         );
+        // Phone shares (m.), country subdomains, and email /comm links.
+        assert_eq!(
+            classify("https://m.linkedin.com/jobs/view/4395937732"),
+            Some(Board::LinkedIn {
+                job_id: "4395937732".into()
+            })
+        );
+        assert_eq!(
+            classify("https://uk.linkedin.com/jobs/view/4395937732"),
+            Some(Board::LinkedIn {
+                job_id: "4395937732".into()
+            })
+        );
+        assert_eq!(
+            classify("https://www.linkedin.com/comm/jobs/view/4395937732"),
+            Some(Board::LinkedIn {
+                job_id: "4395937732".into()
+            })
+        );
         // Hyphenated slug ending in the id, and the bare `linkedin.com` host.
         assert_eq!(
             classify(
@@ -693,6 +720,7 @@ mod tests {
     <ul>
       <li>10+ years building production software</li>
       <li>Deep experience with Rust &amp; distributed systems</li>
+      <li>Comfort with Vec&lt;String&gt; generics; &lt;5 years tenure is fine</li>
     </ul>
     <p>Join us at PrePass to keep freight moving.</p>
   </div>
@@ -711,9 +739,14 @@ mod tests {
         assert!(text.contains("- 10+ years building production software"));
         assert!(text.contains("- Deep experience with Rust & distributed systems"));
         assert!(text.contains("Join us at PrePass"));
+        // Escaped entities in the fragment are literal JD text and must
+        // survive tag stripping intact (the tags themselves must not).
+        assert!(text.contains("Vec<String>"));
+        assert!(text.contains("<5 years tenure"));
+        assert!(!text.contains("<li"));
+        assert!(!text.contains("</"));
         // The metadata flavor (posted date) is not the bullet flavor.
         assert!(!text.contains("2 weeks ago"));
-        assert!(!text.contains('<'));
     }
 
     #[test]
