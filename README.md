@@ -189,17 +189,37 @@ Beyond the core loop:
 
 ### Prerequisites
 
-- **Rust 1.89 or newer** (2024 edition).
-- **[Typst](https://github.com/typst/typst)** on your `PATH`; rendering shells
-  out to it. If the binary is missing you get a clear message telling you how
-  to install it.
+- **[Typst](https://github.com/typst/typst)** on your `PATH`, needed by every
+  install channel; rendering shells out to it. If the binary is missing you get
+  a clear message telling you how to install it.
+- **Rust 1.89 or newer** (2024 edition) to build from source, whether with
+  `cargo install aarg` or from a clone. The installer script needs no toolchain.
 - An **Anthropic API key**, or a Claude Pro/Max subscription (see
   [Authentication](#authentication)).
 - **[wasm-pack](https://rustwasm.github.io/wasm-pack/) and Node.js with npm**,
-  only for the browser workspace; they build its WebAssembly bundle and the
-  Angular app. Skip them if you only use the CLI.
+  only for developing the web app. Every install channel already carries the
+  built workspace, so skip these unless you're changing the front end.
 
 ### Install
+
+The installer script is the standard path. It downloads a prebuilt binary with
+the browser workspace baked in:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/joseym/aarg/releases/latest/download/aarg-installer.sh | sh
+```
+
+Install [Typst](https://github.com/typst/typst) separately (`brew install typst`
+on a Mac); rendering shells out to it.
+
+`cargo install aarg` from crates.io compiles the same binary locally, workspace
+and all, and the Typst note applies the same way:
+
+```sh
+cargo install aarg
+```
+
+From a clone, for contributors:
 
 ```sh
 git clone git@github.com:joseym/aarg.git
@@ -209,8 +229,8 @@ cargo install --path .
 
 A from-source install embeds the browser workspace only if you build the web
 app first (the wasm-pack and npm steps under
-[Running the browser workspace](#running-the-browser-workspace)). Skip that
-and you get the full CLI with `aarg serve` in API-only mode.
+[Running the browser workspace](#running-the-browser-workspace)). Skip that and
+you get the full CLI with `aarg serve` in API-only mode.
 
 ### A first run
 
