@@ -53,8 +53,13 @@
 //! (`--dir`), same-origin, so no other web page can read the dataset or
 //! spend the key. Broadening beyond localhost is a later slice.
 //!
-//! **Non-streaming.** `POST /api/llm` waits for the whole completion and
-//! returns it in one response; server-sent-events streaming is a later slice.
+//! **Streaming.** `POST /api/llm` returns the whole completion in one buffered
+//! response by default, but a client that sends `Accept: text/event-stream`
+//! (and whose request carries no tools) gets a server-sent-events stream
+//! instead, one frame per token as the model produces it. A tool-bearing
+//! request always takes the buffered path, because the SSE parser drops
+//! non-text content deltas and would lose the tool calls. Every other route is
+//! buffered.
 //!
 //! The submodules split the surface the way [`crate::mcp`] does: [`routes`]
 //! holds the JSON API handlers (thin adapters over the same library services
@@ -82,12 +87,16 @@ mod statics;
 /// rarely collides with something already running.
 const DEFAULT_PORT: u16 = 8787;
 
-/// The response body type every handler produces: a whole buffered blob of
-/// bytes with a known length, so `hyper` sets `Content-Length` for us. The
-/// server never streams a response (v1 is non-streaming), so one body type
-/// covers JSON, PDF bytes, and static files alike.
+/// The response body type every handler produces. Most handlers return a whole
+/// buffered blob of bytes with a known length (a `Full`), so `hyper` sets
+/// `Content-Length` for us; the one exception is `POST /api/llm` in SSE mode,
+/// which returns a `StreamBody` that emits one frame per token as the model
+/// produces it. Both erase into this boxed body so every handler shares one
+/// return type. `UnsyncBoxBody` (not the `Sync`-bound `BoxBody`) because the
+/// LLM `TokenStream` the SSE path wraps is `Send` but not `Sync`; hyper only
+/// needs the response body to be `Send`, so nothing is lost.
 type Bytes = hyper::body::Bytes;
-type Body = Full<Bytes>;
+type Body = http_body_util::combinators::UnsyncBoxBody<Bytes, std::convert::Infallible>;
 type Resp = Response<Body>;
 
 /// What the server can fail with. Only *bootstrap* failures surface as a
@@ -634,11 +643,29 @@ fn bytes_response(status: u16, content_type: &str, bytes: Vec<u8>) -> Resp {
     Response::builder()
         .status(status)
         .header(hyper::header::CONTENT_TYPE, content_type)
-        .body(Full::new(Bytes::from(bytes)))
+        .body(Full::new(Bytes::from(bytes)).boxed_unsync())
         .unwrap_or_else(|_| {
-            let mut fallback = Response::new(Full::new(Bytes::from_static(b"internal error")));
+            let mut fallback =
+                Response::new(Full::new(Bytes::from_static(b"internal error")).boxed_unsync());
             *fallback.status_mut() = hyper::StatusCode::INTERNAL_SERVER_ERROR;
             fallback
+        })
+}
+
+/// A `200 text/event-stream` response wrapping a streaming body — the SSE mode
+/// of `POST /api/llm`. `cache-control: no-cache` keeps an intermediary from
+/// buffering or replaying the token stream. Built here, next to
+/// [`bytes_response`], so the one place a streaming `Resp` is constructed sits
+/// beside the one place a buffered one is. A builder failure (our fixed headers
+/// never are invalid) degrades to a bare 500 rather than panicking.
+pub(super) fn event_stream_response(body: Body) -> Resp {
+    Response::builder()
+        .status(200)
+        .header(hyper::header::CONTENT_TYPE, "text/event-stream")
+        .header(hyper::header::CACHE_CONTROL, "no-cache")
+        .body(body)
+        .unwrap_or_else(|_| {
+            error_response(500, "internal", "could not build the streaming response")
         })
 }
 
