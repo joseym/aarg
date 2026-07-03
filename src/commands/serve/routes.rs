@@ -1075,7 +1075,7 @@ struct FetchJdRequest {
     url: String,
 }
 
-/// Fetch a job posting's text from a supported board (Greenhouse/Lever) — the
+/// Fetch a job posting's text from a supported board (Greenhouse, Lever, or LinkedIn) — the
 /// thing a browser can't do itself (CORS). An unsupported URL is a `422` with
 /// the "paste the text instead" guidance; any other fetch failure is a `502`.
 pub(super) async fn fetch_jd(req: Request<Incoming>) -> Resp {
