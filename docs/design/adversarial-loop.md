@@ -170,7 +170,7 @@ judges *intentional* (a one-line 2013 role that's meant to stay one line).
 Because the reviewer is stateless and re-reads the whole résumé every run,
 it would re-raise that forever. The loop lets the applicant **accept** an
 objection; accepted objections are remembered and filtered from future runs.
-Crucially, the score is always computed from the *full* report and the full
+The score is always computed from the *full* report and the full
 report is what's written to disk. Accepting a weakness stops the nagging;
 it does not inflate the number or hide the weakness from the record.
 
