@@ -31,7 +31,7 @@ use crate::commands::{CliError, configured_client, default_tracer};
 use crate::config::Config;
 use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
-use crate::llm::AnthropicClient;
+use crate::llm::LlmClient;
 use crate::review::AdversarialReport;
 use crate::tailor::TailoredResume;
 use crate::trace::Tracer;
@@ -406,7 +406,7 @@ async fn ingest(arguments: Value) -> Result<CallToolResult, CliError> {
 /// is refreshed each time) with no live-cost sink — its output would land on
 /// stdout and corrupt the stream.
 struct AgentPieces {
-    client: AnthropicClient,
+    client: Box<dyn LlmClient>,
     config: Config,
     tracer: Tracer,
 }
@@ -424,8 +424,8 @@ impl AgentPieces {
 
     fn ctx(&self) -> AgentContext<'_> {
         AgentContext {
-            llm: &self.client,
-            model: &self.config.anthropic,
+            llm: &*self.client,
+            model: self.config.active_resolver(),
             tracer: &self.tracer,
             sink: None,
         }
