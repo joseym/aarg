@@ -71,9 +71,17 @@ pub fn effective_num_ctx(floor: u32, estimate: u64, max_tokens: u32) -> u32 {
 /// other way: English prose runs ~4 chars/token, dense JSON ~3 (punctuation
 /// and short keys are their own tokens), CJK text 1-2, base64 ~2.5-3. All of
 /// those make the estimate run *low*, which this check ignores. A real clamp,
-/// by contrast, is not subtle: Ollama keeps half the window and LM Studio's
-/// truncate-middle keeps a window's worth of an oversized prompt, both far
-/// below 70% of an honest estimate.
+/// by contrast, is not subtle: LM Studio's truncate-middle keeps a window's
+/// worth of an oversized prompt, far below 70% of an honest estimate.
+///
+/// Prefix caching does not perturb the count on the servers this crate
+/// targets (probed 2026-07: three repeats of a shared-prefix request against
+/// LM Studio and Ollama 0.30.11 each reported the full prompt size while the
+/// wall time collapsed, proving the KV cache was hit and the counter still
+/// counts the whole prompt). On Ollama the counter is `prompt_eval_count`,
+/// which other versions have reported as newly-evaluated tokens only, so the
+/// window guard below does not use this ratio at all; the LM Studio path
+/// keeps it, backed by the probe.
 const CLAMP_RATIO: f64 = 0.70;
 
 /// How far a reported count may sit from the exact half-window clip point and
@@ -97,7 +105,7 @@ pub fn looks_clamped(prompt_tokens: u64, estimate: u64) -> bool {
 
 /// Whether a response from a window this client sized (via
 /// [`effective_num_ctx`]) shows the prompt was clipped or outgrew its window.
-/// Three signals, any of which fires; a count of zero means the server
+/// Two signals, either of which fires; a count of zero means the server
 /// reported nothing and is not evidence.
 ///
 /// 1. **Generation reserve consumed** — the count reaches `window -
@@ -121,9 +129,15 @@ pub fn looks_clamped(prompt_tokens: u64, estimate: u64) -> bool {
 ///    half the window from matching, since chars/4 tracks real counts well
 ///    inside 25% for prose and errs low (never high) for JSON and CJK.
 ///
-/// 3. **The clamp shape** — the count is materially below the estimate
-///    ([`looks_clamped`]), regardless of where the window sits. Catches a
-///    server that ignored the requested window and clipped to its own.
+/// [`looks_clamped`] is deliberately *not* a signal here. On some Ollama
+/// versions `prompt_eval_count` counts only newly evaluated tokens, so a
+/// prefix-cache hit (AARG's adversarial loop resends the same
+/// system+dataset+JD prefix every iteration) could report a small count on a
+/// healthy response and be refused as clipped. The 0.30.11 probe shows the
+/// full count on cache hits, but the guard doesn't bet on that holding
+/// across versions; the "server ignored our window" case it covered is
+/// handled where it belongs, by verifying `num_ctx` against the model's own
+/// context length before sending (the Ollama client's window check).
 pub fn looks_truncated(
     prompt_eval_count: u64,
     effective_num_ctx: u32,
@@ -143,11 +157,7 @@ pub fn looks_truncated(
     let clip_point = window / 2 + 2;
     let in_clip_band = prompt_eval_count.abs_diff(clip_point) <= HALF_CLIP_TOLERANCE;
     let ratio = prompt_eval_count as f64 / estimate as f64;
-    if in_clip_band && !(0.75..=1.25).contains(&ratio) {
-        return true;
-    }
-
-    looks_clamped(prompt_eval_count, estimate)
+    in_clip_band && !(0.75..=1.25).contains(&ratio)
 }
 
 #[cfg(test)]
@@ -263,13 +273,15 @@ mod tests {
     }
 
     #[test]
-    fn looks_truncated_fires_on_a_clamp_far_below_the_estimate() {
-        // A server that ignored the requested window and clipped at its own
-        // default: 2050 tokens processed of an estimated 6200, window 8192.
+    fn a_low_count_alone_no_longer_fires_the_window_guard() {
+        // On some Ollama versions prompt_eval_count omits prefix-cache hits,
+        // so a small count on a healthy cached response must not read as a
+        // clip. The clamp comparison stays available separately for the LM
+        // Studio path, whose counter reports the full prompt (probed).
         let estimate = 6200;
         let max_tokens = 64;
         let window = effective_num_ctx(8192, estimate, max_tokens);
-        assert!(looks_truncated(2050, window, max_tokens, estimate));
+        assert!(!looks_truncated(2050, window, max_tokens, estimate));
         assert!(looks_clamped(2050, estimate));
     }
 

@@ -17,7 +17,10 @@
 //! also compares the reported `usage.prompt_tokens` against its own estimate
 //! and refuses a reply whose prompt came back materially short (see
 //! [`crate::llm::context`]); a clipped prompt is dropped evidence, not a
-//! smaller request.
+//! smaller request. That comparison is safe against prompt caching: probed
+//! live, LM Studio reports the full prompt size in `usage.prompt_tokens` even
+//! when the prefix KV cache is hit (repeats of a shared-prefix request kept
+//! reporting the full count while wall time collapsed 14x).
 
 use std::time::Duration;
 
