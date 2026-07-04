@@ -28,9 +28,9 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-# Rehearsal for THIS PR: run the full custom local build (sign + notarize when
-# the secrets are loaded, skip loudly when not) on every push to the PR. Flip
-# back to "plan" once the signing path has proven itself on a real PR run.
+# PRs validate the release config only. For a full dress rehearsal on a PR
+# (all targets built, mac signing and notarization included), set this to
+# "upload" for that branch and flip it back before merge.
 pr-run-mode = "plan"
 # The frontend (compiled wasm + Angular build) has to exist before cargo build,
 # because build.rs embeds web/dist into the binary. dist's github-build-setup
