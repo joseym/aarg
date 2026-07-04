@@ -323,7 +323,7 @@ pub fn remove(id: &str) -> Result<(), HistoryError> {
     remove_in(&builds_root()?, id)
 }
 
-fn remove_in(root: &Path, id: &str) -> Result<(), HistoryError> {
+pub(crate) fn remove_in(root: &Path, id: &str) -> Result<(), HistoryError> {
     // Guard: only ever a bare build number, never a path that could escape
     // the builds root.
     if id.parse::<u32>().is_err() {

@@ -385,6 +385,7 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::Models => routes::models().await,
             ApiRoute::Templates => routes::templates().await,
             ApiRoute::GetBuild(id) => routes::get_build(&id).await,
+            ApiRoute::DeleteBuild(id) => routes::delete_build(&id, &state).await,
             ApiRoute::SaveBuildEdits(id) => routes::save_build_edits(req, &id, &state).await,
             ApiRoute::SaveBuildTriage(id) => routes::save_build_triage(req, &id, &state).await,
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
@@ -541,6 +542,7 @@ enum ApiRoute {
     Models,
     Templates,
     GetBuild(String),
+    DeleteBuild(String),
     SaveBuildEdits(String),
     SaveBuildTriage(String),
     GetBuildFile(String, String),
@@ -578,6 +580,7 @@ fn match_route(method: &Method, path: &str) -> Match {
             ("GET", ["models"]) => Some(ApiRoute::Models),
             ("GET", ["templates"]) => Some(ApiRoute::Templates),
             ("GET", ["builds", id]) => Some(ApiRoute::GetBuild((*id).to_string())),
+            ("DELETE", ["builds", id]) => Some(ApiRoute::DeleteBuild((*id).to_string())),
             ("POST", ["builds", id, "edits"]) => Some(ApiRoute::SaveBuildEdits((*id).to_string())),
             ("POST", ["builds", id, "triage"]) => {
                 Some(ApiRoute::SaveBuildTriage((*id).to_string()))
@@ -793,6 +796,10 @@ mod tests {
         assert_eq!(
             route("GET", "/api/builds/041"),
             Match::Api(ApiRoute::GetBuild("041".into()))
+        );
+        assert_eq!(
+            route("DELETE", "/api/builds/041"),
+            Match::Api(ApiRoute::DeleteBuild("041".into()))
         );
         assert_eq!(
             route("POST", "/api/builds/041/edits"),

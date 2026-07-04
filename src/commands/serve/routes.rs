@@ -10,7 +10,7 @@
 //! workspace lints deny `unwrap`/`expect`/`panic` in production code — and no
 //! error message carries key material.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -673,6 +673,42 @@ pub(super) async fn get_build_file(id: &str, name: &str) -> Resp {
     match std::fs::read(&path) {
         Ok(bytes) => bytes_response(200, super::statics::content_type_for(&path), bytes),
         Err(error) => error_response(500, "internal", format!("could not read the file: {error}")),
+    }
+}
+
+// ---------------------------------------------------------------------
+// DELETE /api/builds/:id — remove a build and all its artifacts
+// ---------------------------------------------------------------------
+
+/// `DELETE /api/builds/:id` — delete a build's directory and everything under
+/// it, the same on-disk removal `aarg history rm` performs. Both paths go
+/// through [`crate::history::remove_in`], so there is one deletion code path,
+/// not two. The write is serialized through `AppState.build_write`, the mutex
+/// the edit and triage saves also take, so a delete can never race a save on
+/// the same build's files. A missing (or already-deleted) build is a 404;
+/// success returns `{"removed": "<id>"}`.
+pub(super) async fn delete_build(id: &str, state: &AppState) -> Resp {
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let _guard = state.build_write.lock().await;
+    delete_build_in(&root, id)
+}
+
+/// The disk-touching half of [`delete_build`], split out with the builds root
+/// injected so a test can drive it against a tempdir. The id is validated with
+/// the same [`is_numeric_id`] gate the other build routes use before any path
+/// is built; `remove_in` guards the id a second time as defense in depth.
+fn delete_build_in(root: &Path, id: &str) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    match crate::history::remove_in(root, id) {
+        Ok(()) => json_response(200, &json!({ "removed": id })),
+        Err(crate::history::HistoryError::NotFound { .. }) => {
+            error_response(404, "not_found", format!("no build {id:?}"))
+        }
+        Err(error) => error_response(500, "internal", error.to_string()),
     }
 }
 
@@ -2073,6 +2109,28 @@ mod tests {
             // above) is still on disk.
             assert!(result.is_err());
         }
+    }
+
+    /// Deleting a build removes its directory and answers 200; a second delete
+    /// of the same id is a 404, and a traversal-shaped id never resolves to a
+    /// path. This drives the route's disk half against a tempdir, so it needs
+    /// neither a socket nor the active workspace.
+    #[test]
+    fn delete_build_removes_the_dir_then_404s_and_rejects_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let build_dir = root.path().join("041");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::write(build_dir.join("meta.json"), "{}").unwrap();
+
+        let resp = delete_build_in(root.path(), "041");
+        assert_eq!(resp.status(), 200);
+        assert!(!build_dir.is_dir());
+
+        // The list no longer has it: deleting it again is a 404.
+        assert_eq!(delete_build_in(root.path(), "041").status(), 404);
+
+        // A traversal-shaped id is rejected before any path is built.
+        assert_eq!(delete_build_in(root.path(), "../etc").status(), 404);
     }
 
     /// Applying an edit rewrites the canonical draft on disk and appends an
