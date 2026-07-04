@@ -1,10 +1,15 @@
 import { Component, computed, inject, input, output, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router';
+import { filter, firstValueFrom, map } from 'rxjs';
 
+import { ApiService } from '../../services/api.service';
 import { BuildsStore } from '../../services/builds-store';
+import { CopilotHost } from '../../shared/copilot-host';
 import type { BuildSummary } from '../../models';
 
 type SortBy = 'newest' | 'score';
+type SortDir = 'asc' | 'desc';
 
 /** One rendered section of the list: a run of builds under an optional company
  *  header. `company` is null in the flat (ungrouped) view — a single headerless
@@ -16,6 +21,8 @@ interface BuildSection {
 
 const GROUP_KEY = 'aarg.sidebar.group';
 const SORT_KEY = 'aarg.sidebar.sort';
+const DIR_KEY = 'aarg.sidebar.dir';
+const COLLAPSED_KEY = 'aarg.sidebar.collapsed';
 const NO_COMPANY = 'No company';
 
 /** The left rail: the recent-builds list, filtered live by the topbar input.
@@ -86,31 +93,96 @@ const NO_COMPANY = 'No company';
                 <option value="score">Score</option>
               </select>
             </label>
+            <button
+              class="lc-dir"
+              type="button"
+              [attr.aria-label]="sortDir() === 'asc' ? 'Sort direction ascending' : 'Sort direction descending'"
+              (click)="toggleDir()"
+            >
+              <svg
+                class="dir-arrow"
+                [class.up]="sortDir() === 'asc'"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                aria-hidden="true"
+              >
+                <path d="M12 5v14M6 13l6 6 6-6" />
+              </svg>
+            </button>
           </div>
 
           <div class="build-list">
             @for (s of sections(); track s.company ?? '') {
               @if (s.company !== null) {
-                <div class="group-head">{{ s.company }}</div>
-              }
-              @for (b of s.builds; track b.id) {
-                <a
-                  class="build-item anim-up"
-                  [routerLink]="['/build', b.id, 'tailor']"
-                  routerLinkActive="active"
-                  (click)="closeNav.emit()"
+                <button
+                  class="group-head"
+                  type="button"
+                  [attr.aria-expanded]="!isCollapsed(s.company)"
+                  (click)="toggleCollapsed(s.company)"
                 >
-                  <div class="bi-top">
-                    <div>
-                      <div class="bi-title">{{ b.title }}</div>
-                      @if (b.company) {
-                        <div class="bi-co">{{ b.company }}</div>
-                      }
-                    </div>
-                    <span class="score-badge" [attr.data-tier]="tier(b)">{{ pct(b.score) }}</span>
+                  <svg
+                    class="gh-chev"
+                    [class.closed]="isCollapsed(s.company)"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.4"
+                    aria-hidden="true"
+                  >
+                    <path d="M8 10l4 4 4-4" />
+                  </svg>
+                  <span class="gh-name">{{ s.company }}</span>
+                  <span class="gh-count">{{ s.builds.length }}</span>
+                </button>
+              }
+              @if (s.company === null || !isCollapsed(s.company)) {
+                @for (b of s.builds; track b.id) {
+                  <div class="build-row">
+                    <a
+                      class="build-item anim-up"
+                      [routerLink]="['/build', b.id, 'tailor']"
+                      routerLinkActive="active"
+                      (click)="closeNav.emit()"
+                    >
+                      <div class="bi-top">
+                        <div>
+                          <div class="bi-title">{{ b.title }}</div>
+                          @if (b.company) {
+                            <div class="bi-co">{{ b.company }}</div>
+                          }
+                        </div>
+                        <span class="score-badge" [attr.data-tier]="tier(b)">{{ pct(b.score) }}</span>
+                      </div>
+                      <div class="bi-date">{{ b.created_at }}</div>
+                    </a>
+                    <button
+                      class="row-remove"
+                      type="button"
+                      [attr.aria-label]="'Remove build ' + b.id"
+                      (click)="askRemove(b.id, $event)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" />
+                      </svg>
+                    </button>
+                    @if (confirmingId() === b.id) {
+                      <div
+                        class="row-confirm"
+                        role="alertdialog"
+                        aria-label="Confirm build removal"
+                        (keydown.escape)="cancelRemove()"
+                      >
+                        <p>Remove build {{ b.id }}? This permanently deletes its files.</p>
+                        <div class="rc-actions">
+                          <button type="button" class="rc-go" (click)="confirmRemove(b.id)">Remove</button>
+                          <button type="button" class="rc-cancel" (click)="cancelRemove()">Cancel</button>
+                        </div>
+                      </div>
+                    }
                   </div>
-                  <div class="bi-date">{{ b.created_at }}</div>
-                </a>
+                }
               }
             }
           </div>
@@ -221,15 +293,44 @@ const NO_COMPANY = 'No company';
     }
     .lc-sort select:hover { border-color: var(--fg); color: var(--fg); }
     .lc-sort select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .lc-dir {
+      display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+      width: 28px; height: 28px; padding: 0;
+      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface); color: var(--muted); cursor: pointer;
+      transition: border-color 0.14s, color 0.14s;
+    }
+    .lc-dir:hover { border-color: var(--fg); color: var(--fg); }
+    .lc-dir:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .dir-arrow {
+      width: 14px; height: 14px;
+      transition: transform 0.16s cubic-bezier(0.2, 0.7, 0.2, 1);
+    }
+    .dir-arrow.up { transform: rotate(180deg); }
 
     .group-head {
+      display: flex; align-items: center; gap: 7px; width: 100%;
       font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em;
-      text-transform: uppercase; color: var(--faint);
-      padding: 12px 12px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      text-transform: uppercase; color: var(--faint); text-align: left;
+      padding: 12px 10px 5px; background: transparent; border: 0; cursor: pointer;
+      transition: color 0.14s;
     }
+    .group-head:hover { color: var(--muted); }
+    .group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
     .group-head:first-child { padding-top: 2px; }
+    .gh-chev {
+      width: 13px; height: 13px; flex-shrink: 0;
+      transition: transform 0.16s cubic-bezier(0.2, 0.7, 0.2, 1);
+    }
+    .gh-chev.closed { transform: rotate(-90deg); }
+    .gh-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gh-count {
+      margin-left: auto; flex-shrink: 0;
+      font-variant-numeric: tabular-nums; color: var(--faint);
+    }
 
     .build-list { display: flex; flex-direction: column; gap: 4px; }
+    .build-row { position: relative; }
     .build-item {
       display: block; width: 100%; text-align: left; text-decoration: none;
       color: inherit; padding: 12px 12px 12px 14px;
@@ -270,6 +371,48 @@ const NO_COMPANY = 'No company';
       color: var(--danger); border-color: color-mix(in oklch, var(--danger) 40%, var(--border));
     }
 
+    /* Per-row remove affordance: a house-token trash button that stays out of
+     * sight until the row is hovered or the button itself is focused, so it
+     * never competes with the score badge at rest. */
+    .row-remove {
+      position: absolute; bottom: 8px; right: 8px;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; padding: 0;
+      border: 1px solid var(--border); border-radius: 7px;
+      background: var(--surface); color: var(--muted); cursor: pointer;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.14s, border-color 0.14s, color 0.14s;
+    }
+    .build-row:hover .row-remove,
+    .row-remove:focus-visible {
+      opacity: 1; pointer-events: auto;
+    }
+    .row-remove:hover { border-color: var(--danger); color: var(--danger); }
+    .row-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .row-remove svg { width: 14px; height: 14px; }
+
+    .row-confirm {
+      margin: 4px 2px 2px; padding: 11px 12px;
+      border: 1px solid color-mix(in oklch, var(--danger) 40%, var(--border));
+      border-radius: var(--radius-lg);
+      background: color-mix(in oklch, var(--danger) 8%, var(--surface));
+    }
+    .row-confirm p { font-size: 12.5px; line-height: 1.4; color: var(--fg); margin: 0 0 9px; }
+    .rc-actions { display: flex; gap: 7px; }
+    .rc-actions button {
+      flex: 1; padding: 6px 10px; border-radius: 7px; font-size: 12px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface); color: var(--fg);
+      transition: border-color 0.14s, background 0.14s, color 0.14s;
+    }
+    .rc-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .rc-go { border-color: var(--danger) !important; color: var(--danger) !important; }
+    .rc-go:hover { background: var(--danger) !important; color: var(--bg) !important; }
+    .rc-cancel:hover { border-color: var(--fg); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .gh-chev, .dir-arrow, .row-remove { transition: none !important; }
+    }
+
     .build-empty {
       padding: 22px 12px; color: var(--faint); font-size: 12.5px;
       line-height: 1.5; text-align: center;
@@ -299,6 +442,9 @@ const NO_COMPANY = 'No company';
 })
 export class Sidebar {
   protected readonly store = inject(BuildsStore);
+  private readonly api = inject(ApiService);
+  private readonly router = inject(Router);
+  private readonly copilot = inject(CopilotHost);
   readonly open = input(false);
   /** Desktop-only collapse state (meaningless ≤1080px; see host CSS). */
   readonly collapsed = input(false);
@@ -309,22 +455,52 @@ export class Sidebar {
    *  cluster by company); the choice persists in localStorage so turning it off
    *  sticks across reloads. */
   protected readonly groupByCompany = signal<boolean>(readGroup());
-  /** Sort order, applied inside groups when grouping and across the flat list
+  /** Sort key, applied inside groups when grouping and across the flat list
    *  otherwise. Persisted alongside the grouping choice. */
   protected readonly sortBy = signal<SortBy>(readSort());
+  /** Sort direction. Newest-first (desc) is the default; the choice persists. */
+  protected readonly sortDir = signal<SortDir>(readDir());
+  /** The set of collapsed groups, by trimmed company name. Persisted so a
+   *  folded company stays folded across reloads. */
+  private readonly collapsedGroups = signal<Set<string>>(readCollapsed());
+  /** Which build row is showing its inline remove confirmation, if any. */
+  protected readonly confirmingId = signal<string | null>(null);
+
+  /** The current route's build id, tracked so the open build's group can be
+   *  force-expanded (its active row must never sit inside a folded group). */
+  private readonly currentUrl = toSignal(
+    this.router.events.pipe(
+      filter((e) => e instanceof NavigationEnd),
+      map(() => this.router.url),
+    ),
+    { initialValue: this.router.url },
+  );
+  private readonly activeId = computed(() => {
+    const match = this.currentUrl().match(/\/build\/([^/]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  });
+  /** The group the open build belongs to (its trimmed company, or "No company"),
+   *  or null when no build is open or its summary isn't loaded yet. */
+  private readonly activeCompany = computed(() => {
+    const id = this.activeId();
+    if (!id) return null;
+    const build = this.store.builds().find((b) => b.id === id);
+    return build ? groupKey(build) : null;
+  });
 
   /** The list to render: one headerless section when grouping is off, else one
    *  section per company (ordered by each group's newest build, empty groups
    *  dropped since they're built from the already-filtered list). The active
-   *  sort applies within every section. Composes with the topbar text filter via
-   *  `store.filtered()`. */
+   *  sort and direction apply within every section. Composes with the topbar
+   *  text filter via `store.filtered()`. */
   protected readonly sections = computed<BuildSection[]>(() => {
     const builds = this.store.filtered();
     const sort = this.sortBy();
+    const dir = this.sortDir();
     if (!this.groupByCompany()) {
-      return [{ company: null, builds: sortBuilds(builds, sort) }];
+      return [{ company: null, builds: sortBuilds(builds, sort, dir) }];
     }
-    return groupByCompany(builds, sort);
+    return groupByCompany(builds, sort, dir);
   });
 
   protected toggleGrouping(): void {
@@ -336,6 +512,59 @@ export class Sidebar {
     const value: SortBy = (e.target as HTMLSelectElement).value === 'score' ? 'score' : 'newest';
     this.sortBy.set(value);
     writeLs(SORT_KEY, value);
+  }
+
+  protected toggleDir(): void {
+    this.sortDir.update((d) => (d === 'asc' ? 'desc' : 'asc'));
+    writeLs(DIR_KEY, this.sortDir());
+  }
+
+  /** Whether a group renders folded. The open build's group is always shown
+   *  expanded, whatever its persisted state, so its active row stays visible. */
+  protected isCollapsed(company: string): boolean {
+    return this.collapsedGroups().has(company) && company !== this.activeCompany();
+  }
+
+  protected toggleCollapsed(company: string): void {
+    this.collapsedGroups.update((set) => {
+      const next = new Set(set);
+      if (next.has(company)) next.delete(company);
+      else next.add(company);
+      return next;
+    });
+    writeLs(COLLAPSED_KEY, JSON.stringify([...this.collapsedGroups()]));
+  }
+
+  protected askRemove(id: string, e: Event): void {
+    // The remove button sits over the row's link; don't let the click navigate.
+    e.preventDefault();
+    e.stopPropagation();
+    this.confirmingId.set(id);
+  }
+
+  protected cancelRemove(): void {
+    this.confirmingId.set(null);
+  }
+
+  /** Delete a build: DELETE the server copy, refresh the list, and toast. If the
+   *  removed build was the one open, go back to `/`, which redirects to the
+   *  newest remaining build or shows first-run. A failure toasts the server's
+   *  message and leaves everything as it was. */
+  protected async confirmRemove(id: string): Promise<void> {
+    const wasOpen = this.activeId() === id;
+    try {
+      await firstValueFrom(this.api.removeBuild(id));
+    } catch (err) {
+      this.confirmingId.set(null);
+      this.copilot.notify(removeErrorMessage(err));
+      return;
+    }
+    this.confirmingId.set(null);
+    this.store.load();
+    this.copilot.notify(`Removed build ${id}`);
+    if (wasOpen) {
+      await this.router.navigate(['/'], { replaceUrl: true });
+    }
   }
 
   /** Scores arrive as a 0..1 fraction; show a whole percentage. */
@@ -352,41 +581,69 @@ export class Sidebar {
 
 // ── module-local helpers ───────────────────────────────────────────────
 
-/** Sort a copy of the builds: newest by `created_at`, or score descending with
- *  builds lacking a score last (ties broken by newest so the order is stable). */
-function sortBuilds(builds: readonly BuildSummary[], sort: SortBy): BuildSummary[] {
+/** The group a build belongs to: its trimmed company, or the "No company"
+ *  fallback when the company is blank. Also the localStorage key a folded
+ *  group is remembered under. */
+function groupKey(b: BuildSummary): string {
+  return b.company?.trim() || NO_COMPANY;
+}
+
+/** Sort a copy of the builds. The primary key is `created_at` (Newest) or the
+ *  score (Score); `dir` flips it, so Newest asc reads oldest-first and Score
+ *  asc reads weakest-first with missing scores (worst of all) at the very
+ *  front. The tiebreak stays fixed regardless of direction, newest then id, so
+ *  equal-key builds hold one stable order either way. */
+function sortBuilds(
+  builds: readonly BuildSummary[],
+  sort: SortBy,
+  dir: SortDir,
+): BuildSummary[] {
   const arr = [...builds];
-  if (sort === 'score') {
-    arr.sort((a, b) => scoreOf(b) - scoreOf(a) || timeOf(b) - timeOf(a));
-  } else {
-    arr.sort((a, b) => timeOf(b) - timeOf(a));
-  }
+  const sign = dir === 'asc' ? -1 : 1;
+  arr.sort((a, b) => {
+    // Both forms are "descending-natural" (bigger first); `sign` reverses them.
+    const primary = sort === 'score' ? scoreOf(b) - scoreOf(a) : timeOf(b) - timeOf(a);
+    // A NaN primary (two missing scores subtracted) is falsy and falls through.
+    if (primary) return sign * primary;
+    return timeOf(b) - timeOf(a) || cmpId(a, b);
+  });
   return arr;
 }
 
 /** Cluster builds under company headers, each group internally sorted, the
  *  groups themselves ordered by their newest build. A blank company falls under
  *  a single "No company" header. */
-function groupByCompany(builds: readonly BuildSummary[], sort: SortBy): BuildSection[] {
+function groupByCompany(
+  builds: readonly BuildSummary[],
+  sort: SortBy,
+  dir: SortDir,
+): BuildSection[] {
   const map = new Map<string, BuildSummary[]>();
   for (const b of builds) {
-    const key = b.company?.trim() || NO_COMPANY;
+    const key = groupKey(b);
     const arr = map.get(key);
     if (arr) arr.push(b);
     else map.set(key, [b]);
   }
   const groups = [...map.entries()].map(([company, list]) => ({
     company,
-    builds: sortBuilds(list, sort),
+    builds: sortBuilds(list, sort, dir),
   }));
   groups.sort((a, b) => newestTime(b.builds) - newestTime(a.builds));
   return groups;
 }
 
 /** A build's score for sorting: its numeric score, or -Infinity when it lacks
- *  one (missing/NaN) so those builds sort last regardless of order. */
+ *  one (missing/NaN) so those builds sort at the weak end whatever the order. */
 function scoreOf(b: BuildSummary): number {
   return typeof b.score === 'number' && !Number.isNaN(b.score) ? b.score : -Infinity;
+}
+
+/** A stable id comparison, the final tiebreak so any two builds have exactly
+ *  one order. Ids are zero-padded numeric strings, so a lexical compare matches
+ *  their numeric order. */
+function cmpId(a: BuildSummary, b: BuildSummary): number {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 function timeOf(b: BuildSummary): number {
@@ -406,6 +663,32 @@ function readGroup(): boolean {
 
 function readSort(): SortBy {
   return readLs(SORT_KEY) === 'score' ? 'score' : 'newest';
+}
+
+function readDir(): SortDir {
+  // Default desc (newest first): only an explicit 'asc' flips it.
+  return readLs(DIR_KEY) === 'asc' ? 'asc' : 'desc';
+}
+
+function readCollapsed(): Set<string> {
+  const raw = readLs(COLLAPSED_KEY);
+  if (!raw) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((v): v is string => typeof v === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+/** The server's error message for a failed remove, if it sent one, else a plain
+ *  fallback. An `HttpErrorResponse` carries the parsed JSON body on `.error`,
+ *  which for this API is `{ error: { kind, message } }`. */
+function removeErrorMessage(err: unknown): string {
+  const body = (err as { error?: { error?: { message?: unknown } } })?.error?.error?.message;
+  if (typeof body === 'string' && body.length > 0) return body;
+  const message = (err as { message?: unknown })?.message;
+  return typeof message === 'string' && message.length > 0 ? message : 'could not remove the build';
 }
 
 function readLs(key: string): string | null {
