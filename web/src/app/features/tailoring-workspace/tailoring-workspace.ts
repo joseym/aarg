@@ -1273,10 +1273,9 @@ export class TailoringWorkspace {
    *  a failed save reverts it. (Leave is only offered on OPEN objections, so the
    *  `accepted` removal is a no-op safety, not a state transition.) */
   protected onLeave(o: ObjectionVM): void {
-    const prev = this.leftIds();
     this.leftIds.update((s) => withAdded(s, o.id));
     this.accepted.update((s) => withRemoved(s, o.id));
-    this.persistTriage(prev);
+    this.persistTriage({ remove: [o.id] });
   }
 
   /** Undo a resolved objection. A LEFT one just drops out of the triage file; an
@@ -1287,9 +1286,8 @@ export class TailoringWorkspace {
       this.reopenAccepted(o);
       return;
     }
-    const prev = this.leftIds();
     this.leftIds.update((s) => withRemoved(s, o.id));
-    this.persistTriage(prev);
+    this.persistTriage({ add: [o.id] });
   }
 
   /** Reopen an accepted objection: remove the dismissal it wrote to the dataset
@@ -1323,16 +1321,34 @@ export class TailoringWorkspace {
   }
 
   /** Persist the current `leftIds` to the build's triage file. The payload is
-   *  tiny, so this fires on every leave/reopen; a failure reverts `leftIds` to
-   *  `prev` (the value before the optimistic change) and toasts the server's
-   *  message. */
-  private persistTriage(prev: ReadonlySet<string>): void {
+   *  tiny, so this fires whenever the left set changes; a failure reverts only
+   *  the delta that this save carried (never a whole-set snapshot, which would
+   *  clobber a faster interleaved save) and toasts the server's message. */
+  private persistTriage(revert?: { add?: string[]; remove?: string[] }): void {
     this.api.saveTriage(this.id(), [...this.leftIds()]).subscribe({
       error: (err: unknown) => {
-        this.leftIds.set(prev);
+        if (revert) {
+          this.leftIds.update((s) => {
+            let out = s;
+            for (const id of revert.add ?? []) out = withAdded(out, id);
+            for (const id of revert.remove ?? []) out = withRemoved(out, id);
+            return out;
+          });
+        }
         this.showToast(errMessage(err));
       },
     });
+  }
+
+  /** Drop ids from the left set and persist the change when it altered
+   *  anything. Every path that resolves an objection some other way (accept, a
+   *  refine that records evidence) must go through this, or triage.json keeps
+   *  a stale "left" the next reload resurrects. */
+  private clearLeft(ids: readonly string[]): void {
+    const had = ids.filter((id) => this.leftIds().has(id));
+    if (had.length === 0) return;
+    this.leftIds.update((s) => had.reduce((acc, id) => withRemoved(acc, id), s));
+    this.persistTriage({ add: had });
   }
 
   protected onRefine(o: ObjectionVM): void {
@@ -1471,7 +1487,7 @@ export class TailoringWorkspace {
       // Provenance may now trace a previously-unrecorded line.
       void this.recompute();
       this.refinedIds.update((s) => markIds.reduce((acc, id) => withAdded(acc, id), s));
-      this.leftIds.update((s) => markIds.reduce((acc, id) => withRemoved(acc, id), s));
+      this.clearLeft(markIds);
       this.showToast(summary);
     } catch (err) {
       const msg =
@@ -1571,7 +1587,7 @@ export class TailoringWorkspace {
       next: () => {
         this.dataset.set(next);
         this.accepted.update((s) => withAdded(s, o.id));
-        this.leftIds.update((s) => withRemoved(s, o.id));
+        this.clearLeft([o.id]);
         this.busy.set(null);
         this.showToast('Accepted: the reviewer won’t raise this again.');
       },
