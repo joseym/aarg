@@ -36,8 +36,8 @@ pub async fn enrich(id: Option<String>) -> Result<(), CliError> {
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
     let ctx = AgentContext {
-        llm: &client,
-        model: &config.anthropic,
+        llm: &*client,
+        model: config.active_resolver(),
         tracer: &tracer,
         sink: None,
     };
