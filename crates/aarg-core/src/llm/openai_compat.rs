@@ -7,11 +7,17 @@
 //! provider-agnostic `llm::types`.
 //!
 //! AARG's prompts run roughly 4k-8k tokens, and a local model is usually loaded
-//! with a fixed context window. When a prompt overflows that window LM Studio
-//! answers with an HTTP 400 whose body names `n_ctx`/`n_keep`; this client
-//! recognizes that shape and rewrites it into advice a user can act on (reload
-//! the model with a larger context), because a raw `n_ctx` error is otherwise
-//! opaque. See [`crate::llm::context`] for the estimate it reports.
+//! with a fixed context window this client cannot resize per request. What
+//! happens on overflow depends on the server's overflow policy. With LM
+//! Studio's error policy the server answers HTTP 400 naming `n_ctx`/`n_keep`;
+//! this client recognizes that shape and rewrites it into advice a user can act
+//! on (reload the model with a larger context), because a raw `n_ctx` error is
+//! otherwise opaque. With the Truncate Middle or Rolling Window policies the
+//! server instead returns 200 with a silently clipped prompt, so the client
+//! also compares the reported `usage.prompt_tokens` against its own estimate
+//! and refuses a reply whose prompt came back materially short (see
+//! [`crate::llm::context`]); a clipped prompt is dropped evidence, not a
+//! smaller request.
 
 use std::time::Duration;
 
@@ -23,7 +29,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::llm::client::LlmClient;
-use crate::llm::context::estimate_prompt_tokens;
+use crate::llm::context::{estimate_prompt_tokens, looks_clamped};
 use crate::llm::lines::drain_lines;
 use crate::llm::types::{
     Attachment, CompletionRequest, CompletionResponse, LlmError, Message, StreamEvent, TokenStream,
@@ -225,6 +231,18 @@ fn wire_attachment(attachment: &Attachment) -> Result<Value, LlmError> {
         })),
         Attachment::Pdf { .. } => Err(pdf_unsupported()),
     }
+}
+
+/// The typed refusal for a reply whose prompt came back materially short of
+/// the estimate: the server's overflow policy (LM Studio's Truncate Middle or
+/// Rolling Window) clipped the prompt and returned 200 as if nothing happened.
+fn clamped(prompt_tokens: u64, estimate: u64) -> LlmError {
+    LlmError::Unsupported(format!(
+        "the server processed only ~{prompt_tokens} prompt tokens of an \
+         estimated ~{estimate}, so its overflow policy clipped the prompt and \
+         the answer would be built on a partial prompt; reload the model with \
+         a larger context length, or shorten the input"
+    ))
 }
 
 /// The typed refusal for a PDF attachment. No request reaches the server, so
@@ -500,7 +518,11 @@ impl LlmClient for OpenAiCompatClient {
         if !(200..300).contains(&status) {
             return Err(parse_api_error(status, &body, estimate));
         }
-        parse_completion(&body)
+        let completion = parse_completion(&body)?;
+        if looks_clamped(completion.usage.input_tokens, estimate) {
+            return Err(clamped(completion.usage.input_tokens, estimate));
+        }
+        Ok(completion)
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<TokenStream, LlmError> {
@@ -513,20 +535,40 @@ impl LlmClient for OpenAiCompatClient {
         }
 
         let (tx, rx) = mpsc::channel(32);
-        tokio::spawn(pump_sse(response.bytes_stream(), tx));
+        tokio::spawn(pump_sse(response.bytes_stream(), tx, estimate));
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 }
 
+/// The clamp check a stream's final usage gets before `Done` goes out: the
+/// same estimate-versus-reported-count comparison `complete` runs, so a
+/// silently clipped prompt is refused on both paths. Returns the event to
+/// forward.
+fn checked_done(
+    stop_reason: Option<String>,
+    usage: TokenUsage,
+    estimate: u64,
+) -> Result<StreamEvent, LlmError> {
+    if looks_clamped(usage.input_tokens, estimate) {
+        return Err(clamped(usage.input_tokens, estimate));
+    }
+    Ok(StreamEvent::Done { stop_reason, usage })
+}
+
 /// Read the SSE byte stream and forward parsed events into `tx`. Factored out
 /// of `stream` and generic over the byte source so tests can drive it with
-/// fixture chunks instead of a live socket.
+/// fixture chunks instead of a live socket. `estimate` feeds the clamp check
+/// the final usage gets before `Done` is forwarded.
 ///
-/// The task stops reading the moment `Done` is sent: `data: [DONE]` is the end
-/// of the response, and reading past it would misread anything a misbehaving
-/// server tacks on (a duplicate sentinel would double-send `Done`).
-async fn pump_sse<B, S>(mut bytes: S, tx: mpsc::Sender<Result<StreamEvent, LlmError>>)
-where
+/// The task stops reading the moment the stream's outcome is sent: `data:
+/// [DONE]` is the end of the response, and reading past it would misread
+/// anything a misbehaving server tacks on (a duplicate sentinel would
+/// double-send `Done`).
+async fn pump_sse<B, S>(
+    mut bytes: S,
+    tx: mpsc::Sender<Result<StreamEvent, LlmError>>,
+    estimate: u64,
+) where
     B: AsRef<[u8]>,
     S: futures_util::Stream<Item = Result<B, reqwest::Error>> + Unpin,
 {
@@ -561,9 +603,12 @@ where
         buffer.extend_from_slice(chunk.as_ref());
         for line in drain_lines(&mut buffer) {
             match handle_sse_line(&line, &mut state) {
+                Ok(Some(StreamEvent::Done { stop_reason, usage })) => {
+                    let _ = tx.send(checked_done(stop_reason, usage, estimate)).await;
+                    return;
+                }
                 Ok(Some(event)) => {
-                    let is_done = matches!(event, StreamEvent::Done { .. });
-                    if tx.send(Ok(event)).await.is_err() || is_done {
+                    if tx.send(Ok(event)).await.is_err() {
                         return;
                     }
                 }
@@ -582,10 +627,11 @@ where
     // present as a complete one.
     if state.finish_reason.is_some() {
         let _ = tx
-            .send(Ok(StreamEvent::Done {
-                stop_reason: state.finish_reason.take(),
-                usage: state.usage,
-            }))
+            .send(checked_done(
+                state.finish_reason.take(),
+                state.usage,
+                estimate,
+            ))
             .await;
     } else {
         let _ = tx
@@ -873,16 +919,66 @@ mod tests {
     }
 
     /// Drive `pump_sse` with fixture byte chunks and collect everything it
-    /// forwards, exactly as a caller would read the `TokenStream`.
+    /// forwards, exactly as a caller would read the `TokenStream`. The
+    /// estimate is set low so the clamp check stays quiet unless a test
+    /// wants it.
     async fn run_pump(chunks: Vec<&'static [u8]>) -> Vec<Result<StreamEvent, LlmError>> {
+        run_pump_with_estimate(chunks, 5).await
+    }
+
+    async fn run_pump_with_estimate(
+        chunks: Vec<&'static [u8]>,
+        estimate: u64,
+    ) -> Vec<Result<StreamEvent, LlmError>> {
         let (tx, mut rx) = mpsc::channel(32);
         let bytes = futures_util::stream::iter(chunks.into_iter().map(Ok::<_, reqwest::Error>));
-        pump_sse(bytes, tx).await;
+        pump_sse(bytes, tx, estimate).await;
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
             events.push(event);
         }
         events
+    }
+
+    #[tokio::test]
+    async fn a_stream_whose_prompt_came_back_clamped_is_refused() {
+        // The server's overflow policy (Truncate Middle) clipped an ~8000
+        // token prompt to a 4096 window and streamed a reply anyway; the
+        // usage chunk gives it away and the Done becomes a refusal.
+        let events = run_pump_with_estimate(
+            vec![
+                b"data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"Hi\"}, \"finish_reason\": \"stop\"}]}\n",
+                b"data: {\"choices\": [], \"usage\": {\"prompt_tokens\": 4096, \"completion_tokens\": 2}}\n",
+                b"data: [DONE]\n",
+            ],
+            8000,
+        )
+        .await;
+        match events.last() {
+            Some(Err(LlmError::Unsupported(message))) => {
+                assert!(message.contains("~4096"), "got: {message}");
+                assert!(message.contains("~8000"), "got: {message}");
+            }
+            other => panic!("expected an Unsupported refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checked_done_passes_a_healthy_usage_through() {
+        let usage = TokenUsage {
+            input_tokens: 7600,
+            output_tokens: 40,
+        };
+        // 7600 of an estimated 8000: the estimate ran a little high, fine.
+        match checked_done(Some("stop".to_string()), usage, 8000) {
+            Ok(StreamEvent::Done { stop_reason, .. }) => {
+                assert_eq!(stop_reason.as_deref(), Some("stop"));
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // A server that reported no usage at all is not evidence of a clamp.
+        let unreported = TokenUsage::default();
+        assert!(checked_done(None, unreported, 8000).is_ok());
     }
 
     #[tokio::test]

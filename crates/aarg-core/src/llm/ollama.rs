@@ -7,12 +7,16 @@
 //! encoded string, and images ride in a message-level `images` array.
 //!
 //! The `num_ctx` option matters more than it looks. AARG's prompts run roughly
-//! 4k-8k tokens, and without an explicit `num_ctx` Ollama silently truncates a
-//! prompt to about 4096 tokens — no error, just a quietly shorter prompt. For a
-//! tool built on never fabricating from the dataset, a silently clipped prompt
-//! is evidence loss, so this client sizes `num_ctx` from an estimate of each
-//! prompt and, after the response, checks the server's reported token count to
-//! confirm nothing was clipped (see [`crate::llm::context`]).
+//! 4k-8k tokens, and Ollama silently clips a prompt that overflows the window —
+//! no error, HTTP 200, and (probed live on 0.30.11) only `num_ctx / 2 + 2`
+//! prompt tokens kept: a 3218-token prompt came back as 258 processed tokens
+//! under a 512-token window, 514 under 1024, 1026 under 2048. Without an
+//! explicit `num_ctx` the window is the model default (as small as 4096), so
+//! half of a typical AARG prompt would vanish. For a tool built on never
+//! fabricating from the dataset that is evidence loss, so this client sizes
+//! `num_ctx` from an estimate of each prompt and, after the response, checks
+//! the server's reported token count for the clip shapes
+//! (see [`crate::llm::context`]).
 
 use std::time::Duration;
 
@@ -222,9 +226,9 @@ fn pdf_unsupported() -> LlmError {
 /// it was given.
 fn truncated(prompt_eval_count: u64, estimate: u64) -> LlmError {
     LlmError::Unsupported(format!(
-        "the model clipped the prompt to fit its context window (processed \
-         ~{prompt_eval_count} tokens of an estimated ~{estimate}); the answer \
-         would be built on a partial prompt — use a model with a larger context \
+        "the model's context window could not hold the prompt: it processed \
+         ~{prompt_eval_count} tokens of an estimated ~{estimate}, so the answer \
+         would be built on a partial prompt; use a model with a larger context \
          window, or shorten the input"
     ))
 }
@@ -410,7 +414,12 @@ impl LlmClient for OllamaClient {
             return Err(parse_api_error(status, &body));
         }
         let completion = parse_completion(&body)?;
-        if looks_truncated(completion.usage.input_tokens, num_ctx, estimate) {
+        if looks_truncated(
+            completion.usage.input_tokens,
+            num_ctx,
+            request.max_tokens,
+            estimate,
+        ) {
             return Err(truncated(completion.usage.input_tokens, estimate));
         }
         Ok(completion)
@@ -427,19 +436,26 @@ impl LlmClient for OllamaClient {
         }
 
         let (tx, rx) = mpsc::channel(32);
-        tokio::spawn(pump_ndjson(response.bytes_stream(), tx, num_ctx, estimate));
+        tokio::spawn(pump_ndjson(
+            response.bytes_stream(),
+            tx,
+            num_ctx,
+            request.max_tokens,
+            estimate,
+        ));
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 }
 
 /// Read the NDJSON byte stream and forward parsed events into `tx`. Factored
 /// out of `stream` and generic over the byte source so tests can drive it with
-/// fixture chunks instead of a live socket. `num_ctx` and `estimate` feed the
-/// truncation check run against the `done` line's stats.
+/// fixture chunks instead of a live socket. `num_ctx`, `max_tokens`, and
+/// `estimate` feed the truncation check run against the `done` line's stats.
 async fn pump_ndjson<B, S>(
     mut bytes: S,
     tx: mpsc::Sender<Result<StreamEvent, LlmError>>,
     num_ctx: u32,
+    max_tokens: u32,
     estimate: u64,
 ) where
     B: AsRef<[u8]>,
@@ -481,7 +497,7 @@ async fn pump_ndjson<B, S>(
                     // the stream's final stats before Done goes out. The
                     // `done: true` line is the end of the response, so the
                     // task stops reading either way.
-                    if looks_truncated(stats.prompt_eval_count, num_ctx, estimate) {
+                    if looks_truncated(stats.prompt_eval_count, num_ctx, max_tokens, estimate) {
                         let _ = tx
                             .send(Err(truncated(stats.prompt_eval_count, estimate)))
                             .await;
@@ -726,9 +742,16 @@ mod tests {
 
     #[test]
     fn complete_detects_a_truncated_prompt() {
-        // The response reports a prompt_eval_count pinned at the window while
-        // the estimate is far higher: the prompt was clipped.
-        assert!(looks_truncated(8192, 8192, 12000));
+        // The probed clip shape: the window is the one effective_num_ctx
+        // produces for this estimate, and the count sits at window / 2 + 2,
+        // where Ollama clips an oversized prompt (verified live at windows of
+        // 512, 1024, and 2048).
+        let estimate = 12000;
+        let max_tokens = 512;
+        let window = effective_num_ctx(DEFAULT_NUM_CTX, estimate, max_tokens);
+        assert_eq!(u64::from(window), 12000 + 512 + 512);
+        let clipped = u64::from(window) / 2 + 2;
+        assert!(looks_truncated(clipped, window, max_tokens, estimate));
         // And the typed error names the shortfall.
         match truncated(8192, 12000) {
             LlmError::Unsupported(message) => {
@@ -774,7 +797,7 @@ mod tests {
     async fn run_pump(chunks: Vec<&'static [u8]>) -> Vec<Result<StreamEvent, LlmError>> {
         let (tx, mut rx) = mpsc::channel(32);
         let bytes = futures_util::stream::iter(chunks.into_iter().map(Ok::<_, reqwest::Error>));
-        pump_ndjson(bytes, tx, 8192, 100).await;
+        pump_ndjson(bytes, tx, 8192, 64, 100).await;
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
             events.push(event);
