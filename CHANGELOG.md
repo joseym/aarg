@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.4.0 - 2026-07-04
+#### Features
+- (**release**) publish a Homebrew formula to joseym/homebrew-tap - (18070bd) - Josey Morton
+
+- - -
+
 ## v0.3.1 - 2026-07-04
 #### Bug Fixes
 - (**ci**) review findings in the signing workflow - (2eb8e3e) - Josey Morton
