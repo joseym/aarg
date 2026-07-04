@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aarg"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aarg-core",
  "aarg-domain",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "aarg-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "aarg-domain"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aarg-core",
  "async-trait",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "aarg-wasm"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aarg-domain",
  "async-trait",
