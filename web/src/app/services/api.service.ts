@@ -77,6 +77,17 @@ export class ApiService {
     );
   }
 
+  /** `POST /api/builds/:id/triage` — replace this build's objection triage (the
+   *  ids "left for now"). A full replacement, so a leave is a save with the id
+   *  added and a reopen a save with it removed. The payload is tiny, so the
+   *  caller saves on every change and reverts its optimistic signal on failure. */
+  saveTriage(id: string, left: string[]): Observable<{ status: string }> {
+    return this.http.post<{ status: string }>(
+      `${this.base}/builds/${encodeURIComponent(id)}/triage`,
+      { left },
+    );
+  }
+
   /** `GET /api/builds/:id/files/:name` — a stored rendered PDF, as a blob. */
   getBuildFile(id: string, name: string): Observable<Blob> {
     return this.http.get(
