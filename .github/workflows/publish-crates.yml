@@ -35,7 +35,7 @@ jobs:
       # The published `aarg` crate carries web/dist/aarg/browser (via the
       # `include` list in Cargo.toml), and build.rs embeds it at compile time,
       # so the verify build cargo runs during `cargo publish -p aarg` needs it
-      # present. These steps mirror .github/build-setup.yml exactly.
+      # present. These steps mirror the canonical copy in build-artifacts.yml.
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
