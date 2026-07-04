@@ -532,14 +532,21 @@ where
 {
     let mut buffer: Vec<u8> = Vec::new();
     let mut state = StreamState::default();
+    // The first chunk only arrives after the model has evaluated the whole
+    // prompt, and that prefill can take minutes for an 8k-token prompt on
+    // busy hardware, so the first wait gets the same total budget a
+    // non-streaming request does. Once tokens are flowing, two minutes of
+    // silence means a dead stream, not a slow one.
+    let mut idle = COMPLETE_TIMEOUT;
     loop {
-        let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await;
+        let next = tokio::time::timeout(idle, bytes.next()).await;
         let chunk = match next {
             Err(_elapsed) => {
                 let _ = tx
-                    .send(Err(LlmError::Stream(
-                        "no data from the model for 120s".to_string(),
-                    )))
+                    .send(Err(LlmError::Stream(format!(
+                        "no data from the model for {}s",
+                        idle.as_secs()
+                    ))))
                     .await;
                 return;
             }
@@ -550,6 +557,7 @@ where
                 return;
             }
         };
+        idle = STREAM_IDLE_TIMEOUT;
         buffer.extend_from_slice(chunk.as_ref());
         for line in drain_lines(&mut buffer) {
             match handle_sse_line(&line, &mut state) {
