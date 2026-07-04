@@ -31,7 +31,7 @@ install-updater = false
 # Rehearsal for THIS PR: run the full custom local build (sign + notarize when
 # the secrets are loaded, skip loudly when not) on every push to the PR. Flip
 # back to "plan" once the signing path has proven itself on a real PR run.
-pr-run-mode = "upload"
+pr-run-mode = "plan"
 # The frontend (compiled wasm + Angular build) has to exist before cargo build,
 # because build.rs embeds web/dist into the binary. dist's github-build-setup
 # only injects into its built-in local build job, which build-artifacts.yml now
