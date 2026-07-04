@@ -10,7 +10,7 @@
 //! workspace lints deny `unwrap`/`expect`/`panic` in production code — and no
 //! error message carries key material.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -607,6 +607,11 @@ pub(super) async fn get_build(id: &str) -> Resp {
             obj.insert(key.into(), value);
         }
     }
+    // Triage is always present (unlike the best-effort artifacts above): a build
+    // with no `triage.json` yet has left nothing, so it reads as an empty list
+    // rather than an omitted key — the browser initializes its "left for now"
+    // set straight from `triage.left` without a missing-key branch.
+    obj.insert("triage".into(), json!({ "left": read_triage(&dir).left }));
     obj.insert("pdfs".into(), json!(pdf_filenames(&dir)));
     json_response(200, &Value::Object(obj))
 }
@@ -668,6 +673,42 @@ pub(super) async fn get_build_file(id: &str, name: &str) -> Resp {
     match std::fs::read(&path) {
         Ok(bytes) => bytes_response(200, super::statics::content_type_for(&path), bytes),
         Err(error) => error_response(500, "internal", format!("could not read the file: {error}")),
+    }
+}
+
+// ---------------------------------------------------------------------
+// DELETE /api/builds/:id — remove a build and all its artifacts
+// ---------------------------------------------------------------------
+
+/// `DELETE /api/builds/:id` — delete a build's directory and everything under
+/// it, the same on-disk removal `aarg history rm` performs. Both paths go
+/// through [`crate::history::remove_in`], so there is one deletion code path,
+/// not two. The write is serialized through `AppState.build_write`, the mutex
+/// the edit and triage saves also take, so a delete can never race a save on
+/// the same build's files. A missing (or already-deleted) build is a 404;
+/// success returns `{"removed": "<id>"}`.
+pub(super) async fn delete_build(id: &str, state: &AppState) -> Resp {
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let _guard = state.build_write.lock().await;
+    delete_build_in(&root, id)
+}
+
+/// The disk-touching half of [`delete_build`], split out with the builds root
+/// injected so a test can drive it against a tempdir. The id is validated with
+/// the same [`is_numeric_id`] gate the other build routes use before any path
+/// is built; `remove_in` guards the id a second time as defense in depth.
+fn delete_build_in(root: &Path, id: &str) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    match crate::history::remove_in(root, id) {
+        Ok(()) => json_response(200, &json!({ "removed": id })),
+        Err(crate::history::HistoryError::NotFound { .. }) => {
+            error_response(404, "not_found", format!("no build {id:?}"))
+        }
+        Err(error) => error_response(500, "internal", error.to_string()),
     }
 }
 
@@ -1261,6 +1302,95 @@ fn save_edits_error_response(error: SaveEditsError) -> Resp {
         SaveEditsError::Build(error) => error_response(500, "build_error", error.to_string()),
         SaveEditsError::Json(error) => error_response(500, "internal", error.to_string()),
         SaveEditsError::Io { .. } => error_response(500, "internal", error.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------
+// POST /api/builds/:id/triage — persist objection triage for a build
+// ---------------------------------------------------------------------
+
+/// A build's objection triage (`triage.json`), stored alongside `edit_log.json`:
+/// which objection ids the user has *left for now*. Where an Accept persists a
+/// dismissal into the dataset (so the reviewer never raises it again), Leave is
+/// a per-build "I'll come back to this" that must survive a reload — hence a
+/// small file per build rather than dataset state. The body is a full
+/// replacement (`{"left": [...]}`), so a save is idempotent and a reopen is just
+/// a save with the id removed.
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+struct BuildTriage {
+    #[serde(default)]
+    left: Vec<String>,
+}
+
+/// The most objection ids a single build's triage can carry. A build has a
+/// handful of objections, never hundreds, so this cap only exists to refuse a
+/// client that tried to smuggle an unbounded list into the file.
+const MAX_TRIAGE_IDS: usize = 200;
+
+/// Parse and validate a triage body: it must deserialize to `{"left": [<string>,
+/// ...]}` (a non-string element, or a non-object body, is a parse error) and
+/// carry no more than [`MAX_TRIAGE_IDS`] ids. Split from the handler so a test
+/// can exercise the garbage/oversized rejections without a socket.
+fn parse_triage(body: &[u8]) -> Result<BuildTriage, String> {
+    // Parse to a `Value` first and insist it's an object: serde will otherwise
+    // deserialize a struct from a JSON *array* (matching fields positionally), so
+    // a bare `[]` would sneak through as an empty `left`. The triage body is an
+    // object or it's garbage.
+    let value: Value =
+        serde_json::from_slice(body).map_err(|error| format!("invalid triage JSON: {error}"))?;
+    if !value.is_object() {
+        return Err("triage body must be an object like {\"left\": [...]}".to_string());
+    }
+    let triage: BuildTriage =
+        serde_json::from_value(value).map_err(|error| format!("invalid triage JSON: {error}"))?;
+    if triage.left.len() > MAX_TRIAGE_IDS {
+        return Err(format!(
+            "too many triage ids: {} exceeds the {MAX_TRIAGE_IDS}-id cap",
+            triage.left.len()
+        ));
+    }
+    Ok(triage)
+}
+
+/// Read a build's stored triage, defaulting to empty when the file is absent or
+/// unreadable — a build with no `triage.json` has left nothing. Used by the GET
+/// bundle so the browser always gets a `left` list to initialize from.
+fn read_triage(dir: &std::path::Path) -> BuildTriage {
+    read_json_artifact(&dir.join("triage.json"))
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+/// Replace a build's objection triage with the posted `{"left": [...]}`. Writes
+/// are serialized through `AppState.build_write` — the same mutex the edit log
+/// uses — so a triage save can't race an edit save on the same build's files.
+/// The body is validated before the id/dir checks touch disk, and the write
+/// itself is a single tiny JSON file (no render), so it runs inline under the
+/// guard rather than on a blocking thread the way `save_build_edits` does.
+pub(super) async fn save_build_triage(req: Request<Incoming>, id: &str, state: &AppState) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let triage = match parse_triage(&body) {
+        Ok(triage) => triage,
+        Err(message) => return error_response(400, "bad_request", message),
+    };
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    let _guard = state.build_write.lock().await;
+    match builds::write_json(&dir, "triage.json", &triage) {
+        Ok(()) => json_response(200, &json!({ "status": "saved" })),
+        Err(error) => error_response(500, "build_error", error.to_string()),
     }
 }
 
@@ -1981,6 +2111,28 @@ mod tests {
         }
     }
 
+    /// Deleting a build removes its directory and answers 200; a second delete
+    /// of the same id is a 404, and a traversal-shaped id never resolves to a
+    /// path. This drives the route's disk half against a tempdir, so it needs
+    /// neither a socket nor the active workspace.
+    #[test]
+    fn delete_build_removes_the_dir_then_404s_and_rejects_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let build_dir = root.path().join("041");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        std::fs::write(build_dir.join("meta.json"), "{}").unwrap();
+
+        let resp = delete_build_in(root.path(), "041");
+        assert_eq!(resp.status(), 200);
+        assert!(!build_dir.is_dir());
+
+        // The list no longer has it: deleting it again is a 404.
+        assert_eq!(delete_build_in(root.path(), "041").status(), 404);
+
+        // A traversal-shaped id is rejected before any path is built.
+        assert_eq!(delete_build_in(root.path(), "../etc").status(), 404);
+    }
+
     /// Applying an edit rewrites the canonical draft on disk and appends an
     /// `edit_log.json` entry whose `prev` captures the pre-edit text — the value
     /// a cross-session revert re-posts as its inverse. The canonical and log
@@ -2060,5 +2212,71 @@ mod tests {
         assert!(matches!(error, SaveEditsError::UnknownTarget(_)));
         // Nothing was written: no log, and the canonical is untouched.
         assert!(!dir.join("edit_log.json").exists());
+    }
+
+    /// A triage body written to disk round-trips back through the same read the
+    /// GET bundle uses, preserving the exact `left` list and its order.
+    #[test]
+    fn triage_round_trips_through_write_and_read() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let triage =
+            parse_triage(br#"{"left":["summary::no_metric","skills::jd_mismatch"]}"#).unwrap();
+        builds::write_json(&dir, "triage.json", &triage).unwrap();
+
+        let back = read_triage(&dir);
+        assert_eq!(back.left, ["summary::no_metric", "skills::jd_mismatch"]);
+    }
+
+    /// A build with no `triage.json` reads as an empty list — the bundle's
+    /// "left for now" set is empty, not a missing key.
+    #[test]
+    fn triage_missing_file_reads_empty() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_triage(&dir), BuildTriage::default());
+        assert!(read_triage(&dir).left.is_empty());
+    }
+
+    /// The body must be `{"left": [<string>, ...]}`: a bare list, an object with
+    /// a non-list `left`, and a list holding a non-string are all rejected before
+    /// anything touches disk.
+    #[test]
+    fn triage_rejects_garbage_bodies() {
+        assert!(parse_triage(b"[]").is_err());
+        assert!(parse_triage(br#"{"left":"nope"}"#).is_err());
+        assert!(parse_triage(br#"{"left":[1,2,3]}"#).is_err());
+        assert!(parse_triage(b"not json at all").is_err());
+        // An empty object is fine: `left` defaults to empty.
+        assert_eq!(parse_triage(b"{}").unwrap(), BuildTriage::default());
+    }
+
+    /// A `left` list past the cap is refused (the message names the cap), while a
+    /// list exactly at the cap is accepted.
+    #[test]
+    fn triage_rejects_an_oversized_list() {
+        let at_cap = format!(
+            r#"{{"left":[{}]}}"#,
+            (0..MAX_TRIAGE_IDS)
+                .map(|n| format!("\"id{n}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert_eq!(
+            parse_triage(at_cap.as_bytes()).unwrap().left.len(),
+            MAX_TRIAGE_IDS
+        );
+
+        let over_cap = format!(
+            r#"{{"left":[{}]}}"#,
+            (0..=MAX_TRIAGE_IDS)
+                .map(|n| format!("\"id{n}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse_triage(over_cap.as_bytes()).is_err());
     }
 }
