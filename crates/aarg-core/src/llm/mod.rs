@@ -6,6 +6,10 @@
 #[cfg(feature = "native")]
 pub mod anthropic;
 pub mod client;
+// Prompt-size estimation and the silent-truncation guard the local providers
+// share. Native-only: only the reqwest-backed local clients use it.
+#[cfg(feature = "native")]
+pub mod context;
 pub mod mock;
 pub mod types;
 
