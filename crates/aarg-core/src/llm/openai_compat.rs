@@ -227,16 +227,14 @@ fn wire_attachment(attachment: &Attachment) -> Result<Value, LlmError> {
     }
 }
 
-/// The typed refusal for a PDF attachment. Status `0` marks it as synthesized
-/// locally — no request reached the server — rather than a real HTTP status.
+/// The typed refusal for a PDF attachment. No request reaches the server, so
+/// this is `Unsupported`, not an `Api` error with a made-up status.
 fn pdf_unsupported() -> LlmError {
-    LlmError::Api {
-        status: 0,
-        kind: "unsupported_attachment".to_string(),
-        message: "local providers cannot read PDF attachments; extract the text \
-                  and send it through aarg's text ingest instead"
+    LlmError::Unsupported(
+        "local providers cannot read PDF attachments; extract the text and send \
+         it through aarg's text ingest instead"
             .to_string(),
-    }
+    )
 }
 
 // ---- non-streaming response parsing -------------------------------------
@@ -701,12 +699,11 @@ mod tests {
         )];
         let err = request_body(&req, false).unwrap_err();
         match err {
-            LlmError::Api { kind, message, .. } => {
-                assert_eq!(kind, "unsupported_attachment");
+            LlmError::Unsupported(message) => {
                 assert!(message.contains("PDF"));
                 assert!(message.contains("text ingest"));
             }
-            other => panic!("expected Api error, got {other:?}"),
+            other => panic!("expected Unsupported error, got {other:?}"),
         }
     }
 

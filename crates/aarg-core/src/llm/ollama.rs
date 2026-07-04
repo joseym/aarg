@@ -206,16 +206,14 @@ fn wire_tools(tools: &[crate::llm::ToolSpec]) -> Vec<Value> {
         .collect()
 }
 
-/// The typed refusal for a PDF attachment; status `0` marks it synthesized
-/// locally rather than a server response.
+/// The typed refusal for a PDF attachment. No request reaches the server, so
+/// this is `Unsupported`, not an `Api` error with a made-up status.
 fn pdf_unsupported() -> LlmError {
-    LlmError::Api {
-        status: 0,
-        kind: "unsupported_attachment".to_string(),
-        message: "local providers cannot read PDF attachments; extract the text \
-                  and send it through aarg's text ingest instead"
+    LlmError::Unsupported(
+        "local providers cannot read PDF attachments; extract the text and send \
+         it through aarg's text ingest instead"
             .to_string(),
-    }
+    )
 }
 
 /// The typed error for a prompt the model clipped to fit its context window. A
@@ -223,16 +221,12 @@ fn pdf_unsupported() -> LlmError {
 /// must see this rather than a plausible-looking completion built on less than
 /// it was given.
 fn truncated(prompt_eval_count: u64, estimate: u64) -> LlmError {
-    LlmError::Api {
-        status: 0,
-        kind: "context_truncated".to_string(),
-        message: format!(
-            "the model clipped the prompt to fit its context window (processed \
-             ~{prompt_eval_count} tokens of an estimated ~{estimate}); the answer \
-             would be built on a partial prompt — use a model with a larger context \
-             window, or shorten the input"
-        ),
-    }
+    LlmError::Unsupported(format!(
+        "the model clipped the prompt to fit its context window (processed \
+         ~{prompt_eval_count} tokens of an estimated ~{estimate}); the answer \
+         would be built on a partial prompt — use a model with a larger context \
+         window, or shorten the input"
+    ))
 }
 
 // ---- non-streaming response parsing -------------------------------------
@@ -605,11 +599,10 @@ mod tests {
         )];
         let err = request_body(&req, false, "5m", 8192).unwrap_err();
         match err {
-            LlmError::Api { kind, message, .. } => {
-                assert_eq!(kind, "unsupported_attachment");
+            LlmError::Unsupported(message) => {
                 assert!(message.contains("PDF"));
             }
-            other => panic!("expected Api error, got {other:?}"),
+            other => panic!("expected Unsupported error, got {other:?}"),
         }
     }
 
@@ -707,13 +700,12 @@ mod tests {
         assert!(looks_truncated(8192, 8192, 12000));
         // And the typed error names the shortfall.
         match truncated(8192, 12000) {
-            LlmError::Api { kind, message, .. } => {
-                assert_eq!(kind, "context_truncated");
+            LlmError::Unsupported(message) => {
                 assert!(message.contains("~8192"));
                 assert!(message.contains("~12000"));
                 assert!(message.contains("larger context"));
             }
-            other => panic!("expected Api error, got {other:?}"),
+            other => panic!("expected Unsupported error, got {other:?}"),
         }
     }
 

@@ -281,13 +281,17 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// Map an `LlmError` to a status + JSON body without leaking secrets. A
-/// missing key is a 503 (server misconfigured); a provider rejection passes
-/// its own HTTP status through; anything else is a 502 upstream error.
+/// missing key is a 503 (server misconfigured); a request the provider cannot
+/// serve (a PDF on a local model, a clipped context) is a 400 — the client
+/// asked for something this provider can't do, and no upstream failed; a
+/// provider rejection passes its own HTTP status through; anything else is a
+/// 502 upstream error.
 fn llm_error_response(error: LlmError) -> Resp {
     match error {
         LlmError::MissingApiKey { .. } => {
             error_response(503, "no_credentials", error_chain(&error))
         }
+        LlmError::Unsupported(ref message) => error_response(400, "unsupported", message.clone()),
         LlmError::Api {
             status,
             ref kind,
