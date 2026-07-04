@@ -25,6 +25,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::llm::client::LlmClient;
 use crate::llm::context::{effective_num_ctx, estimate_prompt_tokens, looks_truncated};
+use crate::llm::lines::drain_lines;
 use crate::llm::types::{
     Attachment, CompletionRequest, CompletionResponse, LlmError, Message, StreamEvent, TokenStream,
     TokenUsage, ToolCall,
@@ -403,23 +404,6 @@ fn handle_ndjson_line(line: &str, stats: &mut DoneStats) -> Result<Option<Stream
     Ok(None)
 }
 
-/// Pull complete lines off the front of `buffer`, dropping the trailing newline
-/// and tolerating `\r\n`. NDJSON is one object per line, so a line is the parse
-/// unit; a partial final line stays buffered.
-fn drain_lines(buffer: &mut Vec<u8>) -> Vec<String> {
-    let mut lines = Vec::new();
-    while let Some(pos) = buffer.iter().position(|&byte| byte == b'\n') {
-        let line: Vec<u8> = buffer.drain(..=pos).collect();
-        let text = String::from_utf8_lossy(&line);
-        lines.push(
-            text.trim_end_matches('\n')
-                .trim_end_matches('\r')
-                .to_string(),
-        );
-    }
-    lines
-}
-
 #[async_trait]
 impl LlmClient for OllamaClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
@@ -734,14 +718,10 @@ mod tests {
     }
 
     #[test]
-    fn drain_lines_handles_split_and_crlf_lines() {
-        let mut buffer = Vec::new();
-        buffer.extend_from_slice(b"{\"done\": fal");
-        assert!(drain_lines(&mut buffer).is_empty());
-        buffer.extend_from_slice(b"se}\n{\"done\": true}\r\n");
-        let lines = drain_lines(&mut buffer);
-        assert_eq!(lines, vec![r#"{"done": false}"#, r#"{"done": true}"#]);
-        assert!(buffer.is_empty());
+    fn handle_ndjson_line_ignores_blank_lines() {
+        let mut stats = DoneStats::default();
+        assert!(handle_ndjson_line("", &mut stats).unwrap().is_none());
+        assert!(handle_ndjson_line("  ", &mut stats).unwrap().is_none());
     }
 
     #[test]
