@@ -61,6 +61,10 @@ export interface BuildDetail {
   /** The ATS variant payload (deterministic projection of the canonical draft). */
   ats_payload?: VariantPayload;
   ats_report?: AtsReport;
+  /** Per-build objection triage (`triage.json`): the objection ids left for now.
+   *  Always present (empty when the build has no triage file yet), so the
+   *  workspace seeds its "left" set without a missing-key branch. */
+  triage?: { left: string[] };
   /** Rendered PDF filenames, fetch each via `GET /api/builds/:id/files/:name`. */
   pdfs: string[];
 }
