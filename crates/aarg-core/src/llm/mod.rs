@@ -11,12 +11,18 @@ pub mod client;
 #[cfg(feature = "native")]
 pub mod context;
 pub mod mock;
+// The OpenAI-compatible chat client (LM Studio and other local servers),
+// native-only for the same reason as `anthropic`.
+#[cfg(feature = "native")]
+pub mod openai_compat;
 pub mod types;
 
 #[cfg(feature = "native")]
 pub use anthropic::{AnthropicClient, Auth};
 pub use client::LlmClient;
 pub use mock::MockLlmClient;
+#[cfg(feature = "native")]
+pub use openai_compat::OpenAiCompatClient;
 pub use types::{
     Attachment, CompletionRequest, CompletionResponse, LlmError, Message, Role, StreamEvent,
     TokenStream, TokenUsage, ToolCall, ToolResult, ToolSpec,
