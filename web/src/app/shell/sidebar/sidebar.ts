@@ -1,4 +1,4 @@
-import { Component, computed, inject, input, output, signal } from '@angular/core';
+import { Component, ElementRef, computed, effect, inject, input, output, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { filter, firstValueFrom, map } from 'rxjs';
@@ -22,7 +22,7 @@ interface BuildSection {
 const GROUP_KEY = 'aarg.sidebar.group';
 const SORT_KEY = 'aarg.sidebar.sort';
 const DIR_KEY = 'aarg.sidebar.dir';
-const COLLAPSED_KEY = 'aarg.sidebar.collapsed';
+const COLLAPSED_KEY = 'aarg.sidebar.folded-groups';
 const NO_COMPANY = 'No company';
 
 /** The left rail: the recent-builds list, filtered live by the topbar input.
@@ -176,7 +176,7 @@ const NO_COMPANY = 'No company';
                       >
                         <p>Remove build {{ b.id }}? This permanently deletes its files.</p>
                         <div class="rc-actions">
-                          <button type="button" class="rc-go" (click)="confirmRemove(b.id)">Remove</button>
+                          <button type="button" class="rc-go" [disabled]="removing()" (click)="confirmRemove(b.id)">Remove</button>
                           <button type="button" class="rc-cancel" (click)="cancelRemove()">Cancel</button>
                         </div>
                       </div>
@@ -388,6 +388,10 @@ const NO_COMPANY = 'No company';
       opacity: 1; pointer-events: auto;
     }
     .row-remove:hover { border-color: var(--danger); color: var(--danger); }
+    /* No hover on touch screens; the control must be reachable there. */
+    @media (hover: none) {
+      .row-remove { opacity: 1; pointer-events: auto; }
+    }
     .row-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .row-remove svg { width: 14px; height: 14px; }
 
@@ -443,6 +447,7 @@ const NO_COMPANY = 'No company';
 export class Sidebar {
   protected readonly store = inject(BuildsStore);
   private readonly api = inject(ApiService);
+  private readonly el = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly router = inject(Router);
   private readonly copilot = inject(CopilotHost);
   readonly open = input(false);
@@ -465,6 +470,9 @@ export class Sidebar {
   private readonly collapsedGroups = signal<Set<string>>(readCollapsed());
   /** Which build row is showing its inline remove confirmation, if any. */
   protected readonly confirmingId = signal<string | null>(null);
+  /** True while a DELETE is in flight; blocks a second click from firing a
+   *  duplicate that would 404 and toast a false failure over the success. */
+  protected readonly removing = signal(false);
 
   /** The current route's build id, tracked so the open build's group can be
    *  force-expanded (its active row must never sit inside a folded group). */
@@ -519,10 +527,29 @@ export class Sidebar {
     writeLs(DIR_KEY, this.sortDir());
   }
 
-  /** Whether a group renders folded. The open build's group is always shown
-   *  expanded, whatever its persisted state, so its active row stays visible. */
+  /** Whether a group renders folded. Navigating to a build inside a folded
+   *  group unfolds that group for real (state and persistence, via the effect
+   *  in the constructor), so the header toggle always does what it looks
+   *  like it does. */
   protected isCollapsed(company: string): boolean {
-    return this.collapsedGroups().has(company) && company !== this.activeCompany();
+    return this.collapsedGroups().has(company);
+  }
+
+  constructor() {
+    // Opening a build inside a folded group unfolds the group for real, so
+    // the persisted state matches what the user sees and the header toggle
+    // never turns into a dead control.
+    effect(() => {
+      const active = this.activeCompany();
+      if (active && this.collapsedGroups().has(active)) {
+        this.collapsedGroups.update((set) => {
+          const next = new Set(set);
+          next.delete(active);
+          return next;
+        });
+        writeLs(COLLAPSED_KEY, JSON.stringify([...this.collapsedGroups()]));
+      }
+    });
   }
 
   protected toggleCollapsed(company: string): void {
@@ -538,27 +565,42 @@ export class Sidebar {
   protected askRemove(id: string, e: Event): void {
     // The remove button sits over the row's link; don't let the click navigate.
     e.preventDefault();
+    this.lastRemoveTrigger = e.currentTarget as HTMLElement;
     e.stopPropagation();
     this.confirmingId.set(id);
+    // Move focus into the dialog so Escape works immediately and screen
+    // readers land on the choice; restored on cancel.
+    setTimeout(() => {
+      const cancel = this.el.nativeElement.querySelector<HTMLElement>('.rc-cancel');
+      cancel?.focus();
+    });
   }
 
   protected cancelRemove(): void {
     this.confirmingId.set(null);
+    this.lastRemoveTrigger?.focus();
+    this.lastRemoveTrigger = null;
   }
+
+  private lastRemoveTrigger: HTMLElement | null = null;
 
   /** Delete a build: DELETE the server copy, refresh the list, and toast. If the
    *  removed build was the one open, go back to `/`, which redirects to the
    *  newest remaining build or shows first-run. A failure toasts the server's
    *  message and leaves everything as it was. */
   protected async confirmRemove(id: string): Promise<void> {
+    if (this.removing()) return;
+    this.removing.set(true);
     const wasOpen = this.activeId() === id;
     try {
       await firstValueFrom(this.api.removeBuild(id));
     } catch (err) {
+      this.removing.set(false);
       this.confirmingId.set(null);
       this.copilot.notify(removeErrorMessage(err));
       return;
     }
+    this.removing.set(false);
     this.confirmingId.set(null);
     this.store.load();
     this.copilot.notify(`Removed build ${id}`);

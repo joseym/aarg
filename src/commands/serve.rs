@@ -274,7 +274,7 @@ pub async fn run(
         eprintln!(
             "{}",
             style::warn(format!(
-                "bound to {bind} — the dataset and the LLM proxy (which spends your key) are reachable by anything on this network"
+                "bound to {bind} — the dataset, the LLM proxy (which spends your key), and build deletion are reachable by anything on this network"
             ))
         );
         for host in allowed_hosts.iter() {
