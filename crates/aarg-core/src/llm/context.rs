@@ -43,7 +43,9 @@ pub fn estimate_prompt_tokens(request: &CompletionRequest) -> u64 {
 }
 
 /// Tokens reserved beyond the estimated prompt and the completion budget when
-/// sizing a window, and treated as off-limits to the prompt when checking one.
+/// sizing a window, absorbing the estimate running low. Spent at sizing time
+/// only; the post-response check deliberately does not subtract it again
+/// (see [`looks_truncated`]).
 const HEADROOM: u64 = 512;
 
 /// The context window to request for a prompt of the given estimate: the
@@ -98,13 +100,16 @@ pub fn looks_clamped(prompt_tokens: u64, estimate: u64) -> bool {
 /// Three signals, any of which fires; a count of zero means the server
 /// reported nothing and is not evidence.
 ///
-/// 1. **Headroom consumed** — the count reaches `window - max_tokens -
-///    HEADROOM`. By construction that boundary sits at or above the estimate,
-///    so an honest prompt that matched its estimate never reaches it;
-///    reaching it means the prompt outgrew the estimate into the space
-///    reserved for generation, where clipping (by a server that trims to
-///    `window - num_predict`) or a mid-generation context shift (which drops
-///    prompt tokens to make room) can no longer be ruled out. Fails closed.
+/// 1. **Generation reserve consumed** — the count reaches `window -
+///    max_tokens`. Generation is capped at `num_predict`, so a prompt below
+///    that boundary can never overflow the window mid-generation; at or above
+///    it, the completion budget no longer fits, and a clip (by a server that
+///    trims to `window - num_predict`) or a mid-generation context shift
+///    (which drops prompt tokens to make room) can no longer be ruled out.
+///    The `HEADROOM` margin is deliberately *not* subtracted here: it was
+///    spent at sizing time to absorb the estimate running low, and spending
+///    it again at check time would refuse a prompt that tokenized a few
+///    percent above its estimate yet provably fits.
 ///
 /// 2. **The half-window clip fingerprint** — Ollama does not trim an
 ///    oversized prompt to just-fit: it keeps half the window. Probed live
@@ -130,9 +135,7 @@ pub fn looks_truncated(
     }
     let window = u64::from(effective_num_ctx);
 
-    let reserve = window
-        .saturating_sub(u64::from(max_tokens))
-        .saturating_sub(HEADROOM);
+    let reserve = window.saturating_sub(u64::from(max_tokens));
     if prompt_eval_count >= reserve {
         return true;
     }
@@ -228,17 +231,35 @@ mod tests {
         let max_tokens = 256;
         let window = effective_num_ctx(8192, estimate, max_tokens);
         assert_eq!(u64::from(window), estimate + 256 + 512);
-        // A count at the reserve boundary (window - max_tokens - 512, which by
-        // construction equals the estimate here) fires.
-        let reserve = u64::from(window) - 256 - 512;
+        // A count at the reserve boundary (window - max_tokens) fires: from
+        // there, generating the full max_tokens overflows the window.
+        let reserve = u64::from(window) - 256;
         assert!(looks_truncated(reserve, window, max_tokens, estimate));
-        // A count safely below it does not.
-        assert!(!looks_truncated(
-            reserve - 100,
-            window,
-            max_tokens,
-            estimate
-        ));
+        // A count just below it does not.
+        assert!(!looks_truncated(reserve - 1, window, max_tokens, estimate));
+    }
+
+    #[test]
+    fn an_estimate_running_ten_percent_low_is_not_refused() {
+        // The double-count this boundary fixes: chars/4 routinely runs ~10%
+        // low (the live English probe: estimate 2881, actual 3218). With an
+        // estimate-driven window, the prompt still fits with the whole
+        // generation budget, so it must pass.
+        let estimate = 6000;
+        let max_tokens = 256;
+        let window = effective_num_ctx(8192, estimate, max_tokens);
+        let actual = estimate + estimate / 10; // 6600, well inside 8192 - 256
+        assert!(!looks_truncated(actual, window, max_tokens, estimate));
+        // The same shape with the window driven by the estimate rather than
+        // the floor: window = 8192 + 256 + 512 = 8960, reserve boundary 8704.
+        // A count 6% over the estimate (8683) stays inside the 512-token
+        // sizing margin, so it passes; under the old boundary (window -
+        // max_tokens - 512 = 8192) it was refused despite provably fitting.
+        let estimate = 8192;
+        let window = effective_num_ctx(8192, estimate, max_tokens);
+        let actual = estimate + estimate * 6 / 100; // 8683
+        assert!(!looks_truncated(actual, window, max_tokens, estimate));
+        assert!(actual >= u64::from(window) - u64::from(max_tokens) - 512);
     }
 
     #[test]
