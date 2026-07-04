@@ -77,6 +77,26 @@ export class ApiService {
     );
   }
 
+  /** `POST /api/builds/:id/triage` — replace this build's objection triage (the
+   *  ids "left for now"). A full replacement, so a leave is a save with the id
+   *  added and a reopen a save with it removed. The payload is tiny, so the
+   *  caller saves on every change and reverts its optimistic signal on failure. */
+  saveTriage(id: string, left: string[]): Observable<{ status: string }> {
+    return this.http.post<{ status: string }>(
+      `${this.base}/builds/${encodeURIComponent(id)}/triage`,
+      { left },
+    );
+  }
+
+  /** `DELETE /api/builds/:id` — remove a build and every artifact under it, the
+   *  same on-disk deletion `aarg history rm` performs. Returns the removed id;
+   *  a missing build is a 404. */
+  removeBuild(id: string): Observable<{ removed: string }> {
+    return this.http.delete<{ removed: string }>(
+      `${this.base}/builds/${encodeURIComponent(id)}`,
+    );
+  }
+
   /** `GET /api/builds/:id/files/:name` — a stored rendered PDF, as a blob. */
   getBuildFile(id: string, name: string): Observable<Blob> {
     return this.http.get(

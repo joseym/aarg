@@ -274,7 +274,7 @@ pub async fn run(
         eprintln!(
             "{}",
             style::warn(format!(
-                "bound to {bind} — the dataset and the LLM proxy (which spends your key) are reachable by anything on this network"
+                "bound to {bind} — the dataset, the LLM proxy (which spends your key), and build deletion are reachable by anything on this network"
             ))
         );
         for host in allowed_hosts.iter() {
@@ -385,7 +385,9 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::Models => routes::models().await,
             ApiRoute::Templates => routes::templates().await,
             ApiRoute::GetBuild(id) => routes::get_build(&id).await,
+            ApiRoute::DeleteBuild(id) => routes::delete_build(&id, &state).await,
             ApiRoute::SaveBuildEdits(id) => routes::save_build_edits(req, &id, &state).await,
+            ApiRoute::SaveBuildTriage(id) => routes::save_build_triage(req, &id, &state).await,
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
             ApiRoute::Cost => routes::cost(req).await,
@@ -469,6 +471,7 @@ fn requires_json_body(route: &ApiRoute) -> bool {
             | ApiRoute::PutDataset
             | ApiRoute::CreateBuild
             | ApiRoute::SaveBuildEdits(_)
+            | ApiRoute::SaveBuildTriage(_)
             | ApiRoute::FetchJd
     )
 }
@@ -539,7 +542,9 @@ enum ApiRoute {
     Models,
     Templates,
     GetBuild(String),
+    DeleteBuild(String),
     SaveBuildEdits(String),
+    SaveBuildTriage(String),
     GetBuildFile(String, String),
     FetchJd,
     Cost,
@@ -575,7 +580,11 @@ fn match_route(method: &Method, path: &str) -> Match {
             ("GET", ["models"]) => Some(ApiRoute::Models),
             ("GET", ["templates"]) => Some(ApiRoute::Templates),
             ("GET", ["builds", id]) => Some(ApiRoute::GetBuild((*id).to_string())),
+            ("DELETE", ["builds", id]) => Some(ApiRoute::DeleteBuild((*id).to_string())),
             ("POST", ["builds", id, "edits"]) => Some(ApiRoute::SaveBuildEdits((*id).to_string())),
+            ("POST", ["builds", id, "triage"]) => {
+                Some(ApiRoute::SaveBuildTriage((*id).to_string()))
+            }
             ("GET", ["builds", id, "files", name]) => Some(ApiRoute::GetBuildFile(
                 (*id).to_string(),
                 (*name).to_string(),
@@ -789,8 +798,16 @@ mod tests {
             Match::Api(ApiRoute::GetBuild("041".into()))
         );
         assert_eq!(
+            route("DELETE", "/api/builds/041"),
+            Match::Api(ApiRoute::DeleteBuild("041".into()))
+        );
+        assert_eq!(
             route("POST", "/api/builds/041/edits"),
             Match::Api(ApiRoute::SaveBuildEdits("041".into()))
+        );
+        assert_eq!(
+            route("POST", "/api/builds/041/triage"),
+            Match::Api(ApiRoute::SaveBuildTriage("041".into()))
         );
         assert_eq!(
             route("GET", "/api/builds/041/files/resume.ats.pdf"),

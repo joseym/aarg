@@ -725,6 +725,9 @@ export class TailoringWorkspace {
       this.api.getBuild(id).subscribe({
         next: (d) => {
           this.bundle.set(d as BuildBundle);
+          // Seed "left for now" from the build's persisted triage so a leave
+          // survives a reload (the reviewer rail reads `leftIds`).
+          this.leftIds.set(new Set((d as BuildBundle).triage?.left ?? []));
           this.loadDataset();
         },
         error: (err: unknown) => {
@@ -803,6 +806,12 @@ export class TailoringWorkspace {
       if (keys.has(objectionId(o))) ids.add(objectionId(o));
     }
     this.accepted.set(ids);
+    // An accepted objection is never also "left": keep the two sets disjoint so
+    // reopening an accept lands on 'open', not a stale 'left' seeded from
+    // triage.json (a build left, then accepted, keeps the id in both files).
+    if (ids.size > 0) {
+      this.leftIds.update((s) => [...ids].reduce((acc, id) => withRemoved(acc, id), s));
+    }
   }
 
   /** Run the pure deterministic checks: provenance, weighted coverage, claims. */
@@ -1259,14 +1268,87 @@ export class TailoringWorkspace {
   }
 
   // ── objection triage ─────────────────────────────────────────────────
+  /** Leave an objection for now: mark it locally AND persist the build's triage
+   *  so the choice survives a reload. Optimistic — the signal updates first and
+   *  a failed save reverts it. (Leave is only offered on OPEN objections, so the
+   *  `accepted` removal is a no-op safety, not a state transition.) */
   protected onLeave(o: ObjectionVM): void {
     this.leftIds.update((s) => withAdded(s, o.id));
     this.accepted.update((s) => withRemoved(s, o.id));
+    this.persistTriage({ remove: [o.id] });
   }
 
+  /** Undo a resolved objection. A LEFT one just drops out of the triage file; an
+   *  ACCEPTED one also has its dataset dismissal removed, so the reviewer can
+   *  raise it again. Routed by which set holds it — the two are kept disjoint. */
   protected onReopen(o: ObjectionVM): void {
+    if (this.accepted().has(o.id)) {
+      this.reopenAccepted(o);
+      return;
+    }
     this.leftIds.update((s) => withRemoved(s, o.id));
-    this.accepted.update((s) => withRemoved(s, o.id));
+    this.persistTriage({ add: [o.id] });
+  }
+
+  /** Reopen an accepted objection: remove the dismissal it wrote to the dataset
+   *  (the inverse of {@link onAccept}) and PUT it back through the validated
+   *  path, then drop it from `accepted`. A 422 surfaces the validation findings,
+   *  exactly like the accept it undoes. */
+  private reopenAccepted(o: ObjectionVM): void {
+    const ds = this.dataset();
+    if (!ds) {
+      this.showToast('Dataset unavailable: cannot reopen this objection.');
+      return;
+    }
+    const next = withoutDismissal(ds, { target: targetKey(o.objection.target), kind: o.objection.kind });
+    this.busy.set(o.id);
+    this.api.putDataset(next).subscribe({
+      next: () => {
+        this.dataset.set(next);
+        this.accepted.update((s) => withRemoved(s, o.id));
+        this.busy.set(null);
+        this.showToast('Reopened: the reviewer can raise this again.');
+      },
+      error: (err: unknown) => {
+        this.busy.set(null);
+        const msg =
+          err instanceof HttpErrorResponse && err.status === 422
+            ? `Validation blocked the save: ${findings(err)}`
+            : errMessage(err);
+        this.showToast(msg);
+      },
+    });
+  }
+
+  /** Persist the current `leftIds` to the build's triage file. The payload is
+   *  tiny, so this fires whenever the left set changes; a failure reverts only
+   *  the delta that this save carried (never a whole-set snapshot, which would
+   *  clobber a faster interleaved save) and toasts the server's message. */
+  private persistTriage(revert?: { add?: string[]; remove?: string[] }): void {
+    this.api.saveTriage(this.id(), [...this.leftIds()]).subscribe({
+      error: (err: unknown) => {
+        if (revert) {
+          this.leftIds.update((s) => {
+            let out = s;
+            for (const id of revert.add ?? []) out = withAdded(out, id);
+            for (const id of revert.remove ?? []) out = withRemoved(out, id);
+            return out;
+          });
+        }
+        this.showToast(errMessage(err));
+      },
+    });
+  }
+
+  /** Drop ids from the left set and persist the change when it altered
+   *  anything. Every path that resolves an objection some other way (accept, a
+   *  refine that records evidence) must go through this, or triage.json keeps
+   *  a stale "left" the next reload resurrects. */
+  private clearLeft(ids: readonly string[]): void {
+    const had = ids.filter((id) => this.leftIds().has(id));
+    if (had.length === 0) return;
+    this.leftIds.update((s) => had.reduce((acc, id) => withRemoved(acc, id), s));
+    this.persistTriage({ add: had });
   }
 
   protected onRefine(o: ObjectionVM): void {
@@ -1405,7 +1487,7 @@ export class TailoringWorkspace {
       // Provenance may now trace a previously-unrecorded line.
       void this.recompute();
       this.refinedIds.update((s) => markIds.reduce((acc, id) => withAdded(acc, id), s));
-      this.leftIds.update((s) => markIds.reduce((acc, id) => withRemoved(acc, id), s));
+      this.clearLeft(markIds);
       this.showToast(summary);
     } catch (err) {
       const msg =
@@ -1505,7 +1587,7 @@ export class TailoringWorkspace {
       next: () => {
         this.dataset.set(next);
         this.accepted.update((s) => withAdded(s, o.id));
-        this.leftIds.update((s) => withRemoved(s, o.id));
+        this.clearLeft([o.id]);
         this.busy.set(null);
         this.showToast('Accepted: the reviewer won’t raise this again.');
       },
@@ -1745,6 +1827,16 @@ function withDismissal(ds: ResumeDataset, d: DismissedObjection): ResumeDataset 
   // Both targets are already normalized domain strings — compare directly.
   const exists = list.some((x) => x.target === d.target && x.kind === d.kind);
   const dismissed_objections = exists ? list : [...list, d];
+  return { ...ds, metadata: { ...ds.metadata, dismissed_objections } };
+}
+
+/** Remove a dismissal — the inverse of {@link withDismissal}, used when reopening
+ *  an accepted objection so the reviewer stops skipping it. Both targets are
+ *  normalized domain strings, so the match is a direct compare. */
+function withoutDismissal(ds: ResumeDataset, d: DismissedObjection): ResumeDataset {
+  const dismissed_objections = dismissedList(ds).filter(
+    (x) => !(x.target === d.target && x.kind === d.kind),
+  );
   return { ...ds, metadata: { ...ds.metadata, dismissed_objections } };
 }
 
