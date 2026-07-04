@@ -427,60 +427,83 @@ impl LlmClient for OllamaClient {
         }
 
         let (tx, rx) = mpsc::channel(32);
-        let mut bytes = response.bytes_stream();
-        tokio::spawn(async move {
-            let mut buffer: Vec<u8> = Vec::new();
-            let mut stats = DoneStats::default();
-            loop {
-                let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await;
-                let chunk = match next {
-                    Err(_elapsed) => {
+        tokio::spawn(pump_ndjson(response.bytes_stream(), tx, num_ctx, estimate));
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+}
+
+/// Read the NDJSON byte stream and forward parsed events into `tx`. Factored
+/// out of `stream` and generic over the byte source so tests can drive it with
+/// fixture chunks instead of a live socket. `num_ctx` and `estimate` feed the
+/// truncation check run against the `done` line's stats.
+async fn pump_ndjson<B, S>(
+    mut bytes: S,
+    tx: mpsc::Sender<Result<StreamEvent, LlmError>>,
+    num_ctx: u32,
+    estimate: u64,
+) where
+    B: AsRef<[u8]>,
+    S: futures_util::Stream<Item = Result<B, reqwest::Error>> + Unpin,
+{
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut stats = DoneStats::default();
+    loop {
+        let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await;
+        let chunk = match next {
+            Err(_elapsed) => {
+                let _ = tx
+                    .send(Err(LlmError::Stream(
+                        "no data from the model for 120s".to_string(),
+                    )))
+                    .await;
+                return;
+            }
+            Ok(None) => break,
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(Some(Err(error))) => {
+                let _ = tx.send(Err(LlmError::Http(error))).await;
+                return;
+            }
+        };
+        buffer.extend_from_slice(chunk.as_ref());
+        for line in drain_lines(&mut buffer) {
+            match handle_ndjson_line(&line, &mut stats) {
+                Ok(Some(StreamEvent::Done { stop_reason, usage })) => {
+                    // The same truncation guard as `complete`, applied to
+                    // the stream's final stats before Done goes out. The
+                    // `done: true` line is the end of the response, so the
+                    // task stops reading either way.
+                    if looks_truncated(stats.prompt_eval_count, num_ctx, estimate) {
                         let _ = tx
-                            .send(Err(LlmError::Stream(
-                                "no data from the model for 120s".to_string(),
-                            )))
+                            .send(Err(truncated(stats.prompt_eval_count, estimate)))
                             .await;
                         return;
                     }
-                    Ok(None) => break,
-                    Ok(Some(Ok(chunk))) => chunk,
-                    Ok(Some(Err(error))) => {
-                        let _ = tx.send(Err(LlmError::Http(error))).await;
+                    let _ = tx.send(Ok(StreamEvent::Done { stop_reason, usage })).await;
+                    return;
+                }
+                Ok(Some(event)) => {
+                    if tx.send(Ok(event)).await.is_err() {
                         return;
                     }
-                };
-                buffer.extend_from_slice(&chunk);
-                for line in drain_lines(&mut buffer) {
-                    match handle_ndjson_line(&line, &mut stats) {
-                        Ok(Some(StreamEvent::Done { stop_reason, usage })) => {
-                            // The same truncation guard as `complete`, applied
-                            // to the stream's final stats before Done goes out.
-                            if looks_truncated(stats.prompt_eval_count, num_ctx, estimate) {
-                                let _ = tx
-                                    .send(Err(truncated(stats.prompt_eval_count, estimate)))
-                                    .await;
-                                return;
-                            }
-                            let _ = tx.send(Ok(StreamEvent::Done { stop_reason, usage })).await;
-                            return;
-                        }
-                        Ok(Some(event)) => {
-                            if tx.send(Ok(event)).await.is_err() {
-                                return;
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            let _ = tx.send(Err(error)).await;
-                            return;
-                        }
-                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = tx.send(Err(error)).await;
+                    return;
                 }
             }
-        });
-
-        Ok(Box::pin(ReceiverStream::new(rx)))
+        }
     }
+    // The byte stream ended without a `done: true` line: the connection
+    // dropped mid-generation. Ollama always ends a completed response with
+    // one, so the text so far is a truncated reply, and ending the stream
+    // without a Done would let the caller mistake it for a finished one.
+    let _ = tx
+        .send(Err(LlmError::Stream(
+            "stream ended before done: true".to_string(),
+        )))
+        .await;
 }
 
 #[cfg(test)]
@@ -736,6 +759,63 @@ mod tests {
             other => panic!("expected Done, got {other:?}"),
         }
         assert_eq!(stats.prompt_eval_count, 15);
+    }
+
+    /// Drive `pump_ndjson` with fixture byte chunks and collect everything it
+    /// forwards, exactly as a caller would read the `TokenStream`.
+    async fn run_pump(chunks: Vec<&'static [u8]>) -> Vec<Result<StreamEvent, LlmError>> {
+        let (tx, mut rx) = mpsc::channel(32);
+        let bytes = futures_util::stream::iter(chunks.into_iter().map(Ok::<_, reqwest::Error>));
+        pump_ndjson(bytes, tx, 8192, 100).await;
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_ends_without_done_true_is_an_error() {
+        // The connection drops mid-generation: delta lines arrived but the
+        // final done: true line never did. Ending the TokenStream silently
+        // here would let the caller mistake the partial text for a finished
+        // reply with default usage.
+        let events = run_pump(vec![
+            b"{\"message\": {\"role\": \"assistant\", \"content\": \"Hi\"}, \"done\": false}\n",
+            b"{\"message\": {\"role\": \"assistant\", \"content\": \"!\"}, \"done\": false}\n",
+        ])
+        .await;
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[0].as_ref().unwrap(),
+            &StreamEvent::TextDelta("Hi".to_string())
+        );
+        match &events[2] {
+            Err(LlmError::Stream(message)) => {
+                assert!(message.contains("before done: true"), "got: {message}");
+            }
+            other => panic!("expected a Stream error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_terminated_stream_ends_with_one_done_and_stops_reading() {
+        let events = run_pump(vec![
+            b"{\"message\": {\"role\": \"assistant\", \"content\": \"Hi\"}, \"done\": false}\n",
+            b"{\"message\": {\"content\": \"\"}, \"done\": true, \"done_reason\": \"stop\", \"prompt_eval_count\": 100, \"eval_count\": 2}\n",
+            b"{not even json\n",
+        ])
+        .await;
+        // Delta, then Done; the garbage after done: true was never read.
+        assert_eq!(events.len(), 2);
+        match &events[1] {
+            Ok(StreamEvent::Done { stop_reason, usage }) => {
+                assert_eq!(stop_reason.as_deref(), Some("stop"));
+                assert_eq!(usage.input_tokens, 100);
+                assert_eq!(usage.output_tokens, 2);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
     }
 
     #[test]

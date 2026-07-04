@@ -513,60 +513,78 @@ impl LlmClient for OpenAiCompatClient {
         }
 
         let (tx, rx) = mpsc::channel(32);
-        let mut bytes = response.bytes_stream();
-        tokio::spawn(async move {
-            let mut buffer: Vec<u8> = Vec::new();
-            let mut state = StreamState::default();
-            let mut done_sent = false;
-            loop {
-                let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await;
-                let chunk = match next {
-                    Err(_elapsed) => {
-                        let _ = tx
-                            .send(Err(LlmError::Stream(
-                                "no data from the model for 120s".to_string(),
-                            )))
-                            .await;
+        tokio::spawn(pump_sse(response.bytes_stream(), tx));
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+}
+
+/// Read the SSE byte stream and forward parsed events into `tx`. Factored out
+/// of `stream` and generic over the byte source so tests can drive it with
+/// fixture chunks instead of a live socket.
+///
+/// The task stops reading the moment `Done` is sent: `data: [DONE]` is the end
+/// of the response, and reading past it would misread anything a misbehaving
+/// server tacks on (a duplicate sentinel would double-send `Done`).
+async fn pump_sse<B, S>(mut bytes: S, tx: mpsc::Sender<Result<StreamEvent, LlmError>>)
+where
+    B: AsRef<[u8]>,
+    S: futures_util::Stream<Item = Result<B, reqwest::Error>> + Unpin,
+{
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut state = StreamState::default();
+    loop {
+        let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await;
+        let chunk = match next {
+            Err(_elapsed) => {
+                let _ = tx
+                    .send(Err(LlmError::Stream(
+                        "no data from the model for 120s".to_string(),
+                    )))
+                    .await;
+                return;
+            }
+            Ok(None) => break,
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(Some(Err(error))) => {
+                let _ = tx.send(Err(LlmError::Http(error))).await;
+                return;
+            }
+        };
+        buffer.extend_from_slice(chunk.as_ref());
+        for line in drain_lines(&mut buffer) {
+            match handle_sse_line(&line, &mut state) {
+                Ok(Some(event)) => {
+                    let is_done = matches!(event, StreamEvent::Done { .. });
+                    if tx.send(Ok(event)).await.is_err() || is_done {
                         return;
-                    }
-                    Ok(None) => break,
-                    Ok(Some(Ok(chunk))) => chunk,
-                    Ok(Some(Err(error))) => {
-                        let _ = tx.send(Err(LlmError::Http(error))).await;
-                        return;
-                    }
-                };
-                buffer.extend_from_slice(&chunk);
-                for line in drain_lines(&mut buffer) {
-                    match handle_sse_line(&line, &mut state) {
-                        Ok(Some(event)) => {
-                            let is_done = matches!(event, StreamEvent::Done { .. });
-                            if tx.send(Ok(event)).await.is_err() {
-                                return;
-                            }
-                            done_sent |= is_done;
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            let _ = tx.send(Err(error)).await;
-                            return;
-                        }
                     }
                 }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = tx.send(Err(error)).await;
+                    return;
+                }
             }
-            // A well-behaved server ends with `[DONE]`; if the byte stream
-            // closes first, still emit exactly one `Done` from what we have.
-            if !done_sent {
-                let _ = tx
-                    .send(Ok(StreamEvent::Done {
-                        stop_reason: state.finish_reason.take(),
-                        usage: state.usage,
-                    }))
-                    .await;
-            }
-        });
-
-        Ok(Box::pin(ReceiverStream::new(rx)))
+        }
+    }
+    // The byte stream ended without `data: [DONE]`. If a finish_reason already
+    // arrived, generation provably completed and only the sentinel was lost in
+    // transit, so emit the Done it implied. Otherwise the connection dropped
+    // mid-generation, and the text so far is a truncated reply that must not
+    // present as a complete one.
+    if state.finish_reason.is_some() {
+        let _ = tx
+            .send(Ok(StreamEvent::Done {
+                stop_reason: state.finish_reason.take(),
+                usage: state.usage,
+            }))
+            .await;
+    } else {
+        let _ = tx
+            .send(Err(LlmError::Stream(
+                "stream ended before data: [DONE]".to_string(),
+            )))
+            .await;
     }
 }
 
@@ -844,6 +862,75 @@ mod tests {
             }
             other => panic!("expected Done, got {other:?}"),
         }
+    }
+
+    /// Drive `pump_sse` with fixture byte chunks and collect everything it
+    /// forwards, exactly as a caller would read the `TokenStream`.
+    async fn run_pump(chunks: Vec<&'static [u8]>) -> Vec<Result<StreamEvent, LlmError>> {
+        let (tx, mut rx) = mpsc::channel(32);
+        let bytes = futures_util::stream::iter(chunks.into_iter().map(Ok::<_, reqwest::Error>));
+        pump_sse(bytes, tx).await;
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_ends_without_the_done_sentinel_is_an_error() {
+        // The connection drops mid-generation: deltas arrived, no
+        // finish_reason, no [DONE]. The text so far must not present as a
+        // complete reply.
+        let events = run_pump(vec![
+            b"data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"Hel\"}}]}\n",
+            b"data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"lo\"}}]}\n",
+        ])
+        .await;
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events[0].as_ref().unwrap(),
+            &StreamEvent::TextDelta("Hel".to_string())
+        );
+        match &events[2] {
+            Err(LlmError::Stream(message)) => {
+                assert!(message.contains("before data: [DONE]"), "got: {message}");
+            }
+            other => panic!("expected a Stream error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lost_sentinel_after_a_finish_reason_still_yields_done() {
+        // Generation provably finished (finish_reason arrived) and only the
+        // [DONE] sentinel was lost in transit; the lenient branch emits the
+        // Done the server implied.
+        let events = run_pump(vec![
+            b"data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": \"Hi\"}, \"finish_reason\": \"stop\"}]}\n",
+            b"data: {\"choices\": [], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 1}}\n",
+        ])
+        .await;
+        match events.last() {
+            Some(Ok(StreamEvent::Done { stop_reason, usage })) => {
+                assert_eq!(stop_reason.as_deref(), Some("stop"));
+                assert_eq!(usage.input_tokens, 5);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_pump_stops_reading_after_the_done_sentinel() {
+        // A misbehaving server keeps talking after [DONE]; the pump must have
+        // already returned, so exactly one Done and nothing after it.
+        let events = run_pump(vec![
+            b"data: {\"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\n",
+            b"data: [DONE]\n",
+            b"data: [DONE]\ndata: {not even json\n",
+        ])
+        .await;
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Ok(StreamEvent::Done { .. })));
     }
 
     #[test]
