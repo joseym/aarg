@@ -93,6 +93,23 @@ const NO_COMPANY = 'No company';
                 <option value="score">Score</option>
               </select>
             </label>
+            @if (groupByCompany()) {
+              <button
+                class="lc-dir lc-fold"
+                type="button"
+                [attr.aria-label]="allFolded() ? 'Expand all groups' : 'Collapse all groups'"
+                [attr.title]="allFolded() ? 'Expand all' : 'Collapse all'"
+                (click)="toggleFoldAll()"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  @if (allFolded()) {
+                    <path d="M7 9l5 5 5-5" />
+                  } @else {
+                    <path d="M7 14l5-5 5 5" />
+                  }
+                </svg>
+              </button>
+            }
             <button
               class="lc-dir"
               type="button"
@@ -550,6 +567,25 @@ export class Sidebar {
         writeLs(COLLAPSED_KEY, JSON.stringify([...this.collapsedGroups()]));
       }
     });
+  }
+
+  /** Whether everything foldable is folded. The open build's group is exempt
+   *  (the unfold-on-navigate effect holds it open), so it does not count
+   *  against "all folded" or the button could never flip to expand. */
+  protected readonly allFolded = computed(() => {
+    const active = this.activeCompany();
+    const companies = this.sections()
+      .map((s) => s.company)
+      .filter((c): c is string => c !== null && c !== active);
+    return companies.length > 0 && companies.every((c) => this.collapsedGroups().has(c));
+  });
+
+  protected toggleFoldAll(): void {
+    const companies = this.sections()
+      .map((s) => s.company)
+      .filter((c): c is string => c !== null);
+    this.collapsedGroups.set(this.allFolded() ? new Set() : new Set(companies));
+    writeLs(COLLAPSED_KEY, JSON.stringify([...this.collapsedGroups()]));
   }
 
   protected toggleCollapsed(company: string): void {
