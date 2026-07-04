@@ -13,13 +13,21 @@
 //! the OS keychain (the `secrets` module) and are shared across workspaces;
 //! config holds only the label registry and which label is active.
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use inquire::{Password, PasswordDisplayMode, Select, Text};
+use serde_json::Value;
 
 use crate::commands::{CliError, validate_key_label};
 use crate::config::{AuthKind, Config, DEFAULT_KEY_LABEL, Provider};
 use crate::{secrets, style, workspace};
+
+/// How long to wait when listing a local server's models during setup. The list
+/// is a convenience, so a slow or absent server falls back to a typed name
+/// rather than stalling `init`.
+const MODELS_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(global: bool, dir: Option<PathBuf>) -> Result<(), CliError> {
     // Decide where this workspace's config lives, and whether it's the
@@ -30,28 +38,17 @@ pub async fn run(global: bool, dir: Option<PathBuf>) -> Result<(), CliError> {
     // Load from the explicit path rather than via discovery: the workspace
     // may not exist yet, so discovery would find the wrong one (or none).
     let mut config = Config::load_from(&config_path)?;
-    let provider = config.provider;
-    eprintln!(
-        "{}",
-        style::info(format!(
-            "Provider: {} (the only provider in this build)",
-            provider.name()
-        ))
-    );
 
-    if is_global {
-        // A key stored before named keys lives in a bare slot; adopt it
-        // under the default label so upgrading users keep their key.
-        migrate_legacy_key(&mut config, provider).await?;
+    // Choose the provider. Interactive only: a piped/CI run keeps whatever the
+    // config already carries (Anthropic by default), so scripted setup that
+    // pre-writes config.toml is unaffected.
+    if std::io::stdin().is_terminal() {
+        config.provider = prompt_provider(config.provider)?;
     }
 
-    if config.anthropic.keys.is_empty() {
-        // Nothing stored yet: take a single credential under the default label.
-        let kind = prompt_auth_kind()?;
-        add_key(&mut config, provider, DEFAULT_KEY_LABEL, kind).await?;
-    } else {
-        // Keys already exist: reuse, switch, add, or replace.
-        existing_key_flow(&mut config, provider).await?;
+    match config.provider {
+        Provider::Anthropic => setup_anthropic(&mut config, is_global).await?,
+        Provider::LmStudio | Provider::Ollama => setup_local(&mut config).await?,
     }
 
     config.save_to(&config_path)?;
@@ -61,6 +58,133 @@ pub async fn run(global: bool, dir: Option<PathBuf>) -> Result<(), CliError> {
         style::suggest("next: run `aarg llm ping` to verify the connection")
     );
     Ok(())
+}
+
+/// Ask which provider to use, starting the cursor on the one already set.
+fn prompt_provider(current: Provider) -> Result<Provider, CliError> {
+    const ANTHROPIC: &str = "Anthropic (hosted · API key or Claude plan)";
+    const LMSTUDIO: &str = "LM Studio (local · OpenAI-compatible server)";
+    const OLLAMA: &str = "Ollama (local)";
+    let start = match current {
+        Provider::Anthropic => 0,
+        Provider::LmStudio => 1,
+        Provider::Ollama => 2,
+    };
+    let choice = Select::new("Which provider?", vec![ANTHROPIC, LMSTUDIO, OLLAMA])
+        .with_starting_cursor(start)
+        .prompt()?;
+    Ok(match choice {
+        LMSTUDIO => Provider::LmStudio,
+        OLLAMA => Provider::Ollama,
+        _ => Provider::Anthropic,
+    })
+}
+
+/// The Anthropic setup: migrate a legacy key if this is the global config, then
+/// take or reuse a stored credential.
+async fn setup_anthropic(config: &mut Config, is_global: bool) -> Result<(), CliError> {
+    let provider = Provider::Anthropic;
+    if is_global {
+        // A key stored before named keys lives in a bare slot; adopt it
+        // under the default label so upgrading users keep their key.
+        migrate_legacy_key(config, provider).await?;
+    }
+    if config.anthropic.keys.is_empty() {
+        // Nothing stored yet: take a single credential under the default label.
+        let kind = prompt_auth_kind()?;
+        add_key(config, provider, DEFAULT_KEY_LABEL, kind).await?;
+    } else {
+        // Keys already exist: reuse, switch, add, or replace.
+        existing_key_flow(config, provider).await?;
+    }
+    Ok(())
+}
+
+/// The local-provider setup: no credential, just the base URL and a model. The
+/// model list is offered from the running server when it's reachable, and falls
+/// back to a typed name when it isn't.
+async fn setup_local(config: &mut Config) -> Result<(), CliError> {
+    let provider = config.provider;
+    let default_base = config.active_base_url().unwrap_or_default().to_string();
+    eprintln!(
+        "{}",
+        style::info(
+            "A local provider needs no key. Confirm where its server listens, then pick a model."
+        )
+    );
+    let base_url = Text::new("Server base URL:")
+        .with_initial_value(&default_base)
+        .prompt()?
+        .trim()
+        .to_string();
+
+    let model = prompt_local_model(provider, &base_url).await?;
+
+    match provider {
+        Provider::LmStudio => {
+            config.lmstudio.base_url = base_url;
+            config.lmstudio.model = model;
+        }
+        Provider::Ollama => {
+            config.ollama.base_url = base_url;
+            config.ollama.model = model;
+        }
+        Provider::Anthropic => {}
+    }
+    Ok(())
+}
+
+/// Pick a model for a local provider: a menu of what the server currently has
+/// when it's reachable, otherwise a typed name (with a nudge to start the server
+/// for the list). An empty typed name is accepted (`aarg` reports the missing
+/// model on first use), so setup never gets stuck here.
+async fn prompt_local_model(provider: Provider, base_url: &str) -> Result<String, CliError> {
+    let models = list_server_models(provider, base_url).await;
+    if models.is_empty() {
+        eprintln!(
+            "{}",
+            style::warn(format!(
+                "couldn't list models from {base_url} · type a model name (start the server first to get the list)"
+            ))
+        );
+        return Ok(Text::new("Model name:").prompt()?.trim().to_string());
+    }
+    Ok(Select::new("Model:", models).prompt()?)
+}
+
+/// The model ids a local server currently serves, best-effort. LM Studio speaks
+/// the OpenAI `GET /v1/models` shape; Ollama lists pulled models at
+/// `GET /api/tags`. Any failure (server down, odd shape) yields an empty list,
+/// which the caller degrades to a typed name.
+async fn list_server_models(provider: Provider, base_url: &str) -> Vec<String> {
+    let Ok(http) = reqwest::Client::builder().timeout(MODELS_TIMEOUT).build() else {
+        return Vec::new();
+    };
+    let (url, pointer, key) = match provider {
+        Provider::LmStudio => (format!("{base_url}/v1/models"), "/data", "id"),
+        Provider::Ollama => (format!("{base_url}/api/tags"), "/models", "name"),
+        Provider::Anthropic => return Vec::new(),
+    };
+    let Ok(response) = http.get(url).send().await else {
+        return Vec::new();
+    };
+    let Ok(body) = response.text().await else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&body) else {
+        return Vec::new();
+    };
+    parsed
+        .pointer(pointer)
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get(key).and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Resolve `config.toml`'s path from the flags, returning whether it's the
