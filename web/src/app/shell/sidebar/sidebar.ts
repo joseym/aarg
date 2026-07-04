@@ -370,7 +370,7 @@ function sortBuilds(builds: readonly BuildSummary[], sort: SortBy): BuildSummary
 function groupByCompany(builds: readonly BuildSummary[], sort: SortBy): BuildSection[] {
   const map = new Map<string, BuildSummary[]>();
   for (const b of builds) {
-    const key = b.company?.trim() ? b.company : NO_COMPANY;
+    const key = b.company?.trim() || NO_COMPANY;
     const arr = map.get(key);
     if (arr) arr.push(b);
     else map.set(key, [b]);
