@@ -8,7 +8,10 @@ cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell"]
+installers = ["shell", "homebrew"]
+# The generated formula lands in this repo; publishing needs a
+# HOMEBREW_TAP_TOKEN secret with write access to it.
+tap = "joseym/homebrew-tap"
 # dist's built-in local build gives us no place to sign the macOS binaries
 # between compiling and archiving, and its `macos-sign` support in 0.32 lacks
 # a timestamp, hardened runtime, and notarization. So we turn off the built-in
@@ -19,7 +22,7 @@ build-local-artifacts = false
 local-artifacts-jobs = ["./build-artifacts"]
 # Custom publish-phase job: pushes aarg-core, aarg-domain, and aarg to
 # crates.io in dependency order. Points at .github/workflows/publish-crates.yml.
-publish-jobs = ["./publish-crates"]
+publish-jobs = ["homebrew", "./publish-crates"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
 # Path that installers should place binaries in
@@ -43,3 +46,8 @@ pr-run-mode = "plan"
 aarch64-apple-darwin = ["aarg"]
 x86_64-apple-darwin = ["aarg"]
 x86_64-unknown-linux-gnu = ["aarg"]
+
+# brew is the one channel that can install typst for the user; the formula
+# declares it so rendering works out of the box.
+[dist.dependencies.homebrew]
+typst = { stage = ["run"] }
