@@ -24,6 +24,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::llm::client::LlmClient;
 use crate::llm::context::estimate_prompt_tokens;
+use crate::llm::lines::drain_lines;
 use crate::llm::types::{
     Attachment, CompletionRequest, CompletionResponse, LlmError, Message, StreamEvent, TokenStream,
     TokenUsage, ToolCall,
@@ -454,24 +455,6 @@ struct StreamState {
     finish_reason: Option<String>,
 }
 
-/// Pull every complete line off the front of `buffer`, returning them without
-/// their trailing newline. A partial final line stays in the buffer until more
-/// bytes arrive; `\r\n` endings are tolerated. SSE frames are newline-delimited,
-/// so a line is the unit this stream parses.
-fn drain_lines(buffer: &mut Vec<u8>) -> Vec<String> {
-    let mut lines = Vec::new();
-    while let Some(pos) = buffer.iter().position(|&byte| byte == b'\n') {
-        let line: Vec<u8> = buffer.drain(..=pos).collect();
-        let text = String::from_utf8_lossy(&line);
-        lines.push(
-            text.trim_end_matches('\n')
-                .trim_end_matches('\r')
-                .to_string(),
-        );
-    }
-    lines
-}
-
 /// Interpret one SSE line: update the accumulated state and return the event to
 /// surface, if any. `data: [DONE]` ends the stream and emits `Done` with the
 /// captured usage and finish reason; a `data:` chunk contributes a text delta
@@ -835,17 +818,6 @@ mod tests {
             }
             other => panic!("expected Api error, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn drain_lines_handles_split_and_crlf_lines() {
-        let mut buffer = Vec::new();
-        buffer.extend_from_slice(b"data: {\"a\"");
-        assert!(drain_lines(&mut buffer).is_empty());
-        buffer.extend_from_slice(b": 1}\n\r\ndata: {\"b\": 2}\r\n");
-        let lines = drain_lines(&mut buffer);
-        assert_eq!(lines, vec![r#"data: {"a": 1}"#, "", r#"data: {"b": 2}"#]);
-        assert!(buffer.is_empty());
     }
 
     #[test]

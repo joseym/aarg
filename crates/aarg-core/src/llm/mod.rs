@@ -10,6 +10,9 @@ pub mod client;
 // share. Native-only: only the reqwest-backed local clients use it.
 #[cfg(feature = "native")]
 pub mod context;
+// Byte-buffer line draining shared by the two local stream parsers.
+#[cfg(feature = "native")]
+pub mod lines;
 pub mod mock;
 // The local-provider clients (Ollama's native API, and LM Studio via the
 // OpenAI-compatible API), native-only for the same reason as `anthropic`.
