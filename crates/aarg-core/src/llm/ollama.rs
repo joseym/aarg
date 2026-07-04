@@ -13,11 +13,24 @@
 //! under a 512-token window, 514 under 1024, 1026 under 2048. Without an
 //! explicit `num_ctx` the window is the model default (as small as 4096), so
 //! half of a typical AARG prompt would vanish. For a tool built on never
-//! fabricating from the dataset that is evidence loss, so this client sizes
-//! `num_ctx` from an estimate of each prompt and, after the response, checks
-//! the server's reported token count for the clip shapes
+//! fabricating from the dataset that is evidence loss, so this client guards
+//! it twice: before sending, it sizes `num_ctx` from an estimate of the
+//! prompt and verifies the request fits the model's own maximum context
+//! length (from `/api/show`, cached per model) so the server can't quietly
+//! cap the window below what was asked; after the response, it checks the
+//! server's reported token count for the clip shapes
 //! (see [`crate::llm::context`]).
+//!
+//! One counter caveat, probed the same way: `prompt_eval_count` on 0.30.11
+//! reports the full prompt even when the prefix KV cache is hit (three
+//! repeats of a shared-prefix request all reported the full size while
+//! `prompt_eval_duration` collapsed from 6.97s to 0.10s), but other versions
+//! have reported only newly evaluated tokens. The post-check therefore never
+//! treats a low count alone as a clip — a cached healthy response must not
+//! be refused.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -47,12 +60,21 @@ const DEFAULT_NUM_CTX: u32 = 8192;
 /// loaded avoids paying the multi-second load cost on the next call.
 const DEFAULT_KEEP_ALIVE: &str = "5m";
 
+/// How long to wait for `/api/show` before proceeding without the model's
+/// context length. The lookup is an optimization for a loud pre-send error;
+/// a slow or missing endpoint must not block the actual request.
+const SHOW_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// An `LlmClient` backed by Ollama's native chat API.
 pub struct OllamaClient {
     http: reqwest::Client,
     base_url: String,
     num_ctx: u32,
     keep_alive: String,
+    /// Each model's maximum context length, fetched from `/api/show` once and
+    /// cached. A std `Mutex` (not tokio's) because every critical section is a
+    /// single map operation with no await inside.
+    model_windows: Mutex<HashMap<String, u64>>,
 }
 
 impl OllamaClient {
@@ -64,6 +86,7 @@ impl OllamaClient {
             base_url: base_url.into(),
             num_ctx: DEFAULT_NUM_CTX,
             keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
+            model_windows: Mutex::new(HashMap::new()),
         }
     }
 
@@ -94,6 +117,90 @@ impl OllamaClient {
         let body = request_body(request, stream, &self.keep_alive, num_ctx)?;
         Ok(builder.json(&body).send().await?)
     }
+
+    /// The model's maximum context length, from `/api/show`, cached per model.
+    /// `None` when the lookup fails or the response doesn't carry one — the
+    /// caller then proceeds unverified rather than failing a healthy request
+    /// over a metadata endpoint.
+    async fn model_context_length(&self, model: &str) -> Option<u64> {
+        if let Ok(cache) = self.model_windows.lock()
+            && let Some(&max) = cache.get(model)
+        {
+            return Some(max);
+        }
+        let response = self
+            .http
+            .post(format!("{}/api/show", self.base_url))
+            .timeout(SHOW_TIMEOUT)
+            .json(&json!({"model": model}))
+            .send()
+            .await
+            .ok()?;
+        let body = response.text().await.ok()?;
+        let max = context_length_from_show(&body)?;
+        if let Ok(mut cache) = self.model_windows.lock() {
+            cache.insert(model.to_string(), max);
+        }
+        Some(max)
+    }
+
+    /// The context window to send for this request: the effective window,
+    /// verified against the model's own maximum so the server can't quietly
+    /// cap `num_ctx` below what the prompt needs. Errors before anything is
+    /// sent when the prompt can't fit the model at all.
+    async fn window_for(
+        &self,
+        request: &CompletionRequest,
+        estimate: u64,
+    ) -> Result<u32, LlmError> {
+        let effective = effective_num_ctx(self.num_ctx, estimate, request.max_tokens);
+        let model_max = self.model_context_length(&request.model).await;
+        verified_window(effective, estimate, request.max_tokens, model_max)
+    }
+}
+
+/// Pull the model's maximum context length out of an `/api/show` response.
+/// The key is architecture-prefixed (`llama.context_length`,
+/// `qwen3.context_length`, ...), so it's matched by suffix.
+fn context_length_from_show(body: &str) -> Option<u64> {
+    let show: Value = serde_json::from_str(body).ok()?;
+    show.get("model_info")?
+        .as_object()?
+        .iter()
+        .find(|(key, _)| key.ends_with(".context_length"))
+        .and_then(|(_, value)| value.as_u64())
+}
+
+/// Reconcile the window this client wants with the model's maximum, when
+/// known. A window at or under the maximum goes through as-is. A window over
+/// it is only the floor being ambitious as long as the prompt itself still
+/// fits, so it is capped to the maximum; when even the prompt plus completion
+/// budget exceeds the maximum, the request fails loudly *before* it is sent,
+/// because the server would otherwise cap `num_ctx` itself and clip the
+/// prompt silently.
+fn verified_window(
+    effective: u32,
+    estimate: u64,
+    max_tokens: u32,
+    model_max: Option<u64>,
+) -> Result<u32, LlmError> {
+    let Some(model_max) = model_max else {
+        return Ok(effective);
+    };
+    if u64::from(effective) <= model_max {
+        return Ok(effective);
+    }
+    // What the prompt actually needs, with no floor in play.
+    let needed = u64::from(effective_num_ctx(0, estimate, max_tokens));
+    if needed <= model_max {
+        return Ok(model_max.min(u64::from(u32::MAX)) as u32);
+    }
+    Err(LlmError::Unsupported(format!(
+        "the prompt (~{estimate} tokens) plus the completion budget \
+         ({max_tokens} tokens) does not fit this model's maximum context \
+         window of {model_max} tokens; use a model with a larger context \
+         window, or shorten the input"
+    )))
 }
 
 fn build_http() -> reqwest::Client {
@@ -406,7 +513,7 @@ fn handle_ndjson_line(line: &str, stats: &mut DoneStats) -> Result<Option<Stream
 impl LlmClient for OllamaClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let estimate = estimate_prompt_tokens(&request);
-        let num_ctx = effective_num_ctx(self.num_ctx, estimate, request.max_tokens);
+        let num_ctx = self.window_for(&request, estimate).await?;
         let response = self.post_chat(&request, false, num_ctx).await?;
         let status = response.status().as_u16();
         let body = response.text().await?;
@@ -427,7 +534,7 @@ impl LlmClient for OllamaClient {
 
     async fn stream(&self, request: CompletionRequest) -> Result<TokenStream, LlmError> {
         let estimate = estimate_prompt_tokens(&request);
-        let num_ctx = effective_num_ctx(self.num_ctx, estimate, request.max_tokens);
+        let num_ctx = self.window_for(&request, estimate).await?;
         let response = self.post_chat(&request, true, num_ctx).await?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
@@ -757,6 +864,49 @@ mod tests {
             LlmError::Unsupported(message) => {
                 assert!(message.contains("~8192"));
                 assert!(message.contains("~12000"));
+                assert!(message.contains("larger context"));
+            }
+            other => panic!("expected Unsupported error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_length_is_read_from_the_arch_prefixed_key() {
+        // The real /api/show shape: model_info keys carry the architecture as
+        // a prefix (llama.context_length, qwen3.context_length, ...).
+        let body = r#"{
+            "details": {"family": "llama"},
+            "model_info": {
+                "general.architecture": "llama",
+                "llama.context_length": 131072,
+                "llama.embedding_length": 8192
+            }
+        }"#;
+        assert_eq!(context_length_from_show(body), Some(131072));
+        // No context_length key, or a body that isn't the show envelope.
+        assert_eq!(context_length_from_show(r#"{"model_info": {}}"#), None);
+        assert_eq!(context_length_from_show("not json"), None);
+    }
+
+    #[test]
+    fn verified_window_passes_caps_or_refuses() {
+        // Under the model maximum: unchanged.
+        assert_eq!(
+            verified_window(8192, 2000, 256, Some(131072)).unwrap(),
+            8192
+        );
+        // Unknown maximum: proceed unverified.
+        assert_eq!(verified_window(8192, 2000, 256, None).unwrap(), 8192);
+        // The floor exceeds the model maximum but the prompt itself fits:
+        // capped to the maximum instead of letting the server cap it quietly.
+        assert_eq!(verified_window(8192, 2000, 256, Some(4096)).unwrap(), 4096);
+        // The prompt plus completion budget cannot fit the model at all:
+        // refused before anything is sent.
+        let err = verified_window(8192, 6000, 512, Some(4096)).unwrap_err();
+        match err {
+            LlmError::Unsupported(message) => {
+                assert!(message.contains("~6000"));
+                assert!(message.contains("4096"));
                 assert!(message.contains("larger context"));
             }
             other => panic!("expected Unsupported error, got {other:?}"),
