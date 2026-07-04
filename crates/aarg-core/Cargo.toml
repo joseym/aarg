@@ -14,7 +14,7 @@ repository = "https://github.com/joseym/aarg"
 # turns it off (`default-features = false`) to drop everything a browser can't
 # host; the domain logic then runs over a host-provided `LlmClient` instead.
 default = ["native"]
-native = ["dep:reqwest", "dep:directories", "dep:tokio-stream", "tokio/rt"]
+native = ["dep:reqwest", "dep:directories", "dep:tokio-stream", "tokio/rt", "tokio/time"]
 
 [dependencies]
 async-trait = "0.1.89"
