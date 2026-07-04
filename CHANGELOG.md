@@ -2,6 +2,38 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.3.0 - 2026-07-04
+#### Features
+- (**fetch**) add LinkedIn job postings and a fetch timeout - (e1a3af2) - Josey Morton
+- (**serve**) remove a build over DELETE /api/builds/:id - (010dd78) - Josey Morton
+- (**serve**) persist objection triage per build - (5e45150) - Josey Morton
+- (**serve**) stream /api/llm completions over server-sent events - (919b37c) - Josey Morton
+- (**serve**) log upstream LLM and fetch failures to stderr - (884fe1b) - Josey Morton
+- (**web**) collapse or expand all groups at once - (a44473e) - Josey Morton
+- (**web**) collapsible groups, sort direction, and removal in the build list - (69dface) - Josey Morton
+- (**web**) group and sort the build list - (80145de) - Josey Morton
+- (**web**) persist objection triage across reloads - (4205a15) - Josey Morton
+- (**web**) humanize the run overlay's streaming progress - (b70bcbd) - Josey Morton
+- (**web**) consume the /api/llm token stream and tick live progress - (26fcb60) - Josey Morton
+- (**web**) hold a screen wake lock during cancellable runs - (59d22ea) - Josey Morton
+- (**web**) retry transient LLM proxy failures with backoff - (a0213be) - Josey Morton
+#### Bug Fixes
+- (**fetch**) keep escaped entities as literal JD text, accept more LinkedIn URLs - (8bf45bd) - Josey Morton
+- (**serve**) chain the cause on a credential failure - (79fff03) - Josey Morton
+- (**serve**) tag transient in-stream failures for the client retry budget - (89abdde) - Josey Morton
+- (**serve**) log and return upstream causes, not just headlines - (d834614) - Josey Morton
+- (**wasm**) render full error cause chains at the boundary - (75da35e) - Josey Morton
+- (**web**) review findings in the build list controls - (9d1cc0c) - Josey Morton
+- (**web**) keep triage.json true when objections resolve another way - (35a76fe) - Josey Morton
+- (**web**) drop the word count from the streaming progress line - (e6d61ed) - Josey Morton
+- (**web**) mobile topbar taps swallowed by the always-on drawer scrim - (34bb672) - Josey Morton
+#### Build system
+- reinstall script that re-signs for a stable keychain grant - (d96903d) - Josey Morton
+#### Continuous Integration
+- (**release**) publish aarg with --allow-dirty - (b97ac50) - Josey Morton
+
+- - -
+
 ## v0.2.0 - 2026-07-03
 #### Features
 - (**agent**) give agents tools, with fetch_jd as the first - (39842c1) - Josey Morton
