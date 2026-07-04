@@ -162,7 +162,11 @@ impl OllamaClient {
 /// Pull the model's maximum context length out of an `/api/show` response.
 /// The key is architecture-prefixed (`llama.context_length`,
 /// `qwen3.context_length`, ...), so it's matched by suffix.
-fn context_length_from_show(body: &str) -> Option<u64> {
+///
+/// Public so the CLI's `llm ping` context check can parse the same `/api/show`
+/// body without re-deriving the arch-prefixed key match; the client itself owns
+/// the request and caching.
+pub fn context_length_from_show(body: &str) -> Option<u64> {
     let show: Value = serde_json::from_str(body).ok()?;
     show.get("model_info")?
         .as_object()?

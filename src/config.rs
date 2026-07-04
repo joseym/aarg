@@ -19,6 +19,11 @@ pub const DEFAULT_KEY_LABEL: &str = "default";
 pub const DEFAULT_ATS_TEMPLATE: &str = "classic";
 pub const DEFAULT_HUMAN_TEMPLATE: &str = "modern";
 
+/// Where each local provider listens by default. LM Studio's server defaults
+/// to 1234, Ollama's to 11434; both bind loopback.
+pub const DEFAULT_LMSTUDIO_BASE_URL: &str = "http://127.0.0.1:1234";
+pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
+
 /// Everything that can go wrong while locating, reading, parsing, or
 /// writing the config file.
 #[derive(Debug, thiserror::Error)]
@@ -51,21 +56,36 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
 }
 
-/// Which LLM provider requests go to. Anthropic is the only provider for
-/// now; Ollama is planned as a fully local alternative.
+/// Which LLM provider requests go to. Anthropic runs over the network with a
+/// stored credential; LM Studio and Ollama run fully local with no credential.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     #[default]
     Anthropic,
+    /// A local OpenAI-compatible server (LM Studio, by default).
+    #[serde(rename = "lmstudio")]
+    LmStudio,
+    /// A local Ollama server speaking its native API.
+    Ollama,
 }
 
 impl Provider {
-    /// The stable lowercase name used for keychain entries and display.
+    /// The stable lowercase name used for keychain entries and display. It
+    /// matches the provider's config section name (`[anthropic]`, `[lmstudio]`,
+    /// `[ollama]`).
     pub fn name(self) -> &'static str {
         match self {
             Provider::Anthropic => "anthropic",
+            Provider::LmStudio => "lmstudio",
+            Provider::Ollama => "ollama",
         }
+    }
+
+    /// Whether this provider runs on the local machine with no credential.
+    /// Local providers skip the keychain and cost nothing per request.
+    pub fn is_local(self) -> bool {
+        matches!(self, Provider::LmStudio | Provider::Ollama)
     }
 }
 
@@ -287,6 +307,122 @@ impl crate::agent::ModelResolver for AnthropicConfig {
     }
 }
 
+/// The shared shape of a local provider's config: where the server listens,
+/// the fallback model, per-tier and per-agent model overrides. Local providers
+/// carry no credential fields; a local server needs no key. `model` is empty
+/// by default because aarg ships no default local model name; a local provider
+/// is unusable until the user names one (see [`Config::active_model`]).
+///
+/// LM Studio (`OpenAiCompatClient`) needs exactly these fields; Ollama adds two
+/// of its own, so it has its own struct rather than reusing this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LmStudioConfig {
+    /// The server's base URL, e.g. `http://127.0.0.1:1234`.
+    pub base_url: String,
+    /// The fallback model id, used for any tier not pinned in `tiers`. Empty
+    /// until the user sets one; there is no shipped default.
+    pub model: String,
+    /// Maps the three tiers to concrete model ids.
+    pub tiers: ModelTiers,
+    /// Per-agent overrides by agent id, the highest-priority resolution step.
+    pub agents: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for LmStudioConfig {
+    fn default() -> Self {
+        Self {
+            base_url: DEFAULT_LMSTUDIO_BASE_URL.to_string(),
+            model: String::new(),
+            tiers: ModelTiers::default(),
+            agents: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl crate::agent::ModelResolver for LmStudioConfig {
+    fn resolve(&self, agent_id: &str, tier: crate::agent::ModelTier) -> &str {
+        resolve_local(&self.agents, &self.tiers, &self.model, agent_id, tier)
+    }
+}
+
+/// Ollama's config: the local shape plus the two knobs its native API exposes,
+/// the context-window floor and how long the model stays resident.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OllamaConfig {
+    /// The server's base URL, e.g. `http://127.0.0.1:11434`.
+    pub base_url: String,
+    /// The fallback model id. Empty until the user sets one.
+    pub model: String,
+    pub tiers: ModelTiers,
+    pub agents: std::collections::BTreeMap<String, String>,
+    /// The context-window floor in tokens. `None` uses the client default
+    /// (8192); each request still grows the window above this when the prompt
+    /// needs it (see the Ollama client), so this is a minimum, not a cap.
+    pub num_ctx: Option<u32>,
+    /// How long the model stays loaded after a request (Ollama duration syntax,
+    /// e.g. `"5m"`, `"30s"`, `"0"` to unload at once). `None` uses the client
+    /// default (`"5m"`).
+    pub keep_alive: Option<String>,
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            base_url: DEFAULT_OLLAMA_BASE_URL.to_string(),
+            model: String::new(),
+            tiers: ModelTiers::default(),
+            agents: std::collections::BTreeMap::new(),
+            num_ctx: None,
+            keep_alive: None,
+        }
+    }
+}
+
+impl crate::agent::ModelResolver for OllamaConfig {
+    fn resolve(&self, agent_id: &str, tier: crate::agent::ModelTier) -> &str {
+        resolve_local(&self.agents, &self.tiers, &self.model, agent_id, tier)
+    }
+}
+
+/// The tier resolution local providers share: a per-agent pin wins, then the
+/// tier mapping, then the fallback `model`. Unlike Anthropic, no tier drops to
+/// a shipped default, since a local build has no default model to reach for; an
+/// unset tier and unset `model` resolve to the empty string, which the caller
+/// rejects up front (see [`Config::active_model`]).
+fn resolve_local<'a>(
+    agents: &'a std::collections::BTreeMap<String, String>,
+    tiers: &'a ModelTiers,
+    model: &'a str,
+    agent_id: &str,
+    tier: crate::agent::ModelTier,
+) -> &'a str {
+    use crate::agent::ModelTier;
+    if let Some(pinned) = agents.get(agent_id) {
+        return pinned;
+    }
+    match tier {
+        ModelTier::Cheap => tiers.cheap.as_deref().unwrap_or(model),
+        ModelTier::Mid => tiers.mid.as_deref().unwrap_or(model),
+        ModelTier::Smart => tiers.smart.as_deref().unwrap_or(model),
+    }
+}
+
+/// How the active provider's requests are billed, derived from `Config` alone
+/// (no keychain read). Drives every cost surface: a per-token dollar figure for
+/// a metered API key, and a plain note for the two cases where a dollar figure
+/// would mislead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Billing {
+    /// A Claude plan (OAuth or CLI-delegated), covered by the flat fee.
+    Subscription,
+    /// A pay-as-you-go Anthropic API key, priced per token.
+    Metered,
+    /// A local model; requests cost nothing.
+    Local,
+}
+
 /// Tunable loop limits for `aarg tailor`. Each has a sensible default
 /// (the PRD's), so an absent `[limits]` table changes nothing — the table
 /// only exists for users who want a longer (or cheaper) loop. Resolved by
@@ -386,6 +522,12 @@ pub struct Config {
     /// `aarg config`.
     pub workspace: Option<PathBuf>,
     pub anthropic: AnthropicConfig,
+    /// Settings for the LM Studio (OpenAI-compatible) local provider. Read only
+    /// when `provider = "lmstudio"`; an absent `[lmstudio]` table is the default.
+    pub lmstudio: LmStudioConfig,
+    /// Settings for the Ollama local provider. Read only when
+    /// `provider = "ollama"`; an absent `[ollama]` table is the default.
+    pub ollama: OllamaConfig,
     pub limits: Limits,
     /// Which template each variant renders with.
     pub templates: TemplatesConfig,
@@ -410,6 +552,61 @@ impl Config {
     /// Full path of `config.toml`.
     pub fn path() -> Result<PathBuf, ConfigError> {
         Ok(Self::dir()?.join("config.toml"))
+    }
+
+    /// The model resolver for the active provider, so callers map an agent +
+    /// tier to a model without reaching for a provider-specific config section.
+    pub fn active_resolver(&self) -> &dyn crate::agent::ModelResolver {
+        match self.provider {
+            Provider::Anthropic => &self.anthropic,
+            Provider::LmStudio => &self.lmstudio,
+            Provider::Ollama => &self.ollama,
+        }
+    }
+
+    /// The active provider's fallback model: what a single-model command (like
+    /// `aarg llm ping`) sends. Empty when a local provider has no model set,
+    /// which the caller treats as "not configured yet".
+    pub fn active_model(&self) -> &str {
+        match self.provider {
+            Provider::Anthropic => &self.anthropic.model,
+            Provider::LmStudio => &self.lmstudio.model,
+            Provider::Ollama => &self.ollama.model,
+        }
+    }
+
+    /// The active provider's base URL, for a local provider. `None` for
+    /// Anthropic, which the client points at the hosted API itself.
+    pub fn active_base_url(&self) -> Option<&str> {
+        match self.provider {
+            Provider::Anthropic => None,
+            Provider::LmStudio => Some(&self.lmstudio.base_url),
+            Provider::Ollama => Some(&self.ollama.base_url),
+        }
+    }
+
+    /// How the active provider's requests are billed, from config alone. A
+    /// local provider is always [`Billing::Local`]; Anthropic is a subscription
+    /// when the resolved credential is a plan token (env override first, then
+    /// the active label's kind), otherwise metered.
+    pub fn billing(&self) -> Billing {
+        if self.provider.is_local() {
+            return Billing::Local;
+        }
+        if env_var_set(self.anthropic.auth_token_env()) {
+            return Billing::Subscription; // the OAuth env var is always a plan token
+        }
+        if env_var_set(self.anthropic.api_key_env()) {
+            return Billing::Metered; // the API-key env var is never a plan token
+        }
+        let override_label = std::env::var("AARG_KEY").ok();
+        let label = override_label
+            .as_deref()
+            .unwrap_or_else(|| self.anthropic.active_label());
+        match self.anthropic.kind_for(label) {
+            AuthKind::Oauth | AuthKind::Cli => Billing::Subscription,
+            AuthKind::ApiKey => Billing::Metered,
+        }
     }
 
     /// Load the config from its default location. A missing file is not an
@@ -460,6 +657,13 @@ impl Config {
             source: e,
         })
     }
+}
+
+/// Whether an environment variable is set to a non-empty value, the same
+/// "unset or blank means absent" rule the credential resolution uses, so an
+/// exported-but-empty var doesn't read as present.
+fn env_var_set(var: &str) -> bool {
+    std::env::var(var).is_ok_and(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -864,6 +1068,126 @@ mod tests {
         std::fs::write(&path, "provider = [not toml").unwrap();
         let err = Config::load_from(&path).unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn provider_names_match_their_config_sections() {
+        assert_eq!(Provider::Anthropic.name(), "anthropic");
+        assert_eq!(Provider::LmStudio.name(), "lmstudio");
+        assert_eq!(Provider::Ollama.name(), "ollama");
+        assert!(!Provider::Anthropic.is_local());
+        assert!(Provider::LmStudio.is_local());
+        assert!(Provider::Ollama.is_local());
+    }
+
+    #[test]
+    fn local_provider_round_trips_and_defaults_to_loopback() {
+        // The two local sections default to their servers' loopback ports with
+        // no model set, and are absent from a fresh config.
+        let defaults = Config::default();
+        assert_eq!(defaults.lmstudio.base_url, "http://127.0.0.1:1234");
+        assert_eq!(defaults.ollama.base_url, "http://127.0.0.1:11434");
+        assert!(defaults.lmstudio.model.is_empty());
+        assert!(defaults.ollama.model.is_empty());
+        assert_eq!(defaults.ollama.num_ctx, None);
+        assert_eq!(defaults.ollama.keep_alive, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let config = Config {
+            provider: Provider::Ollama,
+            ollama: OllamaConfig {
+                base_url: "http://127.0.0.1:9999".to_string(),
+                model: "qwen3:8b".to_string(),
+                num_ctx: Some(16384),
+                keep_alive: Some("30m".to_string()),
+                ..OllamaConfig::default()
+            },
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn a_lowercase_provider_name_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "provider = \"lmstudio\"\n").unwrap();
+        assert_eq!(
+            Config::load_from(&path).unwrap().provider,
+            Provider::LmStudio
+        );
+        std::fs::write(&path, "provider = \"ollama\"\n").unwrap();
+        assert_eq!(Config::load_from(&path).unwrap().provider, Provider::Ollama);
+    }
+
+    #[test]
+    fn local_resolve_falls_back_to_the_model_never_a_shipped_default() {
+        use crate::agent::{ModelResolver, ModelTier};
+        // No tiers pinned: every tier resolves to the fallback model, not to a
+        // hardcoded Anthropic default.
+        let config = LmStudioConfig {
+            model: "qwen2.5-coder".to_string(),
+            ..LmStudioConfig::default()
+        };
+        assert_eq!(config.resolve("any", ModelTier::Cheap), "qwen2.5-coder");
+        assert_eq!(config.resolve("any", ModelTier::Smart), "qwen2.5-coder");
+        // An unset model resolves to empty, which the caller rejects.
+        assert_eq!(
+            LmStudioConfig::default().resolve("any", ModelTier::Cheap),
+            ""
+        );
+        // A per-agent pin still wins over the tier.
+        let pinned = OllamaConfig {
+            model: "base".to_string(),
+            agents: std::collections::BTreeMap::from([(
+                "tailoring_v1".to_string(),
+                "big-model".to_string(),
+            )]),
+            ..OllamaConfig::default()
+        };
+        assert_eq!(
+            pinned.resolve("tailoring_v1", ModelTier::Smart),
+            "big-model"
+        );
+        assert_eq!(pinned.resolve("other", ModelTier::Smart), "base");
+    }
+
+    #[test]
+    fn active_resolver_and_model_follow_the_provider() {
+        use crate::agent::ModelTier;
+        let config = Config {
+            provider: Provider::LmStudio,
+            lmstudio: LmStudioConfig {
+                model: "local-model".to_string(),
+                ..LmStudioConfig::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(config.active_model(), "local-model");
+        assert_eq!(config.active_base_url(), Some("http://127.0.0.1:1234"));
+        assert_eq!(
+            config.active_resolver().resolve("any", ModelTier::Smart),
+            "local-model"
+        );
+        // Anthropic has no base URL to show and keeps its own default model.
+        let anthropic = Config::default();
+        assert_eq!(anthropic.active_base_url(), None);
+        assert_eq!(anthropic.active_model(), DEFAULT_ANTHROPIC_MODEL);
+    }
+
+    #[test]
+    fn billing_is_local_for_local_providers() {
+        // A local provider is free regardless of any Anthropic credential env
+        // vars the test process happens to carry, so this holds unconditionally.
+        for provider in [Provider::LmStudio, Provider::Ollama] {
+            let config = Config {
+                provider,
+                ..Config::default()
+            };
+            assert_eq!(config.billing(), Billing::Local);
+        }
     }
 
     // EXERCISE(EX-001)
