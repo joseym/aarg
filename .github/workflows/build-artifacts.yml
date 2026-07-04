@@ -1,0 +1,276 @@
+# Custom local-artifacts job for dist. It replaces dist's built-in
+# build-local-artifacts job (turned off with `build-local-artifacts = false` in
+# dist-workspace.toml) so the two macOS binaries can be signed with a Developer
+# ID identity and notarized. dist's own 0.32 signing lacks a secure timestamp,
+# hardened runtime, and notarization, so we do it by hand: run dist build, then
+# re-sign and notarize the binary and repack the mac archive. Wired in via
+# `local-artifacts-jobs = ["./build-artifacts"]`; do not hand-edit the
+# `custom-build-artifacts` call in release.yml, regenerate with `dist generate`
+# instead.
+#
+# Turning off the built-in job is all-or-nothing, so this workflow owns every
+# target, linux included. The linux leg just builds and archives with no signing.
+#
+# Signing and notarization run only when the Apple secrets are present. On a fork
+# PR or before the secrets are loaded the mac legs still produce archives, they
+# are unsigned, and the job says so loudly. When the secrets are present a
+# notarization rejection fails the job.
+name: Build artifacts
+
+on:
+  workflow_call:
+    # dist hands every custom job the plan document as a JSON string. We read the
+    # release tag from the workflow event rather than the plan, but the input has
+    # to be declared or dist's generated `with: { plan: ... }` call fails.
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  build-artifacts:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            sign: true
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            sign: true
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            sign: false
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Secrets reach a reusable workflow through `secrets: inherit`. Mapping them
+      # to env vars lets the run steps test for their presence; the `secrets`
+      # context is not readable in a step `if:`.
+      CODESIGN_CERTIFICATE: ${{ secrets.CODESIGN_CERTIFICATE }}
+      CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+      CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      # dist stamps the archives with the release tag on a real push; on a PR
+      # rehearsal there is no tag and dist builds untagged, same as its built-in
+      # job does.
+      TAG_FLAG: ${{ github.event_name != 'pull_request' && format('--tag={0}', github.ref_name) || '' }}
+      BUILD_MANIFEST_NAME: target/distrib/${{ matrix.target }}-dist-manifest.json
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Check for signing secrets
+        id: detect
+        if: ${{ matrix.sign }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$CODESIGN_CERTIFICATE" ] && [ -n "$CODESIGN_CERTIFICATE_PASSWORD" ] \
+            && [ -n "$CODESIGN_IDENTITY" ] && [ -n "$APPLE_API_KEY_P8" ] \
+            && [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_ISSUER" ]; then
+            echo "signing=true" >> "$GITHUB_OUTPUT"
+            echo "Apple signing secrets are present; mac binaries will be signed and notarized."
+          else
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple signing secrets are absent. macOS binaries will ship UNSIGNED and Gatekeeper will reject them until the CODESIGN_* and APPLE_API_* secrets are set."
+          fi
+
+      # The frontend is embedded into the binary at compile time by build.rs, so
+      # it has to exist before any cargo build. These steps mirror
+      # .github/build-setup.yml.
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Add wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: 'v0.13.1'
+      - name: Build wasm bundle and frontend
+        run: |
+          wasm-pack build crates/aarg-wasm --target web --out-dir ../../web/src/wasm/pkg --out-name aarg_wasm
+          cd web && npm ci && npm run build
+          cd ..
+          test -f web/dist/aarg/browser/index.html
+
+      - name: Install dist
+        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
+
+      # Pulls in the plan manifest that the plan job uploaded, so `dist build`
+      # resolves the release the same way the built-in job would.
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+
+      - name: Set up signing keychain
+        if: ${{ matrix.sign && steps.detect.outputs.signing == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          printf '%s' "$CODESIGN_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CODESIGN_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+
+          rm -f "${CERT_PATH:?}"
+
+      - name: Build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The same invocation dist's built-in job runs. It compiles, archives,
+          # writes the checksum, and emits the manifest; the mac archive is
+          # reworked by the sign step below.
+          # shellcheck disable=SC2086
+          dist build $TAG_FLAG --print=linkage --output-format=json \
+            --artifacts=local --target="${{ matrix.target }}" > dist-manifest.json
+          echo "dist ran successfully"
+
+      # The binary dist just archived carries only the default ad-hoc linker
+      # signature that cargo applies on Apple Silicon; dist re-copies it from the
+      # build cache during archiving, so signing before this point does not
+      # survive. Re-sign it with the Developer ID identity, notarize it, and
+      # repack the archive dist wrote, then bring the checksum file and dist's
+      # manifest into line with the repacked bytes so the installer verifies the
+      # signed archive.
+      - name: Sign, notarize, and repack macOS archive
+        if: ${{ matrix.sign && steps.detect.outputs.signing == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="target/distrib/aarg-${{ matrix.target }}.tar.xz"
+          STAGING="${RUNNER_TEMP:?}/stage-${{ matrix.target }}"
+          rm -rf "${STAGING:?}"
+          mkdir -p "$STAGING"
+          tar -xJf "$ARCHIVE" -C "$STAGING"
+          BIN="$STAGING/aarg-${{ matrix.target }}/aarg"
+
+          # A bare CLI takes no entitlements; the hardened runtime and a secure
+          # timestamp are what notarization needs.
+          codesign --force --timestamp --options runtime \
+            --sign "$CODESIGN_IDENTITY" "$BIN"
+
+          # A bare executable cannot be stapled, so we notarize a zip of it and
+          # rely on Gatekeeper checking the result online on first run.
+          API_KEY_PATH="${RUNNER_TEMP:?}/apple_api_key.p8"
+          ZIP_PATH="${RUNNER_TEMP:?}/notarize-${{ matrix.target }}.zip"
+          cleanup() { rm -f "${API_KEY_PATH:?}" "${ZIP_PATH:?}"; }
+          trap cleanup EXIT
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode -o "$API_KEY_PATH"
+          ditto -c -k --keepParent "$BIN" "$ZIP_PATH"
+
+          set +e
+          SUBMIT_OUT="$(xcrun notarytool submit "$ZIP_PATH" \
+            --key "$API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" --wait --timeout 30m \
+            --output-format json)"
+          RC=$?
+          set -e
+          printf '%s\n' "$SUBMIT_OUT"
+          if [ "$RC" -ne 0 ]; then
+            SUBMISSION_ID="$(printf '%s' "$SUBMIT_OUT" | grep -o '"id":"[^"]*"' | head -1 | sed 's/.*:"//;s/"$//')"
+            echo "::error::Notarization was not accepted for ${{ matrix.target }}."
+            if [ -n "$SUBMISSION_ID" ]; then
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --key "$API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" \
+                --issuer "$APPLE_API_ISSUER" || true
+            fi
+            exit 1
+          fi
+
+          # Repack with the same root directory dist used, then match the
+          # checksum file and the manifest to the repacked archive.
+          ( cd "$STAGING" && tar -cJf repacked.tar.xz "aarg-${{ matrix.target }}" )
+          mv -f "$STAGING/repacked.tar.xz" "$ARCHIVE"
+          NEW_HASH="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
+          printf '%s *aarg-%s.tar.xz\n' "$NEW_HASH" "${{ matrix.target }}" > "$ARCHIVE.sha256"
+
+          if ! jq -e '.artifacts["aarg-${{ matrix.target }}.tar.xz"].checksums' dist-manifest.json > /dev/null; then
+            echo "dist-manifest.json has no checksum entry for the archive; its layout changed"
+            exit 1
+          fi
+          MANIFEST_TMP="${RUNNER_TEMP:?}/dist-manifest-${{ matrix.target }}.json"
+          jq --arg h "$NEW_HASH" \
+            '.artifacts["aarg-${{ matrix.target }}.tar.xz"].checksums.sha256=$h' \
+            dist-manifest.json > "$MANIFEST_TMP"
+          mv -f "$MANIFEST_TMP" dist-manifest.json
+
+      # Confirm the archive that will ship carries the hardened, Developer ID
+      # signed binary.
+      - name: Verify signed archive
+        if: ${{ matrix.sign && steps.detect.outputs.signing == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="target/distrib/aarg-${{ matrix.target }}.tar.xz"
+          DEST="${RUNNER_TEMP:?}/verify-${{ matrix.target }}"
+          rm -rf "${DEST:?}"
+          mkdir -p "$DEST"
+          tar -xJf "$ARCHIVE" -C "$DEST"
+          BIN="$DEST/aarg-${{ matrix.target }}/aarg"
+
+          codesign --verify --strict --verbose=2 "$BIN"
+          INFO="$(codesign -dv --verbose=4 "$BIN" 2>&1)"
+          printf '%s\n' "$INFO"
+
+          echo "$INFO" | grep -q 'flags=0x10000(runtime)' \
+            || { echo "hardened runtime flag missing from the archived binary"; exit 1; }
+          echo "$INFO" | grep -q 'Authority=Developer ID Application' \
+            || { echo "archived binary is not signed by a Developer ID Application identity"; exit 1; }
+
+      - name: Post-build
+        id: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The newline-separated list of local files (archive plus checksum) dist
+          # expects the downstream global and host jobs to find in target/distrib.
+          {
+            echo "paths<<EOF"
+            dist print-upload-files-from-manifest --manifest dist-manifest.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+
+      # The name has to match the `artifacts-*` glob the global and host jobs
+      # download with, and stay unique per target.
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-local-${{ matrix.target }}
+          path: |
+            ${{ steps.dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}
+
+      - name: Clean up signing keychain
+        if: ${{ always() && matrix.sign && steps.detect.outputs.signing == 'true' }}
+        shell: bash
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi

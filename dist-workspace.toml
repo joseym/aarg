@@ -9,6 +9,14 @@ cargo-dist-version = "0.32.0"
 ci = "github"
 # The installers to generate for each app
 installers = ["shell"]
+# dist's built-in local build gives us no place to sign the macOS binaries
+# between compiling and archiving, and its `macos-sign` support in 0.32 lacks
+# a timestamp, hardened runtime, and notarization. So we turn off the built-in
+# local build and take it over with build-artifacts.yml, which signs and
+# notarizes the two mac binaries before dist archives them. The switch is
+# all-or-nothing, so the custom job builds the linux target too.
+build-local-artifacts = false
+local-artifacts-jobs = ["./build-artifacts"]
 # Custom publish-phase job: pushes aarg-core, aarg-domain, and aarg to
 # crates.io in dependency order. Points at .github/workflows/publish-crates.yml.
 publish-jobs = ["./publish-crates"]
@@ -20,14 +28,15 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
-# PRs validate the release config without building; the full pipeline was
-# rehearsed in upload mode on the distribution PR (all three targets green).
-pr-run-mode = "plan"
-# Extra CI steps injected before the build: they compile the wasm bundle and
-# the Angular frontend so build.rs can embed web/dist into the binary. Kept in
-# .github/ (not .github/workflows/) because dist resolves this path relative to
-# the generated workflow file under .github/workflows/.
-github-build-setup = "../build-setup.yml"
+# Rehearsal for THIS PR: run the full custom local build (sign + notarize when
+# the secrets are loaded, skip loudly when not) on every push to the PR. Flip
+# back to "plan" once the signing path has proven itself on a real PR run.
+pr-run-mode = "upload"
+# The frontend (compiled wasm + Angular build) has to exist before cargo build,
+# because build.rs embeds web/dist into the binary. dist's github-build-setup
+# only injects into its built-in local build job, which build-artifacts.yml now
+# replaces, so those steps live inline in build-artifacts.yml (and, for the
+# crates.io verify build, in publish-crates.yml).
 
 # Only the `aarg` CLI ships; the `evals` bin in this package is a dev harness.
 [dist.binaries]
