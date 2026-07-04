@@ -469,6 +469,11 @@ responses in the browser, which today waits for a whole completion; and reaching
 the workspace safely past loopback (single-user, local-first is the design for
 now; `--bind` past localhost is opt-in and unauthenticated).
 
+## Contributing
+
+Build instructions, the workspace layout, and pull request expectations are
+in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Documentation
 
 - **[Use AARG from Claude (MCP)](docs/mcp.md):** run AARG as an MCP server for
