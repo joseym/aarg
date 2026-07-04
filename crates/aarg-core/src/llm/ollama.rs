@@ -1,0 +1,775 @@
+//! A hand-rolled client for Ollama's native chat API (`/api/chat`).
+//!
+//! Written directly against the wire format with `reqwest` — no SDK. Ollama's
+//! native API differs from the OpenAI dialect in three ways this module owns:
+//! the response is NDJSON (one JSON object per line, no `data:` prefix, no
+//! `[DONE]`), tool-call arguments arrive as a JSON *object* rather than an
+//! encoded string, and images ride in a message-level `images` array.
+//!
+//! The `num_ctx` option matters more than it looks. AARG's prompts run roughly
+//! 4k-8k tokens, and without an explicit `num_ctx` Ollama silently truncates a
+//! prompt to about 4096 tokens — no error, just a quietly shorter prompt. For a
+//! tool built on never fabricating from the dataset, a silently clipped prompt
+//! is evidence loss, so this client sizes `num_ctx` from an estimate of each
+//! prompt and, after the response, checks the server's reported token count to
+//! confirm nothing was clipped (see [`crate::llm::context`]).
+
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+use crate::llm::client::LlmClient;
+use crate::llm::context::{effective_num_ctx, estimate_prompt_tokens, looks_truncated};
+use crate::llm::types::{
+    Attachment, CompletionRequest, CompletionResponse, LlmError, Message, StreamEvent, TokenStream,
+    TokenUsage, ToolCall,
+};
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const COMPLETE_TIMEOUT: Duration = Duration::from_secs(600);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The default context-window floor, in tokens. Every request asks for at least
+/// this many, growing larger when the estimated prompt needs it.
+const DEFAULT_NUM_CTX: u32 = 8192;
+
+/// How long the model stays resident after a request, by default. Keeping it
+/// loaded avoids paying the multi-second load cost on the next call.
+const DEFAULT_KEEP_ALIVE: &str = "5m";
+
+/// An `LlmClient` backed by Ollama's native chat API.
+pub struct OllamaClient {
+    http: reqwest::Client,
+    base_url: String,
+    num_ctx: u32,
+    keep_alive: String,
+}
+
+impl OllamaClient {
+    /// Build a client pointed at `base_url` (e.g. `http://127.0.0.1:11434`),
+    /// with the default context floor and keep-alive.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            http: build_http(),
+            base_url: base_url.into(),
+            num_ctx: DEFAULT_NUM_CTX,
+            keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
+        }
+    }
+
+    /// Set the context-window floor. Each request still grows the window above
+    /// this when the prompt needs it; this is the minimum, not a cap.
+    pub fn with_num_ctx(mut self, num_ctx: u32) -> Self {
+        self.num_ctx = num_ctx;
+        self
+    }
+
+    /// Set how long the model stays loaded after a request (Ollama duration
+    /// syntax, e.g. `"5m"`, `"30s"`, `"0"` to unload immediately).
+    pub fn with_keep_alive(mut self, keep_alive: impl Into<String>) -> Self {
+        self.keep_alive = keep_alive.into();
+        self
+    }
+
+    async fn post_chat(
+        &self,
+        request: &CompletionRequest,
+        stream: bool,
+        num_ctx: u32,
+    ) -> Result<reqwest::Response, LlmError> {
+        let mut builder = self.http.post(format!("{}/api/chat", self.base_url));
+        if !stream {
+            builder = builder.timeout(COMPLETE_TIMEOUT);
+        }
+        let body = request_body(request, stream, &self.keep_alive, num_ctx)?;
+        Ok(builder.json(&body).send().await?)
+    }
+}
+
+fn build_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+// ---- request assembly ---------------------------------------------------
+
+/// Build the `/api/chat` request body. `num_ctx` and `num_predict` (our
+/// `max_tokens`) always ride in `options`; `temperature` joins only when set.
+/// Fails only when a message carries a PDF attachment (see [`push_wire_message`]).
+fn request_body(
+    request: &CompletionRequest,
+    stream: bool,
+    keep_alive: &str,
+    num_ctx: u32,
+) -> Result<Value, LlmError> {
+    let messages = build_messages(&request.system, &request.messages)?;
+    let mut options = json!({
+        "num_ctx": num_ctx,
+        "num_predict": request.max_tokens,
+    });
+    if let Some(temperature) = request.temperature {
+        options["temperature"] = json!(temperature);
+    }
+    let mut body = json!({
+        "model": request.model,
+        "messages": messages,
+        "stream": stream,
+        "keep_alive": keep_alive,
+        "options": options,
+    });
+    if !request.tools.is_empty() {
+        body["tools"] = json!(wire_tools(&request.tools));
+    }
+    Ok(body)
+}
+
+/// The `messages` array: a leading `system` message when present, then every
+/// turn expanded to Ollama shape.
+fn build_messages(system: &Option<String>, messages: &[Message]) -> Result<Vec<Value>, LlmError> {
+    let mut out = Vec::new();
+    if let Some(system) = system {
+        out.push(json!({"role": "system", "content": system}));
+    }
+    for message in messages {
+        push_wire_message(message, &mut out)?;
+    }
+    Ok(out)
+}
+
+/// Expand one message into the Ollama messages it becomes: a `{"role": "tool"}`
+/// message per tool result, then at most one more message for the turn's own
+/// content, images, and tool calls.
+fn push_wire_message(message: &Message, out: &mut Vec<Value>) -> Result<(), LlmError> {
+    for result in &message.tool_results {
+        let mut tool = json!({"role": "tool", "content": result.content});
+        // Ollama tolerates an extra `tool_call_id`, and passing it keeps a
+        // result matched to its call when the model emitted an id.
+        if !result.call_id.is_empty() {
+            tool["tool_call_id"] = json!(result.call_id);
+        }
+        out.push(tool);
+    }
+    let has_body = !message.content.is_empty()
+        || !message.tool_calls.is_empty()
+        || !message.attachments.is_empty();
+    if !has_body {
+        return Ok(());
+    }
+    let mut wire = json!({"role": message.role, "content": message.content});
+    let mut images = Vec::new();
+    for attachment in &message.attachments {
+        match attachment {
+            // Ollama takes bare base64 in `images`; it detects the media type
+            // itself, so the stored `media_type` isn't sent.
+            Attachment::Image { data, .. } => images.push(json!(data)),
+            Attachment::Pdf { .. } => return Err(pdf_unsupported()),
+        }
+    }
+    if !images.is_empty() {
+        wire["images"] = json!(images);
+    }
+    if !message.tool_calls.is_empty() {
+        let calls: Vec<Value> = message
+            .tool_calls
+            .iter()
+            .map(|call| json!({"function": {"name": call.name, "arguments": call.args}}))
+            .collect();
+        wire["tool_calls"] = json!(calls);
+    }
+    out.push(wire);
+    Ok(())
+}
+
+/// The `tools` array, the same `{"type": "function", "function": {name,
+/// description, parameters}}` shape the OpenAI dialect uses.
+fn wire_tools(tools: &[crate::llm::ToolSpec]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                },
+            })
+        })
+        .collect()
+}
+
+/// The typed refusal for a PDF attachment; status `0` marks it synthesized
+/// locally rather than a server response.
+fn pdf_unsupported() -> LlmError {
+    LlmError::Api {
+        status: 0,
+        kind: "unsupported_attachment".to_string(),
+        message: "local providers cannot read PDF attachments; extract the text \
+                  and send it through aarg's text ingest instead"
+            .to_string(),
+    }
+}
+
+/// The typed error for a prompt the model clipped to fit its context window. A
+/// clipped prompt means the model answered from partial evidence, so the caller
+/// must see this rather than a plausible-looking completion built on less than
+/// it was given.
+fn truncated(prompt_eval_count: u64, estimate: u64) -> LlmError {
+    LlmError::Api {
+        status: 0,
+        kind: "context_truncated".to_string(),
+        message: format!(
+            "the model clipped the prompt to fit its context window (processed \
+             ~{prompt_eval_count} tokens of an estimated ~{estimate}); the answer \
+             would be built on a partial prompt — use a model with a larger context \
+             window, or shorten the input"
+        ),
+    }
+}
+
+// ---- non-streaming response parsing -------------------------------------
+
+#[derive(Deserialize)]
+struct WireResponse {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    message: WireMessage,
+    #[serde(default)]
+    done_reason: Option<String>,
+    #[serde(default)]
+    prompt_eval_count: u64,
+    #[serde(default)]
+    eval_count: u64,
+}
+
+#[derive(Deserialize, Default)]
+struct WireMessage {
+    #[serde(default)]
+    content: String,
+    // `thinking` and any other field the server adds are ignored by default.
+    #[serde(default)]
+    tool_calls: Vec<WireToolCall>,
+}
+
+#[derive(Deserialize)]
+struct WireToolCall {
+    function: WireFunction,
+}
+
+#[derive(Deserialize)]
+struct WireFunction {
+    #[serde(default)]
+    name: String,
+    // Ollama usually sends an object here, but some builds send a JSON-encoded
+    // string; `normalize_args` accepts either.
+    #[serde(default)]
+    arguments: Value,
+}
+
+fn parse_completion(body: &str) -> Result<CompletionResponse, LlmError> {
+    let wire: WireResponse = serde_json::from_str(body).map_err(LlmError::Parse)?;
+    let tool_calls = wire
+        .message
+        .tool_calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, call)| parse_tool_call(index, call))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CompletionResponse {
+        text: wire.message.content,
+        tool_calls,
+        model: wire.model,
+        stop_reason: wire.done_reason,
+        usage: TokenUsage {
+            input_tokens: wire.prompt_eval_count,
+            output_tokens: wire.eval_count,
+        },
+    })
+}
+
+/// Turn one wire tool call into a `ToolCall`. Ollama assigns no call id, so one
+/// is synthesized from the call's position, giving a later tool result a stable
+/// handle to echo back.
+fn parse_tool_call(index: usize, wire: WireToolCall) -> Result<ToolCall, LlmError> {
+    Ok(ToolCall {
+        id: format!("call_{index}"),
+        name: wire.function.name,
+        args: normalize_args(wire.function.arguments)?,
+    })
+}
+
+/// Coerce a tool call's arguments to a `Value` whether they arrived as an
+/// object (the usual case) or a JSON-encoded string (some builds). A malformed
+/// string is a loud `Parse` error, never a silently-empty call.
+fn normalize_args(arguments: Value) -> Result<Value, LlmError> {
+    match arguments {
+        Value::String(text) => {
+            if text.trim().is_empty() {
+                Ok(json!({}))
+            } else {
+                serde_json::from_str(&text).map_err(LlmError::Parse)
+            }
+        }
+        Value::Null => Ok(json!({})),
+        other => Ok(other),
+    }
+}
+
+/// Turn a non-2xx response into a typed error. Ollama reports errors as
+/// `{"error": "message"}`; a bogus model name comes back as a 404. Anything
+/// that isn't the error envelope falls back to the raw body.
+fn parse_api_error(status: u16, body: &str) -> LlmError {
+    #[derive(Deserialize)]
+    struct Envelope {
+        error: String,
+    }
+    let message = match serde_json::from_str::<Envelope>(body) {
+        Ok(envelope) => envelope.error,
+        Err(_) => body.trim().to_string(),
+    };
+    LlmError::Api {
+        status,
+        kind: "error".to_string(),
+        message,
+    }
+}
+
+// ---- streaming (NDJSON) -------------------------------------------------
+
+#[derive(Deserialize)]
+struct WireStreamChunk {
+    #[serde(default)]
+    message: WireStreamMessage,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    done_reason: Option<String>,
+    #[serde(default)]
+    prompt_eval_count: u64,
+    #[serde(default)]
+    eval_count: u64,
+    // A mid-stream failure arrives as an `error` line rather than an HTTP status.
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct WireStreamMessage {
+    #[serde(default)]
+    content: String,
+    // `thinking` is ignored.
+}
+
+/// The final token stats a `done` line reports, handed back so the caller can
+/// run the truncation check against them.
+#[derive(Default)]
+struct DoneStats {
+    prompt_eval_count: u64,
+}
+
+/// Interpret one NDJSON line. A non-final line contributes a text delta; the
+/// `done` line emits `Done` and reports its stats through `stats`; an `error`
+/// line becomes a `Stream` error. Blank lines are ignored.
+fn handle_ndjson_line(line: &str, stats: &mut DoneStats) -> Result<Option<StreamEvent>, LlmError> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(None);
+    }
+    let chunk: WireStreamChunk = serde_json::from_str(line).map_err(LlmError::Parse)?;
+    if let Some(error) = chunk.error {
+        return Err(LlmError::Stream(error));
+    }
+    if chunk.done {
+        stats.prompt_eval_count = chunk.prompt_eval_count;
+        return Ok(Some(StreamEvent::Done {
+            stop_reason: chunk.done_reason,
+            usage: TokenUsage {
+                input_tokens: chunk.prompt_eval_count,
+                output_tokens: chunk.eval_count,
+            },
+        }));
+    }
+    if !chunk.message.content.is_empty() {
+        return Ok(Some(StreamEvent::TextDelta(chunk.message.content)));
+    }
+    Ok(None)
+}
+
+/// Pull complete lines off the front of `buffer`, dropping the trailing newline
+/// and tolerating `\r\n`. NDJSON is one object per line, so a line is the parse
+/// unit; a partial final line stays buffered.
+fn drain_lines(buffer: &mut Vec<u8>) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Some(pos) = buffer.iter().position(|&byte| byte == b'\n') {
+        let line: Vec<u8> = buffer.drain(..=pos).collect();
+        let text = String::from_utf8_lossy(&line);
+        lines.push(
+            text.trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string(),
+        );
+    }
+    lines
+}
+
+#[async_trait]
+impl LlmClient for OllamaClient {
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        let estimate = estimate_prompt_tokens(&request);
+        let num_ctx = effective_num_ctx(self.num_ctx, estimate, request.max_tokens);
+        let response = self.post_chat(&request, false, num_ctx).await?;
+        let status = response.status().as_u16();
+        let body = response.text().await?;
+        if !(200..300).contains(&status) {
+            return Err(parse_api_error(status, &body));
+        }
+        let completion = parse_completion(&body)?;
+        if looks_truncated(completion.usage.input_tokens, num_ctx, estimate) {
+            return Err(truncated(completion.usage.input_tokens, estimate));
+        }
+        Ok(completion)
+    }
+
+    async fn stream(&self, request: CompletionRequest) -> Result<TokenStream, LlmError> {
+        let estimate = estimate_prompt_tokens(&request);
+        let num_ctx = effective_num_ctx(self.num_ctx, estimate, request.max_tokens);
+        let response = self.post_chat(&request, true, num_ctx).await?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.text().await?;
+            return Err(parse_api_error(status, &body));
+        }
+
+        let (tx, rx) = mpsc::channel(32);
+        let mut bytes = response.bytes_stream();
+        tokio::spawn(async move {
+            let mut buffer: Vec<u8> = Vec::new();
+            let mut stats = DoneStats::default();
+            loop {
+                let next = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next()).await;
+                let chunk = match next {
+                    Err(_elapsed) => {
+                        let _ = tx
+                            .send(Err(LlmError::Stream(
+                                "no data from the model for 120s".to_string(),
+                            )))
+                            .await;
+                        return;
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Ok(chunk))) => chunk,
+                    Ok(Some(Err(error))) => {
+                        let _ = tx.send(Err(LlmError::Http(error))).await;
+                        return;
+                    }
+                };
+                buffer.extend_from_slice(&chunk);
+                for line in drain_lines(&mut buffer) {
+                    match handle_ndjson_line(&line, &mut stats) {
+                        Ok(Some(StreamEvent::Done { stop_reason, usage })) => {
+                            // The same truncation guard as `complete`, applied
+                            // to the stream's final stats before Done goes out.
+                            if looks_truncated(stats.prompt_eval_count, num_ctx, estimate) {
+                                let _ = tx
+                                    .send(Err(truncated(stats.prompt_eval_count, estimate)))
+                                    .await;
+                                return;
+                            }
+                            let _ = tx.send(Ok(StreamEvent::Done { stop_reason, usage })).await;
+                            return;
+                        }
+                        Ok(Some(event)) => {
+                            if tx.send(Ok(event)).await.is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let _ = tx.send(Err(error)).await;
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::llm::types::{Message, Role, ToolResult, ToolSpec};
+
+    fn request() -> CompletionRequest {
+        CompletionRequest {
+            model: "qwen3:8b".to_string(),
+            max_tokens: 64,
+            system: None,
+            messages: vec![Message::user("hello")],
+            temperature: None,
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn request_body_places_system_first_and_sets_options() {
+        let mut req = request();
+        req.system = Some("be brief".to_string());
+        let body = request_body(&req, false, "5m", 8192).unwrap();
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "be brief");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["keep_alive"], "5m");
+        assert_eq!(body["options"]["num_ctx"], 8192);
+        assert_eq!(body["options"]["num_predict"], 64);
+        assert!(body["options"].get("temperature").is_none());
+    }
+
+    #[test]
+    fn request_body_includes_temperature_when_set() {
+        let mut req = request();
+        req.temperature = Some(0.5);
+        let body = request_body(&req, false, "5m", 8192).unwrap();
+        assert!((body["options"]["temperature"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn request_body_writes_the_tools_array_shape() {
+        let mut req = request();
+        req.tools = vec![ToolSpec {
+            name: "fetch_jd".into(),
+            description: "Fetch a posting".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let tool = &body["tools"][0];
+        assert_eq!(tool["type"], "function");
+        assert_eq!(tool["function"]["name"], "fetch_jd");
+        assert_eq!(tool["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn request_body_round_trips_tool_calls_and_results() {
+        let mut req = request();
+        req.messages = vec![
+            Message::user("get it"),
+            Message {
+                role: Role::Assistant,
+                content: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call_0".into(),
+                    name: "fetch_jd".into(),
+                    args: serde_json::json!({"url": "https://x"}),
+                }],
+                tool_results: Vec::new(),
+                attachments: Vec::new(),
+            },
+            Message::tool_results(vec![ToolResult {
+                call_id: "call_0".into(),
+                content: "the posting".into(),
+                is_error: false,
+            }]),
+        ];
+        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        // Native Ollama carries the arguments as an object, not a string.
+        let call = &messages[1]["tool_calls"][0];
+        assert_eq!(call["function"]["name"], "fetch_jd");
+        assert_eq!(call["function"]["arguments"]["url"], "https://x");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["content"], "the posting");
+        assert_eq!(messages[2]["tool_call_id"], "call_0");
+    }
+
+    #[test]
+    fn request_body_writes_an_image_into_the_images_array() {
+        let mut req = request();
+        req.messages = vec![Message::user_with_attachment(
+            "describe this",
+            Attachment::Image {
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            },
+        )];
+        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let message = &body["messages"][0];
+        assert_eq!(message["content"], "describe this");
+        // Bare base64, no data: URI, no media type.
+        assert_eq!(message["images"][0], "aGVsbG8=");
+    }
+
+    #[test]
+    fn a_pdf_attachment_is_refused_loudly() {
+        let mut req = request();
+        req.messages = vec![Message::user_with_attachment(
+            "read this",
+            Attachment::Pdf {
+                data: "JVBERi0=".into(),
+            },
+        )];
+        let err = request_body(&req, false, "5m", 8192).unwrap_err();
+        match err {
+            LlmError::Api { kind, message, .. } => {
+                assert_eq!(kind, "unsupported_attachment");
+                assert!(message.contains("PDF"));
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn effective_num_ctx_escalates_above_the_floor_for_a_long_prompt() {
+        let mut req = request();
+        // ~40000 chars of prompt ≈ 10000 tokens, over the 8192 floor.
+        req.messages = vec![Message::user("x".repeat(40_000))];
+        let estimate = estimate_prompt_tokens(&req);
+        let num_ctx = effective_num_ctx(DEFAULT_NUM_CTX, estimate, req.max_tokens);
+        assert!(
+            num_ctx > DEFAULT_NUM_CTX,
+            "num_ctx {num_ctx} should exceed the floor"
+        );
+        let body = request_body(&req, false, "5m", num_ctx).unwrap();
+        assert_eq!(body["options"]["num_ctx"], num_ctx);
+    }
+
+    #[test]
+    fn parse_completion_reads_content_usage_and_tool_calls() {
+        let body = r#"{
+            "model": "qwen3:8b",
+            "message": {"role": "assistant", "content": "",
+                "thinking": "hmm",
+                "tool_calls": [
+                    {"function": {"name": "fetch_jd", "arguments": {"url": "https://x"}}}
+                ]},
+            "done_reason": "stop",
+            "done": true,
+            "prompt_eval_count": 30,
+            "eval_count": 12
+        }"#;
+        let response = parse_completion(body).unwrap();
+        assert_eq!(response.text, "");
+        assert_eq!(response.tool_calls.len(), 1);
+        // Native arguments arrive as an object; the synthesized id is index-based.
+        assert_eq!(response.tool_calls[0].id, "call_0");
+        assert_eq!(response.tool_calls[0].name, "fetch_jd");
+        assert_eq!(response.tool_calls[0].args["url"], "https://x");
+        assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+        assert_eq!(response.usage.input_tokens, 30);
+        assert_eq!(response.usage.output_tokens, 12);
+    }
+
+    #[test]
+    fn parse_completion_accepts_string_encoded_tool_arguments() {
+        // Some builds send arguments as a JSON-encoded string; handle both.
+        let body = r#"{
+            "model": "m",
+            "message": {"role": "assistant", "content": "",
+                "tool_calls": [
+                    {"function": {"name": "x", "arguments": "{\"a\": 1}"}}
+                ]},
+            "done": true
+        }"#;
+        let response = parse_completion(body).unwrap();
+        assert_eq!(response.tool_calls[0].args["a"], 1);
+    }
+
+    #[test]
+    fn parse_completion_rejects_malformed_string_arguments() {
+        let body = r#"{
+            "message": {"tool_calls": [{"function": {"name": "x", "arguments": "{bad"}}]}
+        }"#;
+        let err = parse_completion(body).unwrap_err();
+        assert!(matches!(err, LlmError::Parse(_)));
+    }
+
+    #[test]
+    fn parse_api_error_reads_the_error_string() {
+        let body = r#"{"error": "model 'bogus' not found, try pulling it first"}"#;
+        match parse_api_error(404, body) {
+            LlmError::Api {
+                status,
+                kind,
+                message,
+            } => {
+                assert_eq!(status, 404);
+                assert_eq!(kind, "error");
+                assert!(message.contains("not found"));
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+        // A non-envelope body falls back to raw.
+        match parse_api_error(502, "upstream down") {
+            LlmError::Api { message, .. } => assert_eq!(message, "upstream down"),
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complete_detects_a_truncated_prompt() {
+        // The response reports a prompt_eval_count pinned at the window while
+        // the estimate is far higher: the prompt was clipped.
+        assert!(looks_truncated(8192, 8192, 12000));
+        // And the typed error names the shortfall.
+        match truncated(8192, 12000) {
+            LlmError::Api { kind, message, .. } => {
+                assert_eq!(kind, "context_truncated");
+                assert!(message.contains("~8192"));
+                assert!(message.contains("~12000"));
+                assert!(message.contains("larger context"));
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_lines_handles_split_and_crlf_lines() {
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(b"{\"done\": fal");
+        assert!(drain_lines(&mut buffer).is_empty());
+        buffer.extend_from_slice(b"se}\n{\"done\": true}\r\n");
+        let lines = drain_lines(&mut buffer);
+        assert_eq!(lines, vec![r#"{"done": false}"#, r#"{"done": true}"#]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn handle_ndjson_line_streams_deltas_then_done_with_stats() {
+        let mut stats = DoneStats::default();
+
+        let delta = r#"{"message": {"role": "assistant", "content": "Hi", "thinking": "x"}, "done": false}"#;
+        assert_eq!(
+            handle_ndjson_line(delta, &mut stats).unwrap(),
+            Some(StreamEvent::TextDelta("Hi".to_string()))
+        );
+
+        let done = r#"{"message": {"role": "assistant", "content": ""}, "done": true, "done_reason": "stop", "prompt_eval_count": 15, "eval_count": 6}"#;
+        match handle_ndjson_line(done, &mut stats).unwrap() {
+            Some(StreamEvent::Done { stop_reason, usage }) => {
+                assert_eq!(stop_reason.as_deref(), Some("stop"));
+                assert_eq!(usage.input_tokens, 15);
+                assert_eq!(usage.output_tokens, 6);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert_eq!(stats.prompt_eval_count, 15);
+    }
+
+    #[test]
+    fn handle_ndjson_line_surfaces_a_mid_stream_error() {
+        let mut stats = DoneStats::default();
+        let err = handle_ndjson_line(r#"{"error": "out of memory"}"#, &mut stats).unwrap_err();
+        assert!(matches!(err, LlmError::Stream(_)));
+    }
+}
