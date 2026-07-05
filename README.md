@@ -347,9 +347,9 @@ AARG can run the whole loop against a model on your own machine, with no API key
 and no per-token cost. Two local providers are supported: [LM Studio](https://lmstudio.ai)
 (through its OpenAI-compatible server) and [Ollama](https://ollama.com). Start the
 server, run `aarg init`, and pick the provider; on a local provider `init` skips
-the key step and lets you choose a model the server already has. The full walk
-through, including which models work well and the server settings that matter,
-is in [docs/local-models.md](docs/local-models.md).
+the key step and lets you choose a model the server already has. The full
+walkthrough, including which models work well and the server settings that
+matter, is in [docs/local-models.md](docs/local-models.md).
 
 Set the provider and model in `config.toml`, either through `aarg init` or by
 hand:
