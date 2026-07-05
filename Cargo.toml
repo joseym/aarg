@@ -3,7 +3,7 @@ members = ["crates/aarg-core", "crates/aarg-domain", "crates/aarg-wasm"]
 
 [package]
 name = "aarg"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 # File::try_lock in the dataset store needs 1.89's stabilized file locking.
 rust-version = "1.89"
@@ -27,8 +27,8 @@ include = [
 ]
 
 [dependencies]
-aarg-core = { path = "crates/aarg-core", version = "0.4.0" }
-aarg-domain = { path = "crates/aarg-domain", version = "0.4.0" }
+aarg-core = { path = "crates/aarg-core", version = "0.5.0" }
+aarg-domain = { path = "crates/aarg-domain", version = "0.5.0" }
 async-trait = "0.1.89"
 # Encode image/PDF bytes for the vision content blocks sent to the model.
 base64 = "0.22"
