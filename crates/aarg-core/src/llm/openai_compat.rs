@@ -22,6 +22,7 @@
 //! when the prefix KV cache is hit (repeats of a shared-prefix request kept
 //! reporting the full count while wall time collapsed 14x).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -59,6 +60,13 @@ pub struct OpenAiCompatClient {
     http: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
+    /// Hidden-reasoning tokens the most recent successful `complete` call
+    /// spent, from `usage.completion_tokens_details.reasoning_tokens`; 0 when
+    /// the server reported none. An atomic counter rather than a `Mutex`
+    /// because it is one number written once per completion. Read through
+    /// `hidden_reasoning_tokens` so `aarg llm ping` can tell the user their
+    /// model reasons before a long build finds out the hard way.
+    last_reasoning: AtomicU64,
 }
 
 impl OpenAiCompatClient {
@@ -72,6 +80,7 @@ impl OpenAiCompatClient {
             http: build_http(),
             base_url: normalize_base_url(base_url.into()),
             api_key: None,
+            last_reasoning: AtomicU64::new(0),
         }
     }
 
@@ -317,6 +326,28 @@ struct WireUsage {
     prompt_tokens: u64,
     #[serde(default)]
     completion_tokens: u64,
+    /// LM Studio reports how the completion tokens split; the interesting
+    /// number is `reasoning_tokens`, the part a reasoning model spent on
+    /// hidden chain of thought (probed live: 14 of 16 on qwen3-1.7b, 0 on
+    /// qwen2.5-vl-7b-instruct). Absent on servers that don't report it.
+    #[serde(default)]
+    completion_tokens_details: Option<WireCompletionDetails>,
+}
+
+#[derive(Deserialize, Default, Clone, Copy)]
+struct WireCompletionDetails {
+    #[serde(default)]
+    reasoning_tokens: u64,
+}
+
+impl WireUsage {
+    /// The hidden-reasoning token count, when the server reported one above
+    /// zero. Zero and absent read the same: this model spent nothing on
+    /// hidden reasoning, so there is nothing to warn about.
+    fn hidden_reasoning(&self) -> Option<u64> {
+        let count = self.completion_tokens_details?.reasoning_tokens;
+        (count > 0).then_some(count)
+    }
 }
 
 impl From<WireUsage> for TokenUsage {
@@ -357,7 +388,7 @@ fn parse_completion(status: u16, body: &str) -> Result<CompletionResponse, LlmEr
         .map(parse_tool_call)
         .collect::<Result<Vec<_>, _>>()?;
     if text.is_empty() && tool_calls.is_empty() && finish_reason.as_deref() == Some("length") {
-        return Err(empty_reply_at_limit(status));
+        return Err(empty_reply_at_limit(status, wire.usage.hidden_reasoning()));
     }
     Ok(CompletionResponse {
         text,
@@ -374,17 +405,37 @@ fn parse_completion(status: u16, body: &str) -> Result<CompletionResponse, LlmEr
 /// surface downstream as an empty reply and a JSON parse failure the user
 /// cannot act on (probed live against LM Studio with a reasoning model and a
 /// small budget: `finish_reason: "length"`, all tokens in `reasoning_tokens`,
-/// `content: ""`).
-fn empty_reply_at_limit(status: u16) -> LlmError {
+/// `content: ""`). When the response says how many tokens went to hidden
+/// reasoning, the message names the count as the proof.
+fn empty_reply_at_limit(status: u16, reasoning_tokens: Option<u64>) -> LlmError {
+    let cause = match reasoning_tokens {
+        Some(count) => format!("it spent {count} tokens on hidden reasoning"),
+        None => "a reasoning model can spend the whole limit on hidden thinking".to_string(),
+    };
     LlmError::Api {
         status,
         kind: "empty_reply".to_string(),
-        message: "the model hit its reply limit without producing any visible \
-                  text; a reasoning model can spend the whole limit on hidden \
-                  thinking, so point this tier at a non-reasoning (instruct) \
-                  model"
-            .to_string(),
+        message: format!(
+            "the model hit its reply limit without producing any visible \
+             text; {cause}, so point this tier at a non-reasoning (instruct) \
+             model"
+        ),
     }
+}
+
+/// The hidden-reasoning count in a raw 2xx body, for the client to remember
+/// after a successful completion. A second parse of just the usage object,
+/// so `parse_completion` keeps its one job and one return value.
+fn reasoning_tokens_in(body: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(default)]
+        usage: WireUsage,
+    }
+    serde_json::from_str::<Envelope>(body)
+        .ok()?
+        .usage
+        .hidden_reasoning()
 }
 
 /// Whether a body is the error envelope (either OpenAI shape), regardless of
@@ -530,6 +581,9 @@ struct StreamState {
     /// limit without one is a reply spent entirely on hidden reasoning, and
     /// `checked_done` refuses it the same way the blocking path does.
     saw_text: bool,
+    /// The hidden-reasoning count from the trailing usage chunk, if reported.
+    /// It names the proof when the empty-reply refusal fires.
+    reasoning_tokens: Option<u64>,
 }
 
 /// Interpret one SSE line: update the accumulated state and return the event to
@@ -554,6 +608,7 @@ fn handle_sse_line(line: &str, state: &mut StreamState) -> Result<Option<StreamE
     let chunk: WireChunk = serde_json::from_str(data).map_err(LlmError::Parse)?;
     if let Some(usage) = chunk.usage {
         // The final chunk carries usage with an empty `choices` array.
+        state.reasoning_tokens = usage.hidden_reasoning();
         state.usage = usage.into();
     }
     if let Some(choice) = chunk.choices.into_iter().next() {
@@ -584,7 +639,17 @@ impl LlmClient for OpenAiCompatClient {
         if looks_clamped(completion.usage.input_tokens, estimate) {
             return Err(clamped(completion.usage.input_tokens, estimate));
         }
+        // Remember what this reply spent on hidden reasoning (0 when the
+        // server reported none), so `hidden_reasoning_tokens` describes the
+        // completion that just happened, not a stale one.
+        self.last_reasoning
+            .store(reasoning_tokens_in(&body).unwrap_or(0), Ordering::Relaxed);
         Ok(completion)
+    }
+
+    fn hidden_reasoning_tokens(&self) -> Option<u64> {
+        let count = self.last_reasoning.load(Ordering::Relaxed);
+        (count > 0).then_some(count)
     }
 
     async fn stream(&self, request: CompletionRequest) -> Result<TokenStream, LlmError> {
@@ -613,12 +678,13 @@ fn checked_done(
     usage: TokenUsage,
     estimate: u64,
     saw_text: bool,
+    reasoning_tokens: Option<u64>,
 ) -> Result<StreamEvent, LlmError> {
     if looks_clamped(usage.input_tokens, estimate) {
         return Err(clamped(usage.input_tokens, estimate));
     }
     if !saw_text && stop_reason.as_deref() == Some("length") {
-        return Err(empty_reply_at_limit(200));
+        return Err(empty_reply_at_limit(200, reasoning_tokens));
     }
     Ok(StreamEvent::Done { stop_reason, usage })
 }
@@ -673,7 +739,13 @@ async fn pump_sse<B, S>(
             match handle_sse_line(&line, &mut state) {
                 Ok(Some(StreamEvent::Done { stop_reason, usage })) => {
                     let _ = tx
-                        .send(checked_done(stop_reason, usage, estimate, state.saw_text))
+                        .send(checked_done(
+                            stop_reason,
+                            usage,
+                            estimate,
+                            state.saw_text,
+                            state.reasoning_tokens,
+                        ))
                         .await;
                     return;
                 }
@@ -702,6 +774,7 @@ async fn pump_sse<B, S>(
                 state.usage,
                 estimate,
                 state.saw_text,
+                state.reasoning_tokens,
             ))
             .await;
     } else {
@@ -940,6 +1013,8 @@ mod tests {
         // mid-thought: finish_reason "length", empty content, every completion
         // token in reasoning_content. The old behavior passed the empty text
         // through and the agent's JSON parse failed with an empty snippet.
+        // Without a reasoning-token count, the message falls back to naming
+        // the likely cause.
         let body = r#"{
             "model": "ornith-1.0-35b",
             "choices": [
@@ -953,9 +1028,86 @@ mod tests {
             LlmError::Api { kind, message, .. } => {
                 assert_eq!(kind, "empty_reply");
                 assert!(message.contains("reply limit"), "got: {message}");
+                assert!(message.contains("can spend"), "got: {message}");
             }
             other => panic!("expected Api error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_empty_reply_refusal_names_the_reasoning_token_count() {
+        // The live-probed LM Studio shape: qwen3-1.7b at max_tokens 16 spent
+        // 14 tokens on hidden reasoning and answered nothing; the usage says
+        // so, and the refusal repeats it as the proof.
+        let body = r#"{
+            "model": "qwen3-1.7b",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": ""},
+                 "finish_reason": "length"}
+            ],
+            "usage": {"prompt_tokens": 15, "completion_tokens": 16,
+                      "completion_tokens_details": {"reasoning_tokens": 14}}
+        }"#;
+        match parse_completion(200, body).unwrap_err() {
+            LlmError::Api { kind, message, .. } => {
+                assert_eq!(kind, "empty_reply");
+                assert!(
+                    message.contains("spent 14 tokens on hidden reasoning"),
+                    "got: {message}"
+                );
+                assert!(message.contains("instruct"), "got: {message}");
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hidden_reasoning_reads_the_usage_details() {
+        // Reported and nonzero: the count comes through.
+        let usage: WireUsage = serde_json::from_str(
+            r#"{"prompt_tokens": 15, "completion_tokens": 16,
+                "completion_tokens_details": {"reasoning_tokens": 14}}"#,
+        )
+        .unwrap();
+        assert_eq!(usage.hidden_reasoning(), Some(14));
+        // Reported as zero (an instruct model on LM Studio): nothing to say.
+        let zero: WireUsage = serde_json::from_str(
+            r#"{"prompt_tokens": 26, "completion_tokens": 4,
+                "completion_tokens_details": {"reasoning_tokens": 0}}"#,
+        )
+        .unwrap();
+        assert_eq!(zero.hidden_reasoning(), None);
+        // Not reported at all (a server without the details block).
+        let absent: WireUsage =
+            serde_json::from_str(r#"{"prompt_tokens": 11, "completion_tokens": 3}"#).unwrap();
+        assert_eq!(absent.hidden_reasoning(), None);
+    }
+
+    #[test]
+    fn reasoning_tokens_in_reads_a_full_body_and_tolerates_garbage() {
+        let body = r#"{
+            "model": "qwen3-1.7b",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "pong"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 15, "completion_tokens": 220,
+                      "completion_tokens_details": {"reasoning_tokens": 210}}
+        }"#;
+        assert_eq!(reasoning_tokens_in(body), Some(210));
+        assert_eq!(reasoning_tokens_in(r#"{"usage": {}}"#), None);
+        assert_eq!(reasoning_tokens_in("not json"), None);
+    }
+
+    #[test]
+    fn the_client_remembers_the_last_reasoning_count() {
+        // A fresh client has seen no completion, so it claims nothing.
+        let client = OpenAiCompatClient::new("http://127.0.0.1:1234");
+        assert_eq!(client.hidden_reasoning_tokens(), None);
+        // After a completion whose usage carried a count, the getter reports
+        // it; a later one without a count clears it.
+        client.last_reasoning.store(210, Ordering::Relaxed);
+        assert_eq!(client.hidden_reasoning_tokens(), Some(210));
+        client.last_reasoning.store(0, Ordering::Relaxed);
+        assert_eq!(client.hidden_reasoning_tokens(), None);
     }
 
     #[test]
@@ -1122,7 +1274,7 @@ mod tests {
             output_tokens: 40,
         };
         // 7600 of an estimated 8000: the estimate ran a little high, fine.
-        match checked_done(Some("stop".to_string()), usage, 8000, true) {
+        match checked_done(Some("stop".to_string()), usage, 8000, true, None) {
             Ok(StreamEvent::Done { stop_reason, .. }) => {
                 assert_eq!(stop_reason.as_deref(), Some("stop"));
             }
@@ -1130,7 +1282,7 @@ mod tests {
         }
         // A server that reported no usage at all is not evidence of a clamp.
         let unreported = TokenUsage::default();
-        assert!(checked_done(None, unreported, 8000, true).is_ok());
+        assert!(checked_done(None, unreported, 8000, true, None).is_ok());
     }
 
     #[tokio::test]
@@ -1179,16 +1331,23 @@ mod tests {
     async fn a_stream_spent_entirely_on_reasoning_is_refused() {
         // A reasoning model whose whole budget went to reasoning_content
         // streams no text deltas and finishes with "length"; Done becomes the
-        // same refusal the blocking path gives an empty content.
+        // same refusal the blocking path gives an empty content, and the
+        // trailing usage chunk's reasoning count rides along as the proof.
         let events = run_pump(vec![
             b"data: {\"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"length\"}]}\n",
-            b"data: {\"choices\": [], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 64}}\n",
+            b"data: {\"choices\": [], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 64, \"completion_tokens_details\": {\"reasoning_tokens\": 62}}}\n",
             b"data: [DONE]\n",
         ])
         .await;
         assert_eq!(events.len(), 1);
         match &events[0] {
-            Err(LlmError::Api { kind, .. }) => assert_eq!(kind, "empty_reply"),
+            Err(LlmError::Api { kind, message, .. }) => {
+                assert_eq!(kind, "empty_reply");
+                assert!(
+                    message.contains("spent 62 tokens on hidden reasoning"),
+                    "got: {message}"
+                );
+            }
             other => panic!("expected Api error, got {other:?}"),
         }
     }

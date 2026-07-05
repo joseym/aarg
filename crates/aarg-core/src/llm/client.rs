@@ -19,4 +19,15 @@ pub trait LlmClient: Send + Sync {
 
     /// Send a request and receive the response incrementally.
     async fn stream(&self, request: CompletionRequest) -> Result<TokenStream, LlmError>;
+
+    /// How many tokens the most recent `complete` call spent on hidden
+    /// reasoning, when the provider reports a count. `None` when it reports
+    /// none or the client doesn't track it (the default). LM Studio's
+    /// OpenAI-compatible server reports one, and `aarg llm ping` uses it to
+    /// warn that a reasoning model will make slow builds and empty replies
+    /// likely; hosted providers bill visible and hidden tokens the same way,
+    /// so nothing else needs it.
+    fn hidden_reasoning_tokens(&self) -> Option<u64> {
+        None
+    }
 }
