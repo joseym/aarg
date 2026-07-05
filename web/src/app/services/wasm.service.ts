@@ -58,6 +58,24 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The human message inside a server error body `{"error":{"kind","message"}}`,
+ *  or the raw body when it isn't that envelope. Every aarg endpoint wraps its
+ *  errors in that envelope, and a rejection's text ends up verbatim in the UI
+ *  toast — so reject with the message ("start LM Studio…", "no model named…"),
+ *  never the JSON wrapper around it. */
+function serverErrorMessage(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } | string };
+    if (typeof parsed.error === 'string' && parsed.error) return parsed.error;
+    if (typeof parsed.error === 'object' && typeof parsed.error?.message === 'string') {
+      return parsed.error.message;
+    }
+  } catch {
+    // Not JSON — fall through to the raw body.
+  }
+  return body;
+}
+
 /** The earliest SSE frame boundary in `buffer`: a blank line, written either as
  *  `\n\n` or `\r\n\r\n`. The Rust SSE parser only splits on `\n\n` (EX-003), so
  *  this reader handles both endings itself. Returns the boundary's start index
@@ -353,11 +371,12 @@ export class WasmService {
           await delay(backoffMs[attempt]);
           continue;
         }
-        // Any other non-2xx (or an exhausted overload budget) is surfaced with
-        // the server's body so an actionable message (a missing credential, a
-        // Typst failure, an overload note) survives instead of a bare code.
+        // Any other non-2xx (or an exhausted overload budget) rejects with the
+        // message inside the server's error envelope, so an actionable line (a
+        // missing credential or model, an unreachable local server, an overload
+        // note) reaches the toast as plain text rather than wrapped in JSON.
         const body = await res.text().catch(() => '');
-        throw new Error(body || `/api/llm returned ${res.status}`);
+        throw new Error(serverErrorMessage(body) || `/api/llm returned ${res.status}`);
       }
 
       // Buffered fallback: no `text/event-stream` content type means the server

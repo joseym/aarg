@@ -83,8 +83,8 @@ pub async fn run(
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
     let ctx = AgentContext {
-        llm: &client,
-        model: &config.anthropic,
+        llm: &*client,
+        model: config.active_resolver(),
         tracer: &tracer,
         sink: None,
     };
@@ -123,15 +123,21 @@ pub async fn run(
     sp.finish(style::done("human resume rendered"));
 
     report(&ats_pdf, &human_pdf);
-    // Priced at the smart (reviewer) tier, which dominates the two calls. On a
-    // Claude plan the cost is covered by the flat fee, so say that instead.
+    // Priced at the smart (reviewer) tier, which dominates the two calls. A
+    // Claude plan covers the cost in its flat fee and a local model is free, so
+    // both say that instead of a dollar figure.
     let model = ctx
         .model
         .resolve("adversarial_reviewer_v1", ModelTier::Smart);
-    if client.is_subscription() {
-        eprintln!("  {}", style::dim("covered by your Claude plan"));
-    } else if let Some(cost) = crate::pricing::cost_usd(model, &total, &config.prices) {
-        eprintln!("  {}", style::dim(format!("~${cost:.2}")));
+    use crate::config::Billing;
+    match config.billing() {
+        Billing::Subscription => eprintln!("  {}", style::dim("covered by your Claude plan")),
+        Billing::Local => eprintln!("  {}", style::dim("local model, no cost")),
+        Billing::Metered => {
+            if let Some(cost) = crate::pricing::cost_usd(model, &total, &config.prices) {
+                eprintln!("  {}", style::dim(format!("~${cost:.2}")));
+            }
+        }
     }
     Ok(())
 }

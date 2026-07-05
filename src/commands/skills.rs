@@ -66,8 +66,8 @@ pub async fn add(name: Option<String>, category: Option<String>) -> Result<(), C
     let tracer = super::default_tracer().ok();
     let ctx = match (&provider, &tracer) {
         (Some((client, config)), Some(tracer)) => Some(AgentContext {
-            llm: client,
-            model: &config.anthropic,
+            llm: &**client,
+            model: config.active_resolver(),
             tracer,
             sink: None,
         }),
@@ -151,8 +151,8 @@ pub async fn verify() -> Result<(), CliError> {
     let tracer = super::default_tracer().ok();
     let ctx = match (&provider, &tracer) {
         (Some((client, config)), Some(tracer)) => Some(AgentContext {
-            llm: client,
-            model: &config.anthropic,
+            llm: &**client,
+            model: config.active_resolver(),
             tracer,
             sink: None,
         }),

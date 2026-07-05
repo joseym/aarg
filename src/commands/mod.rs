@@ -38,13 +38,15 @@ use std::path::{Path, PathBuf};
 use crate::agent::{AgentContext, ModelTier};
 use crate::ats::AtsError;
 use crate::builds::BuildError;
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, Provider};
 use crate::dataset::DatasetError;
 use crate::fetch::FetchError;
 use crate::gap::GapError;
 use crate::ingest::IngestError;
 use crate::jd::{JdError, JobRequirements};
-use crate::llm::{AnthropicClient, Attachment, Auth, LlmError};
+use crate::llm::{
+    AnthropicClient, Attachment, Auth, LlmClient, LlmError, OllamaClient, OpenAiCompatClient,
+};
 use crate::render::RenderError;
 use crate::review::ReviewError;
 use crate::secrets::{self, SecretsError};
@@ -55,12 +57,24 @@ use crate::trace::TraceError;
 use crate::user::{Answer, AskError, Question};
 use crate::variant::{ClaimDivergence, VariantError};
 
-/// Load the config, fetch the stored API key, and build the provider
-/// client — the preamble every LLM-backed command starts with. Extracted
-/// once the third consumer appeared (ping, ingest, jd parse); the model
-/// to use comes from the returned config.
-pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), CliError> {
+/// Load the config and build the client for whichever provider is active: the
+/// preamble every LLM-backed command starts with. Anthropic reads a credential
+/// (env, keychain, or a CLI-delegated token); the two local providers read no
+/// credential and only need their base URL and a configured model. Returns a
+/// boxed trait object so the whole product runs against any provider unchanged;
+/// the model to use comes from the returned config's active resolver.
+pub(crate) async fn configured_client() -> Result<(Box<dyn LlmClient>, Config), CliError> {
     let config = Config::load()?;
+    let client: Box<dyn LlmClient> = match config.provider {
+        Provider::Anthropic => Box::new(anthropic_client(&config).await?),
+        Provider::LmStudio => Box::new(lmstudio_client(&config)?),
+        Provider::Ollama => Box::new(ollama_client(&config)?),
+    };
+    Ok((client, config))
+}
+
+/// Build the Anthropic client, resolving its credential in priority order.
+async fn anthropic_client(config: &Config) -> Result<AnthropicClient, CliError> {
     let provider = config.provider;
 
     // Headless path: a credential in the environment wins over the keychain,
@@ -71,10 +85,10 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
     // (`auth_token_env` / `api_key_env`): point AARG at a private name to leave
     // the standard vars unset so they don't override Claude Code's own login.
     if let Some(token) = env_credential(config.anthropic.auth_token_env()) {
-        return Ok((AnthropicClient::with_auth(Auth::Oauth(token)), config));
+        return Ok(AnthropicClient::with_auth(Auth::Oauth(token)));
     }
     if let Some(key) = env_credential(config.anthropic.api_key_env()) {
-        return Ok((AnthropicClient::with_auth(Auth::ApiKey(key)), config));
+        return Ok(AnthropicClient::with_auth(Auth::ApiKey(key)));
     }
 
     // Desktop path: which stored key to use — a one-off `AARG_KEY=<label>`
@@ -89,7 +103,7 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
     // token from the official Anthropic CLI, which owns the OAuth refresh.
     if config.anthropic.kind_for(label) == crate::config::AuthKind::Cli {
         let token = fetch_cli_token(&config.anthropic.credential_command(label))?;
-        return Ok((AnthropicClient::with_auth(Auth::Oauth(token)), config));
+        return Ok(AnthropicClient::with_auth(Auth::Oauth(token)));
     }
 
     let secret = match secrets::load_api_key(provider.name(), label).await? {
@@ -116,7 +130,43 @@ pub(crate) async fn configured_client() -> Result<(AnthropicClient, Config), Cli
         crate::config::AuthKind::Oauth => Auth::Oauth(secret),
         crate::config::AuthKind::ApiKey | crate::config::AuthKind::Cli => Auth::ApiKey(secret),
     };
-    Ok((AnthropicClient::with_auth(auth), config))
+    Ok(AnthropicClient::with_auth(auth))
+}
+
+/// Build the LM Studio (OpenAI-compatible) client. No credential to resolve,
+/// just the base URL, but a local provider with no model configured can't run,
+/// so that is rejected up front with the exact key to set.
+fn lmstudio_client(config: &Config) -> Result<OpenAiCompatClient, CliError> {
+    require_local_model(config)?;
+    Ok(OpenAiCompatClient::new(config.lmstudio.base_url.clone()))
+}
+
+/// Build the Ollama client, threading the two optional knobs from config; an
+/// unset `num_ctx`/`keep_alive` leaves the client on its own defaults (8192,
+/// `"5m"`). Rejects a missing model the same way LM Studio does.
+fn ollama_client(config: &Config) -> Result<OllamaClient, CliError> {
+    require_local_model(config)?;
+    let mut client = OllamaClient::new(config.ollama.base_url.clone());
+    if let Some(num_ctx) = config.ollama.num_ctx {
+        client = client.with_num_ctx(num_ctx);
+    }
+    if let Some(keep_alive) = &config.ollama.keep_alive {
+        client = client.with_keep_alive(keep_alive.clone());
+    }
+    Ok(client)
+}
+
+/// A local provider ships no default model, so it is unusable until the user
+/// names one. Fail before the first request with the exact config key to set
+/// rather than sending an empty model name the server rejects opaquely.
+fn require_local_model(config: &Config) -> Result<(), CliError> {
+    if config.active_model().is_empty() {
+        return Err(CliError::MissingLocalModel {
+            provider: config.provider.name().to_string(),
+            path: Config::path()?.display().to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Fetch a fresh OAuth access token by running a `Cli`-delegated key's
@@ -671,7 +721,9 @@ pub enum CliError {
     Secrets(#[from] SecretsError),
 
     #[error(transparent)]
-    #[diagnostic(help("check the stored key and model with `aarg config`"))]
+    #[diagnostic(help(
+        "check the provider, model, and credential with `aarg config`; for a local provider, make sure LM Studio (or `ollama serve`) is running at the configured base_url"
+    ))]
     Llm(LlmError),
 
     #[error(transparent)]
@@ -846,6 +898,12 @@ pub enum CliError {
         "drop --variant ats, or use --variant human / --variant both so the human PDF (the one your template renders) is produced"
     ))]
     TemplateWithoutHuman,
+
+    #[error("provider is set to {provider}, but no model is configured")]
+    #[diagnostic(help(
+        "aarg ships no default local model; set one under [{provider}] in {path}, e.g. model = \"qwen2.5-coder:7b\", then re-run"
+    ))]
+    MissingLocalModel { provider: String, path: String },
 
     #[error("{label:?} is not a usable key label")]
     #[diagnostic(help(
