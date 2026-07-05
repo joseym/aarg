@@ -760,6 +760,7 @@ export class TailoringWorkspace implements OnDestroy {
         jd,
         canonical: bundle?.canonical ?? null,
         report: bundle?.adversarial_report ?? null,
+        pdfs: bundle?.pdfs ?? [],
       });
     });
   }

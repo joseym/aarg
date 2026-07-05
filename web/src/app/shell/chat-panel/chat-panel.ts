@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
+  computed,
   effect,
   inject,
   input,
@@ -13,18 +14,35 @@ import { HttpErrorResponse } from '@angular/common/http';
 
 import { ChatStore } from '../../services/chat-store';
 import { WasmService } from '../../services/wasm.service';
+import { ArtifactCard } from './artifact-card';
+import {
+  type ArtifactKind,
+  type ReplySegment,
+  isSlashDraft,
+  matchSlashCommand,
+  parseReply,
+  slashSuggestions,
+  stripMarkers,
+} from './artifacts';
 
 /** The min/max the resize handle clamps the panel width to (px). Below the min
  *  the transcript squishes; above the max it starves the workspace column. */
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 640;
 
-/** One rendered line of the conversation. `error` is a failed turn's message —
- *  shown in the transcript but never sent back as history, so the wire never
- *  ends on an orphaned user turn. */
+/** One rendered line of the conversation.
+ *  - `user`/`error` carry plain `text`. `error` is a failed turn's message,
+ *    shown in the transcript but never sent back as history, so the wire never
+ *    ends on an orphaned user turn.
+ *  - `assistant` carries `segments`: the reply parsed into prose runs and any
+ *    artifact cards the model attached with a marker, in order.
+ *  - `card` is a standalone artifact a slash command inserted client-side (no
+ *    model call), never part of the wire history. */
 interface ChatMessage {
-  kind: 'user' | 'assistant' | 'error';
-  text: string;
+  kind: 'user' | 'assistant' | 'error' | 'card';
+  text?: string;
+  segments?: ReplySegment[];
+  artifact?: ArtifactKind;
 }
 
 /** The chat panel: a third column between the build menu and the workspace that
@@ -37,6 +55,7 @@ interface ChatMessage {
   selector: 'app-chat-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '[class.open]': 'open()' },
+  imports: [ArtifactCard],
   template: `
     <aside class="chat-rail" [class.open]="open()">
       <div class="chat-inner" [style.width.px]="width()">
@@ -62,22 +81,45 @@ interface ChatMessage {
           } @else {
             <div class="ch-list">
               @for (m of messages(); track $index) {
-                <div class="ch-msg" [attr.data-kind]="m.kind">
-                  @if (m.kind === 'error') {
-                    <div class="ch-bubble err">
-                      <span class="err-label">Couldn't reach the model</span>
-                      {{ m.text }}
+                @switch (m.kind) {
+                  @case ('error') {
+                    <div class="ch-msg" data-kind="error">
+                      <div class="ch-bubble err">
+                        <span class="err-label">Couldn't reach the model</span>
+                        {{ m.text }}
+                      </div>
                     </div>
-                  } @else {
-                    <div class="ch-bubble">{{ m.text }}</div>
                   }
-                </div>
+                  @case ('assistant') {
+                    @for (seg of m.segments; track $index) {
+                      @if (asText(seg); as t) {
+                        <div class="ch-msg" data-kind="assistant">
+                          <div class="ch-bubble">{{ t }}</div>
+                        </div>
+                      } @else {
+                        <div class="ch-msg" data-kind="artifact">
+                          <app-artifact-card [artifact]="asArtifact(seg)" />
+                        </div>
+                      }
+                    }
+                  }
+                  @case ('card') {
+                    <div class="ch-msg" data-kind="artifact">
+                      <app-artifact-card [artifact]="m.artifact!" />
+                    </div>
+                  }
+                  @default {
+                    <div class="ch-msg" data-kind="user">
+                      <div class="ch-bubble">{{ m.text }}</div>
+                    </div>
+                  }
+                }
               }
               @if (pending() !== null) {
                 <div class="ch-msg" data-kind="assistant">
                   <div class="ch-bubble">
-                    @if (pending()) {
-                      {{ pending() }}<span class="caret" aria-hidden="true"></span>
+                    @if (streamedText()) {
+                      {{ streamedText() }}<span class="caret" aria-hidden="true"></span>
                     } @else {
                       <span class="typing" aria-label="Thinking"><i></i><i></i><i></i></span>
                     }
@@ -87,6 +129,22 @@ interface ChatMessage {
             </div>
           }
         </div>
+
+        @if (suggestions().length > 0) {
+          <div class="ch-slash" role="listbox" aria-label="Slash commands">
+            @for (c of suggestions(); track c.name) {
+              <button
+                class="ch-slash-row"
+                type="button"
+                role="option"
+                (click)="applySuggestion(c.name)"
+              >
+                <span class="ch-slash-name">/{{ c.name }}</span>
+                <span class="ch-slash-hint">{{ c.hint }}</span>
+              </button>
+            }
+          </div>
+        }
 
         <div class="ch-compose">
           <textarea
@@ -184,6 +242,10 @@ interface ChatMessage {
     .ch-msg { display: flex; }
     .ch-msg[data-kind='user'] { justify-content: flex-end; }
     .ch-msg[data-kind='assistant'], .ch-msg[data-kind='error'] { justify-content: flex-start; }
+    /* An artifact card spans the transcript width rather than sitting in a
+     * bubble; it is its own titled element. */
+    .ch-msg[data-kind='artifact'] { display: block; }
+    .ch-msg[data-kind='artifact'] app-artifact-card { display: block; width: 100%; }
 
     .ch-bubble {
       max-width: 86%; padding: 10px 13px; border-radius: 14px;
@@ -219,6 +281,27 @@ interface ChatMessage {
     }
     .typing i:nth-child(2) { animation-delay: 0.15s; }
     .typing i:nth-child(3) { animation-delay: 0.3s; }
+
+    /* Slash-command autocomplete: a small list that floats just above the
+     * compose box while the draft is a slash invocation. */
+    .ch-slash {
+      display: flex; flex-direction: column;
+      margin: 0 14px; border: 1px solid var(--border); border-radius: 10px;
+      background: var(--surface); overflow: hidden;
+    }
+    .ch-slash-row {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 7px 11px; border: none; background: none; cursor: pointer;
+      text-align: left; color: inherit;
+      border-bottom: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
+    }
+    .ch-slash-row:last-child { border-bottom: none; }
+    .ch-slash-row:hover { background: color-mix(in oklch, var(--accent) 8%, var(--surface)); }
+    .ch-slash-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .ch-slash-name {
+      font-family: var(--font-mono); font-size: 12px; color: var(--accent); flex-shrink: 0;
+    }
+    .ch-slash-hint { font-size: 12px; color: var(--muted); }
 
     .ch-compose {
       display: flex; align-items: flex-end; gap: 8px;
@@ -329,6 +412,15 @@ export class ChatPanel {
   /** The compose box's current text. */
   protected readonly draft = signal('');
 
+  /** The in-flight reply with any artifact markers stripped, including a
+   *  half-arrived trailing one, so a raw sentinel never flashes mid-stream. The
+   *  finalized reply is parsed into cards by {@link parseReply} on completion. */
+  protected readonly streamedText = computed(() => stripMarkers(this.pending() ?? ''));
+
+  /** The slash commands matching the current draft, for the autocomplete hint.
+   *  Empty unless the draft is a `/name` invocation still being typed. */
+  protected readonly suggestions = computed(() => slashSuggestions(this.draft()));
+
   /** The completed turns sent back as `chat_reply` history — only whole
    *  [user, assistant] pairs, so an errored turn never leaves an orphaned user
    *  turn on the wire. */
@@ -371,6 +463,23 @@ export class ChatPanel {
     return (ev.target as HTMLTextAreaElement).value;
   }
 
+  /** The prose of a reply segment, or null when it is an artifact card. Split
+   *  this way so the template renders a bubble for text and a card otherwise. */
+  protected asText(seg: ReplySegment): string | null {
+    return 'text' in seg ? seg.text : null;
+  }
+
+  /** The artifact of a card segment (only called when `asText` returned null). */
+  protected asArtifact(seg: ReplySegment): ArtifactKind {
+    return (seg as { artifact: ArtifactKind }).artifact;
+  }
+
+  /** Run the named slash command straight from the autocomplete list. */
+  protected applySuggestion(name: string): void {
+    this.draft.set(`/${name}`);
+    void this.send();
+  }
+
   /** True when there's a non-blank draft and a build to talk about. */
   protected canSend(): boolean {
     return this.draft().trim().length > 0 && this.store.context() !== null;
@@ -398,6 +507,14 @@ export class ChatPanel {
     const message = this.draft().trim();
     if (!message || this.busy() || !ctx) return;
 
+    // Slash commands are handled client-side with no model call: a known one
+    // inserts its artifact card straight from stored content, an unknown one
+    // gets a short hint. Either way the turn never reaches the LLM or the wire.
+    if (isSlashDraft(message)) {
+      this.runSlashCommand(message);
+      return;
+    }
+
     const turn = ++this.turnSeq;
     this.draft.set('');
     this.messages.update((m) => [...m, { kind: 'user', text: message }]);
@@ -421,7 +538,10 @@ export class ChatPanel {
         },
       );
       if (this.turnSeq !== turn) return; // superseded by a build switch: discard
-      this.messages.update((m) => [...m, { kind: 'assistant', text: reply }]);
+      // Parse the finalized reply into prose runs and any artifact cards the
+      // model attached with a marker. The RAW reply (markers included) is what
+      // goes back on the wire, so the model keeps continuity with what it said.
+      this.messages.update((m) => [...m, { kind: 'assistant', segments: parseReply(reply) }]);
       this.wireHistory = [
         ...history,
         { from_user: true, text: message },
@@ -442,6 +562,27 @@ export class ChatPanel {
         queueMicrotask(() => this.inputEl()?.nativeElement.focus());
       }
     }
+  }
+
+  /** Apply a `/name` draft: insert the matched command's artifact card, or show
+   *  a one-line hint for an unknown command. Pure client-side — no model call,
+   *  and nothing is added to the wire history. */
+  private runSlashCommand(message: string): void {
+    const command = matchSlashCommand(message);
+    this.draft.set('');
+    if (!command) {
+      const names = slashSuggestions('/').map((c) => `/${c.name}`);
+      this.messages.update((m) => [
+        ...m,
+        { kind: 'assistant', segments: [{ text: `I don't know that command. Try ${names.join(', ')}.` }] },
+      ]);
+      return;
+    }
+    const outcome = command.run();
+    // One outcome kind today (`artifact`); a future `/skills` adds its own here.
+    this.messages.update((m) => [...m, { kind: 'card', artifact: outcome.artifact }]);
+    // Keep focus in the compose box for the next line.
+    queueMicrotask(() => this.inputEl()?.nativeElement.focus());
   }
 
   // ── resize ────────────────────────────────────────────────────────────

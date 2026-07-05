@@ -14,6 +14,11 @@ export interface ChatContext {
   jd: JobRequirements;
   canonical: unknown | null;
   report: AdversarialReport | null;
+  /** The build's rendered PDF filenames (from the bundle's `pdfs`), so an
+   *  artifact card knows which downloads exist without probing the files route:
+   *  `resume.ats.pdf`, `resume.human.pdf`, `cover_letter.pdf`. Empty for a build
+   *  that has not rendered any. */
+  pdfs: string[];
 }
 
 /** The bridge between the tailoring workspace (which loads a build's dataset,
