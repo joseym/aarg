@@ -348,6 +348,7 @@ fn parse_completion(status: u16, body: &str) -> Result<CompletionResponse, LlmEr
                 .to_string(),
         });
     };
+    let finish_reason = choice.finish_reason;
     let text = choice.message.content.unwrap_or_default();
     let tool_calls = choice
         .message
@@ -355,13 +356,35 @@ fn parse_completion(status: u16, body: &str) -> Result<CompletionResponse, LlmEr
         .into_iter()
         .map(parse_tool_call)
         .collect::<Result<Vec<_>, _>>()?;
+    if text.is_empty() && tool_calls.is_empty() && finish_reason.as_deref() == Some("length") {
+        return Err(empty_reply_at_limit(status));
+    }
     Ok(CompletionResponse {
         text,
         tool_calls,
         model: wire.model,
-        stop_reason: choice.finish_reason,
+        stop_reason: finish_reason,
         usage: wire.usage.into(),
     })
+}
+
+/// The error for a reply that hit `max_tokens` before any visible text. A
+/// reasoning model routes its chain of thought to `reasoning_content`, which
+/// aarg ignores, so a reply cut off while still thinking would otherwise
+/// surface downstream as an empty reply and a JSON parse failure the user
+/// cannot act on (probed live against LM Studio with a reasoning model and a
+/// small budget: `finish_reason: "length"`, all tokens in `reasoning_tokens`,
+/// `content: ""`).
+fn empty_reply_at_limit(status: u16) -> LlmError {
+    LlmError::Api {
+        status,
+        kind: "empty_reply".to_string(),
+        message: "the model hit its reply limit without producing any visible \
+                  text; a reasoning model can spend the whole limit on hidden \
+                  thinking, so point this tier at a non-reasoning (instruct) \
+                  model"
+            .to_string(),
+    }
 }
 
 /// Whether a body is the error envelope (either OpenAI shape), regardless of
@@ -503,6 +526,10 @@ struct WireDelta {
 struct StreamState {
     usage: TokenUsage,
     finish_reason: Option<String>,
+    /// Whether any text delta was emitted. A stream that ends at the length
+    /// limit without one is a reply spent entirely on hidden reasoning, and
+    /// `checked_done` refuses it the same way the blocking path does.
+    saw_text: bool,
 }
 
 /// Interpret one SSE line: update the accumulated state and return the event to
@@ -536,6 +563,7 @@ fn handle_sse_line(line: &str, state: &mut StreamState) -> Result<Option<StreamE
         if let Some(content) = choice.delta.content
             && !content.is_empty()
         {
+            state.saw_text = true;
             return Ok(Some(StreamEvent::TextDelta(content)));
         }
     }
@@ -576,15 +604,21 @@ impl LlmClient for OpenAiCompatClient {
 
 /// The clamp check a stream's final usage gets before `Done` goes out: the
 /// same estimate-versus-reported-count comparison `complete` runs, so a
-/// silently clipped prompt is refused on both paths. Returns the event to
-/// forward.
+/// silently clipped prompt is refused on both paths. `saw_text` feeds the
+/// empty-reply guard: a stream that hit the length limit without one text
+/// delta gets the same refusal the blocking path gives an empty `content`.
+/// Returns the event to forward.
 fn checked_done(
     stop_reason: Option<String>,
     usage: TokenUsage,
     estimate: u64,
+    saw_text: bool,
 ) -> Result<StreamEvent, LlmError> {
     if looks_clamped(usage.input_tokens, estimate) {
         return Err(clamped(usage.input_tokens, estimate));
+    }
+    if !saw_text && stop_reason.as_deref() == Some("length") {
+        return Err(empty_reply_at_limit(200));
     }
     Ok(StreamEvent::Done { stop_reason, usage })
 }
@@ -638,7 +672,9 @@ async fn pump_sse<B, S>(
         for line in drain_lines(&mut buffer) {
             match handle_sse_line(&line, &mut state) {
                 Ok(Some(StreamEvent::Done { stop_reason, usage })) => {
-                    let _ = tx.send(checked_done(stop_reason, usage, estimate)).await;
+                    let _ = tx
+                        .send(checked_done(stop_reason, usage, estimate, state.saw_text))
+                        .await;
                     return;
                 }
                 Ok(Some(event)) => {
@@ -665,6 +701,7 @@ async fn pump_sse<B, S>(
                 state.finish_reason.take(),
                 state.usage,
                 estimate,
+                state.saw_text,
             ))
             .await;
     } else {
@@ -898,6 +935,47 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_spent_entirely_on_reasoning_is_refused() {
+        // The live-probed shape for a reasoning model that ran out of budget
+        // mid-thought: finish_reason "length", empty content, every completion
+        // token in reasoning_content. The old behavior passed the empty text
+        // through and the agent's JSON parse failed with an empty snippet.
+        let body = r#"{
+            "model": "ornith-1.0-35b",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "",
+                 "reasoning_content": "Here's a thinking process:"},
+                 "finish_reason": "length"}
+            ],
+            "usage": {"prompt_tokens": 24, "completion_tokens": 200}
+        }"#;
+        match parse_completion(200, body).unwrap_err() {
+            LlmError::Api { kind, message, .. } => {
+                assert_eq!(kind, "empty_reply");
+                assert!(message.contains("reply limit"), "got: {message}");
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_ordinary_length_cutoff_with_text_still_parses() {
+        // A reply truncated mid-sentence is the caller's problem to judge;
+        // only the fully empty reply is refused here.
+        let body = r#"{
+            "model": "qwen3-1.7b",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "Partial answ"},
+                 "finish_reason": "length"}
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 64}
+        }"#;
+        let response = parse_completion(200, body).unwrap();
+        assert_eq!(response.text, "Partial answ");
+        assert_eq!(response.stop_reason.as_deref(), Some("length"));
+    }
+
+    #[test]
     fn parse_completion_rejects_a_malformed_arguments_string() {
         let body = r#"{
             "model": "m",
@@ -1044,7 +1122,7 @@ mod tests {
             output_tokens: 40,
         };
         // 7600 of an estimated 8000: the estimate ran a little high, fine.
-        match checked_done(Some("stop".to_string()), usage, 8000) {
+        match checked_done(Some("stop".to_string()), usage, 8000, true) {
             Ok(StreamEvent::Done { stop_reason, .. }) => {
                 assert_eq!(stop_reason.as_deref(), Some("stop"));
             }
@@ -1052,7 +1130,7 @@ mod tests {
         }
         // A server that reported no usage at all is not evidence of a clamp.
         let unreported = TokenUsage::default();
-        assert!(checked_done(None, unreported, 8000).is_ok());
+        assert!(checked_done(None, unreported, 8000, true).is_ok());
     }
 
     #[tokio::test]
@@ -1094,6 +1172,24 @@ mod tests {
                 assert_eq!(usage.input_tokens, 5);
             }
             other => panic!("expected Done, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_spent_entirely_on_reasoning_is_refused() {
+        // A reasoning model whose whole budget went to reasoning_content
+        // streams no text deltas and finishes with "length"; Done becomes the
+        // same refusal the blocking path gives an empty content.
+        let events = run_pump(vec![
+            b"data: {\"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"length\"}]}\n",
+            b"data: {\"choices\": [], \"usage\": {\"prompt_tokens\": 5, \"completion_tokens\": 64}}\n",
+            b"data: [DONE]\n",
+        ])
+        .await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(LlmError::Api { kind, .. }) => assert_eq!(kind, "empty_reply"),
+            other => panic!("expected Api error, got {other:?}"),
         }
     }
 

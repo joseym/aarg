@@ -400,6 +400,12 @@ fn parse_completion(body: &str) -> Result<CompletionResponse, LlmError> {
         .enumerate()
         .map(|(index, call)| parse_tool_call(index, call))
         .collect::<Result<Vec<_>, _>>()?;
+    if wire.message.content.is_empty()
+        && tool_calls.is_empty()
+        && wire.done_reason.as_deref() == Some("length")
+    {
+        return Err(empty_reply_at_limit());
+    }
     Ok(CompletionResponse {
         text: wire.message.content,
         tool_calls,
@@ -410,6 +416,23 @@ fn parse_completion(body: &str) -> Result<CompletionResponse, LlmError> {
             output_tokens: wire.eval_count,
         },
     })
+}
+
+/// The error for a reply that hit `num_predict` before any visible text. A
+/// thinking model routes its chain of thought to the `thinking` field, which
+/// aarg ignores, so a reply cut off while still thinking would otherwise
+/// surface downstream as an empty reply and a JSON parse failure the user
+/// cannot act on. Mirrors the guard in the LM Studio client.
+fn empty_reply_at_limit() -> LlmError {
+    LlmError::Api {
+        status: 200,
+        kind: "empty_reply".to_string(),
+        message: "the model hit its reply limit without producing any visible \
+                  text; a thinking model can spend the whole limit on hidden \
+                  thinking, so point this tier at a non-thinking (instruct) \
+                  model"
+            .to_string(),
+    }
 }
 
 /// Turn one wire tool call into a `ToolCall`. Ollama assigns no call id, so one
@@ -490,6 +513,10 @@ struct WireStreamMessage {
 #[derive(Default)]
 struct DoneStats {
     prompt_eval_count: u64,
+    /// Whether any text delta was emitted. A stream that ends at the length
+    /// limit without one is a reply spent entirely on hidden thinking, and
+    /// the pump refuses it the same way the blocking path does.
+    saw_text: bool,
 }
 
 /// Interpret one NDJSON line. A non-final line contributes a text delta; the
@@ -515,6 +542,7 @@ fn handle_ndjson_line(line: &str, stats: &mut DoneStats) -> Result<Option<Stream
         }));
     }
     if !chunk.message.content.is_empty() {
+        stats.saw_text = true;
         return Ok(Some(StreamEvent::TextDelta(chunk.message.content)));
     }
     Ok(None)
@@ -619,6 +647,10 @@ async fn pump_ndjson<B, S>(
                         let _ = tx
                             .send(Err(truncated(stats.prompt_eval_count, estimate)))
                             .await;
+                        return;
+                    }
+                    if !stats.saw_text && stop_reason.as_deref() == Some("length") {
+                        let _ = tx.send(Err(empty_reply_at_limit())).await;
                         return;
                     }
                     let _ = tx.send(Ok(StreamEvent::Done { stop_reason, usage })).await;
@@ -816,6 +848,44 @@ mod tests {
         assert_eq!(response.stop_reason.as_deref(), Some("stop"));
         assert_eq!(response.usage.input_tokens, 30);
         assert_eq!(response.usage.output_tokens, 12);
+    }
+
+    #[test]
+    fn a_reply_spent_entirely_on_thinking_is_refused() {
+        // A thinking model that ran out of num_predict mid-thought: done_reason
+        // "length", empty content, the whole reply in the ignored `thinking`
+        // field. The old behavior passed the empty text through and the
+        // agent's JSON parse failed with an empty snippet.
+        let body = r#"{
+            "model": "qwen3:8b",
+            "message": {"role": "assistant", "content": "", "thinking": "Okay, the user wants"},
+            "done_reason": "length",
+            "done": true,
+            "prompt_eval_count": 22,
+            "eval_count": 200
+        }"#;
+        match parse_completion(body).unwrap_err() {
+            LlmError::Api { kind, message, .. } => {
+                assert_eq!(kind, "empty_reply");
+                assert!(message.contains("reply limit"), "got: {message}");
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_ordinary_length_cutoff_with_text_still_parses() {
+        // A reply truncated mid-sentence is the caller's problem to judge;
+        // only the fully empty reply is refused here.
+        let body = r#"{
+            "model": "qwen3:8b",
+            "message": {"role": "assistant", "content": "Partial answ"},
+            "done_reason": "length",
+            "done": true
+        }"#;
+        let response = parse_completion(body).unwrap();
+        assert_eq!(response.text, "Partial answ");
+        assert_eq!(response.stop_reason.as_deref(), Some("length"));
     }
 
     #[test]
@@ -1021,5 +1091,22 @@ mod tests {
         let mut stats = DoneStats::default();
         let err = handle_ndjson_line(r#"{"error": "out of memory"}"#, &mut stats).unwrap_err();
         assert!(matches!(err, LlmError::Stream(_)));
+    }
+
+    #[tokio::test]
+    async fn a_stream_spent_entirely_on_thinking_is_refused() {
+        // A thinking model whose whole num_predict went to the `thinking`
+        // field streams no text deltas and finishes with "length"; Done
+        // becomes the same refusal the blocking path gives an empty content.
+        let events = run_pump(vec![
+            b"{\"message\": {\"role\": \"assistant\", \"content\": \"\", \"thinking\": \"hmm\"}, \"done\": false}\n",
+            b"{\"message\": {\"content\": \"\"}, \"done\": true, \"done_reason\": \"length\", \"prompt_eval_count\": 22, \"eval_count\": 200}\n",
+        ])
+        .await;
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Err(LlmError::Api { kind, .. }) => assert_eq!(kind, "empty_reply"),
+            other => panic!("expected Api error, got {other:?}"),
+        }
     }
 }
