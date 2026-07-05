@@ -10,7 +10,7 @@
    * when the chat is closed, so opening the chat pushes the workspace right and
    * closing it reflows the workspace back — a real column, not a floating
    * overlay. The chat panel content is clipped when the column is 0. */
-  grid-template-columns: 288px var(--chat-w, 0px) 1fr;
+  grid-template-columns: 300px var(--chat-w, 0px) 1fr;
   min-height: calc(100vh - 60px);
   transition: grid-template-columns 0.25s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
@@ -19,8 +19,14 @@
  * ≤1080px this is ignored entirely — the drawer always opens full-width. */
 @media (min-width: 1081px) {
   .shell.collapsed {
-    grid-template-columns: 44px var(--chat-w, 0px) 1fr;
+    grid-template-columns: 48px var(--chat-w, 0px) 1fr;
   }
+}
+
+/* While the chat handle is being dragged the column must track the pointer 1:1;
+ * the 0.25s transition would otherwise lag and rubber-band behind the drag. */
+.shell.chat-resizing {
+  transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
