@@ -376,9 +376,13 @@ A few things to know:
   context window of at least 8192. `aarg llm ping` reports the loaded window and
   warns when it's too small; on LM Studio, reload the model with a larger context
   length.
-- **Prefer non-thinking models,** or raise `max_tokens`. A reasoning model spends
-  its output budget on hidden thinking before it answers, so a small budget can
-  leave nothing for the resume itself.
+- **Thinking models.** A reasoning model spends its output budget on hidden
+  thinking before it answers, and can burn all of it. On Ollama, AARG turns
+  thinking off by itself for models that declare the capability (qwen3,
+  deepseek-r1), so they just work. LM Studio has no per-request switch for
+  this, so prefer an instruct model there; `aarg llm ping` tells you when the
+  loaded model reasons, and an empty-reply failure reports how many tokens
+  went to hidden reasoning.
 - **No default model.** AARG ships no local model name, so a local provider is
   unusable until you set one; if you forget, it says exactly which config key to
   set.
