@@ -256,6 +256,15 @@ pub async fn stream_reply(
         &input.career,
         input.build.as_ref(),
     ));
+    // Streaming path only (the browser). The interface can attach the person's
+    // real saved files when they ask to see one; this tells the model the marker
+    // to end its reply with so the UI knows which file to attach. It is additive
+    // and does not touch the never-fabricate posture: the marker names a stored
+    // file to attach, it does not license the model to write the file's contents.
+    // The buffered CLI path never gets this, so a terminal user never sees a
+    // stray sentinel.
+    system.push_str("\n\n");
+    system.push_str(ARTIFACT_MARKERS);
 
     // Prior turns become real messages (the flatten-into-one-user trick the
     // buffered path uses does not stream cleanly), capped to the most recent
@@ -532,6 +541,27 @@ The same rule holds: the draft and the record are the floor on what you may say,
 const ENVELOPE_INSTRUCTION: &str = r#"Reply with exactly one JSON object and nothing else, no markdown fences:
 {"reply": "your answer here"}"#;
 
+/// Browser-only. Tells the model the marker to end a reply with when the person
+/// asks to see or download one of the three saved documents, so the interface
+/// can attach the real stored file. Appended only by the streaming path, never
+/// by the buffered CLI agent, so a terminal user never sees a raw marker.
+///
+/// This is additive to the honesty contract, not a loophole in it: the marker
+/// attaches a stored file byte-for-byte, so the instruction is explicit that the
+/// model must not reproduce a document's text itself. Naming which file to show
+/// is not the same as generating its contents, and the never-fabricate rules in
+/// [`HONESTY_PROMPT`] and [`BUILD_ADDENDUM`] still stand unchanged above it.
+const ARTIFACT_MARKERS: &str = r#"ATTACHING A SAVED DOCUMENT
+The person has three saved files for this build, and the interface can show or download any of them on request. When they ask to see or download one, end your reply with the matching marker on its own line, and the interface will attach the real stored file:
+- the original job posting they provided: ⟦artifact:job_description⟧
+- the tailored resume that was produced: ⟦artifact:resume⟧
+- the cover letter, if one was produced for this build: ⟦artifact:cover_letter⟧
+Rules for the marker:
+- Only ever use those three exact tokens, and only for those three items. Never invent another artifact name or spelling.
+- The marker attaches the stored file as it is on disk. It does NOT let you write or reproduce that file's contents, so never paste the posting text, the resume, or the cover letter into your reply. Answer briefly in your own words and let the marker carry the document.
+- Emit a marker only when they actually ask to see or download one of these items, and at most one marker per item.
+- The marker must be the exact token, with nothing else on that line."#;
+
 #[derive(Debug, Deserialize)]
 pub struct RawChat {
     #[serde(default)]
@@ -747,6 +777,22 @@ mod tests {
     }
 
     #[test]
+    fn the_buffered_cli_path_never_carries_the_artifact_markers() {
+        // The markers are a browser affordance; the CLI cannot render a card, so
+        // a terminal user must never be told to emit a sentinel. Only the
+        // streaming path appends the marker guidance.
+        let agent = JdChatAgent::new(true);
+        assert!(!agent.system_prompt().contains("⟦artifact:"));
+        assert!(!agent.system_prompt().contains("ATTACHING A SAVED DOCUMENT"));
+        // The honesty contract is still fully present on the buffered path.
+        assert!(
+            agent
+                .system_prompt()
+                .contains("ONLY the recorded experience")
+        );
+    }
+
+    #[test]
     fn build_context_is_additive_absent_by_default() {
         // A JD-only turn assembles without any build material, so the pre-build
         // conversation is unaffected by the build-aware code paths.
@@ -835,6 +881,14 @@ mod tests {
         assert!(system.contains("ONLY the recorded experience"));
         assert!(system.contains("THE TAILORED RESUME THAT SHIPPED"));
         assert!(system.contains("OPEN BUILD"));
+        // The streaming path teaches the model the artifact markers, and does so
+        // without loosening never-fabricate: the guidance is explicit that a
+        // marker attaches a stored file rather than licensing the model to write
+        // its contents.
+        assert!(system.contains("⟦artifact:job_description⟧"));
+        assert!(system.contains("⟦artifact:resume⟧"));
+        assert!(system.contains("⟦artifact:cover_letter⟧"));
+        assert!(system.contains("does NOT let you write or reproduce"));
         // No tools this phase, so the turn takes the streaming path.
         assert!(request.tools.is_empty());
     }
