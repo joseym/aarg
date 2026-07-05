@@ -112,10 +112,13 @@ async fn setup_local(config: &mut Config) -> Result<(), CliError> {
             "A local provider needs no key. Confirm where its server listens, then pick a model."
         )
     );
+    // Trailing slashes are trimmed so the stored URL joins cleanly with the
+    // paths the clients and probes append.
     let base_url = Text::new("Server base URL:")
         .with_initial_value(&default_base)
         .prompt()?
         .trim()
+        .trim_end_matches('/')
         .to_string();
 
     let model = prompt_local_model(provider, &base_url).await?;

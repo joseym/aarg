@@ -79,11 +79,13 @@ pub struct OllamaClient {
 
 impl OllamaClient {
     /// Build a client pointed at `base_url` (e.g. `http://127.0.0.1:11434`),
-    /// with the default context floor and keep-alive.
+    /// with the default context floor and keep-alive. A trailing slash on the
+    /// URL is trimmed so path joins can't produce a doubled slash, which some
+    /// servers answer with a 200 error body rather than a completion.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             http: build_http(),
-            base_url: base_url.into(),
+            base_url: normalize_base_url(base_url.into()),
             num_ctx: DEFAULT_NUM_CTX,
             keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
             model_windows: Mutex::new(HashMap::new()),
@@ -205,6 +207,11 @@ fn verified_window(
          window of {model_max} tokens; use a model with a larger context \
          window, or shorten the input"
     )))
+}
+
+/// Trim trailing slashes off a base URL so path joins can't double a slash.
+fn normalize_base_url(base_url: String) -> String {
+    base_url.trim_end_matches('/').to_string()
 }
 
 fn build_http() -> reqwest::Client {
@@ -656,6 +663,12 @@ mod tests {
             temperature: None,
             tools: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_trailing_slash_on_the_base_url_is_trimmed() {
+        let client = OllamaClient::new("http://127.0.0.1:11434/");
+        assert_eq!(client.base_url, "http://127.0.0.1:11434");
     }
 
     #[test]

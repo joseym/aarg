@@ -576,12 +576,15 @@ impl Config {
     }
 
     /// The active provider's base URL, for a local provider. `None` for
-    /// Anthropic, which the client points at the hosted API itself.
+    /// Anthropic, which the client points at the hosted API itself. Trailing
+    /// slashes are trimmed, matching the clients' own normalization, so every
+    /// caller that joins a path onto this (the ping probes, the init model
+    /// list) is safe against a hand-edited `base_url = "http://host:1234/"`.
     pub fn active_base_url(&self) -> Option<&str> {
         match self.provider {
             Provider::Anthropic => None,
-            Provider::LmStudio => Some(&self.lmstudio.base_url),
-            Provider::Ollama => Some(&self.ollama.base_url),
+            Provider::LmStudio => Some(self.lmstudio.base_url.trim_end_matches('/')),
+            Provider::Ollama => Some(self.ollama.base_url.trim_end_matches('/')),
         }
     }
 
@@ -1167,6 +1170,17 @@ mod tests {
         };
         assert_eq!(config.active_model(), "local-model");
         assert_eq!(config.active_base_url(), Some("http://127.0.0.1:1234"));
+        // A hand-edited trailing slash is trimmed, so path joins can't double
+        // a slash (which LM Studio answers with a 200 error body).
+        let slashed = Config {
+            provider: Provider::Ollama,
+            ollama: OllamaConfig {
+                base_url: "http://127.0.0.1:11434/".to_string(),
+                ..OllamaConfig::default()
+            },
+            ..Config::default()
+        };
+        assert_eq!(slashed.active_base_url(), Some("http://127.0.0.1:11434"));
         assert_eq!(
             config.active_resolver().resolve("any", ModelTier::Smart),
             "local-model"

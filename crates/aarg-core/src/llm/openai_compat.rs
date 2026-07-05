@@ -64,10 +64,13 @@ pub struct OpenAiCompatClient {
 impl OpenAiCompatClient {
     /// Build a client pointed at `base_url` (e.g. `http://127.0.0.1:1234`),
     /// with no authentication. Most local servers accept anonymous requests.
+    /// A trailing slash on the URL is trimmed: paths are joined with a leading
+    /// slash, and a doubled slash (`//v1/chat/completions`) makes LM Studio
+    /// answer HTTP 200 with an error body instead of a completion.
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             http: build_http(),
-            base_url: base_url.into(),
+            base_url: normalize_base_url(base_url.into()),
             api_key: None,
         }
     }
@@ -98,6 +101,11 @@ impl OpenAiCompatClient {
         let body = request_body(request, stream)?;
         Ok(builder.json(&body).send().await?)
     }
+}
+
+/// Trim trailing slashes off a base URL so path joins can't double a slash.
+fn normalize_base_url(base_url: String) -> String {
+    base_url.trim_end_matches('/').to_string()
 }
 
 /// Build the HTTP client with a connect timeout. If the builder somehow fails
@@ -320,28 +328,51 @@ impl From<WireUsage> for TokenUsage {
     }
 }
 
-fn parse_completion(body: &str) -> Result<CompletionResponse, LlmError> {
+/// Parse a 2xx body into a completion. A success status is not proof of a
+/// completion: LM Studio answers a wrong path (a doubled slash, a stale
+/// endpoint) with HTTP 200 and `{"error": "Unexpected endpoint..."}` (probed
+/// live), and a body with an empty `choices` array carries no reply at all.
+/// Both become a typed `Api` error rather than an empty completion a caller
+/// would mistake for the model answering with nothing.
+fn parse_completion(status: u16, body: &str) -> Result<CompletionResponse, LlmError> {
+    if body_is_an_error(body) {
+        return Err(parse_api_error(status, body, 0));
+    }
     let wire: WireCompletion = serde_json::from_str(body).map_err(LlmError::Parse)?;
-    let (text, tool_calls, stop_reason) = match wire.choices.into_iter().next() {
-        Some(choice) => {
-            let text = choice.message.content.unwrap_or_default();
-            let tool_calls = choice
-                .message
-                .tool_calls
-                .into_iter()
-                .map(parse_tool_call)
-                .collect::<Result<Vec<_>, _>>()?;
-            (text, tool_calls, choice.finish_reason)
-        }
-        None => (String::new(), Vec::new(), None),
+    let Some(choice) = wire.choices.into_iter().next() else {
+        return Err(LlmError::Api {
+            status,
+            kind: "empty_response".to_string(),
+            message: "the server answered with no choices; check that base_url \
+                      points at an OpenAI-compatible chat-completions server"
+                .to_string(),
+        });
     };
+    let text = choice.message.content.unwrap_or_default();
+    let tool_calls = choice
+        .message
+        .tool_calls
+        .into_iter()
+        .map(parse_tool_call)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(CompletionResponse {
         text,
         tool_calls,
         model: wire.model,
-        stop_reason,
+        stop_reason: choice.finish_reason,
         usage: wire.usage.into(),
     })
+}
+
+/// Whether a body is the error envelope (either OpenAI shape), regardless of
+/// the HTTP status it rode in on.
+fn body_is_an_error(body: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[allow(dead_code)]
+        error: Value,
+    }
+    serde_json::from_str::<Envelope>(body).is_ok()
 }
 
 /// Turn one wire tool call into a `ToolCall`, parsing its JSON-encoded argument
@@ -521,7 +552,7 @@ impl LlmClient for OpenAiCompatClient {
         if !(200..300).contains(&status) {
             return Err(parse_api_error(status, &body, estimate));
         }
-        let completion = parse_completion(&body)?;
+        let completion = parse_completion(status, &body)?;
         if looks_clamped(completion.usage.input_tokens, estimate) {
             return Err(clamped(completion.usage.input_tokens, estimate));
         }
@@ -663,6 +694,17 @@ mod tests {
     }
 
     #[test]
+    fn a_trailing_slash_on_the_base_url_is_trimmed() {
+        // "http://host:1234/" would otherwise POST //v1/chat/completions,
+        // which LM Studio answers with HTTP 200 and an error body (probed
+        // live), so the constructor trims it.
+        let client = OpenAiCompatClient::new("http://127.0.0.1:1234/");
+        assert_eq!(client.base_url, "http://127.0.0.1:1234");
+        let clean = OpenAiCompatClient::new("http://127.0.0.1:1234");
+        assert_eq!(clean.base_url, "http://127.0.0.1:1234");
+    }
+
+    #[test]
     fn request_body_places_the_system_prompt_first() {
         let mut req = request();
         req.system = Some("be brief".to_string());
@@ -792,7 +834,7 @@ mod tests {
             ],
             "usage": {"prompt_tokens": 11, "completion_tokens": 3}
         }"#;
-        let response = parse_completion(body).unwrap();
+        let response = parse_completion(200, body).unwrap();
         assert_eq!(response.text, "Hi there");
         assert_eq!(response.model, "qwen3-1.7b");
         assert_eq!(response.stop_reason.as_deref(), Some("stop"));
@@ -817,13 +859,42 @@ mod tests {
             ],
             "usage": {"prompt_tokens": 20, "completion_tokens": 8}
         }"#;
-        let response = parse_completion(body).unwrap();
+        let response = parse_completion(200, body).unwrap();
         assert_eq!(response.text, "");
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].id, "call_9");
         assert_eq!(response.tool_calls[0].name, "fetch_jd");
         assert_eq!(response.tool_calls[0].args["url"], "https://x");
         assert_eq!(response.stop_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn a_200_carrying_an_error_body_is_refused() {
+        // The live-probed LM Studio shape for a doubled-slash path: HTTP 200,
+        // an error string, no choices. Yielding an empty completion here made
+        // `aarg llm ping` print a success over a broken setup.
+        let body = r#"{"error":"Unexpected endpoint or method. (POST //v1/chat/completions)"}"#;
+        match parse_completion(200, body).unwrap_err() {
+            LlmError::Api {
+                status, message, ..
+            } => {
+                assert_eq!(status, 200);
+                assert!(message.contains("Unexpected endpoint"), "got: {message}");
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_200_with_no_choices_is_refused() {
+        let body = r#"{"model": "m", "choices": [], "usage": {"prompt_tokens": 0, "completion_tokens": 0}}"#;
+        match parse_completion(200, body).unwrap_err() {
+            LlmError::Api { kind, message, .. } => {
+                assert_eq!(kind, "empty_response");
+                assert!(message.contains("no choices"), "got: {message}");
+            }
+            other => panic!("expected Api error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -838,7 +909,7 @@ mod tests {
                  ]}}
             ]
         }"#;
-        let err = parse_completion(body).unwrap_err();
+        let err = parse_completion(200, body).unwrap_err();
         assert!(matches!(err, LlmError::Parse(_)));
     }
 
