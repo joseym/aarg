@@ -28,6 +28,12 @@
 //! have reported only newly evaluated tokens. The post-check therefore never
 //! treats a low count alone as a clip — a cached healthy response must not
 //! be refused.
+//!
+//! The same `/api/show` lookup also reports the model's capabilities, and
+//! when they include `thinking` this client sends `"think": false` with every
+//! request (see [`ModelFacts`]): aarg wants answers, not a chain of thought
+//! it would throw away, and a thinking model left free to think can burn its
+//! whole reply budget before producing any visible text.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -71,10 +77,29 @@ pub struct OllamaClient {
     base_url: String,
     num_ctx: u32,
     keep_alive: String,
-    /// Each model's maximum context length, fetched from `/api/show` once and
-    /// cached. A std `Mutex` (not tokio's) because every critical section is a
-    /// single map operation with no await inside.
-    model_windows: Mutex<HashMap<String, u64>>,
+    /// What `/api/show` reports about each model, fetched once and cached. A
+    /// std `Mutex` (not tokio's) because every critical section is a single
+    /// map operation with no await inside.
+    model_facts: Mutex<HashMap<String, ModelFacts>>,
+}
+
+/// What this client needs to know about a model, all from one `/api/show`
+/// response: the maximum context length (to verify the window before sending)
+/// and whether the model thinks (to turn that off per request).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ModelFacts {
+    /// The model's maximum context length. `None` when the response doesn't
+    /// carry one.
+    context_length: Option<u64>,
+    /// Whether the model's capabilities include `thinking`. A request to such
+    /// a model carries `"think": false`, because aarg ignores the `thinking`
+    /// field and a model left free to think can spend its whole `num_predict`
+    /// there and reply with nothing (probed live on 0.31.1: qwen3:8b answered
+    /// `done_reason: "length"` with empty content and its entire output in
+    /// `thinking`; the same request with `think: false` answered normally).
+    /// The flag is sent only when the capability is reported, since some
+    /// server versions reject `think` on models that can't think.
+    thinking: bool,
 }
 
 impl OllamaClient {
@@ -88,7 +113,7 @@ impl OllamaClient {
             base_url: normalize_base_url(base_url.into()),
             num_ctx: DEFAULT_NUM_CTX,
             keep_alive: DEFAULT_KEEP_ALIVE.to_string(),
-            model_windows: Mutex::new(HashMap::new()),
+            model_facts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -111,24 +136,26 @@ impl OllamaClient {
         request: &CompletionRequest,
         stream: bool,
         num_ctx: u32,
+        disable_thinking: bool,
     ) -> Result<reqwest::Response, LlmError> {
         let mut builder = self.http.post(format!("{}/api/chat", self.base_url));
         if !stream {
             builder = builder.timeout(COMPLETE_TIMEOUT);
         }
-        let body = request_body(request, stream, &self.keep_alive, num_ctx)?;
+        let body = request_body(request, stream, &self.keep_alive, num_ctx, disable_thinking)?;
         Ok(builder.json(&body).send().await?)
     }
 
-    /// The model's maximum context length, from `/api/show`, cached per model.
-    /// `None` when the lookup fails or the response doesn't carry one — the
-    /// caller then proceeds unverified rather than failing a healthy request
-    /// over a metadata endpoint.
-    async fn model_context_length(&self, model: &str) -> Option<u64> {
-        if let Ok(cache) = self.model_windows.lock()
-            && let Some(&max) = cache.get(model)
+    /// What `/api/show` reports about `model`, cached per model. `None` when
+    /// the lookup fails outright — the caller then proceeds with the window
+    /// unverified and thinking untouched rather than failing a healthy
+    /// request over a metadata endpoint. A failed lookup is not cached, so a
+    /// server that comes up late still gets asked again.
+    async fn model_facts(&self, model: &str) -> Option<ModelFacts> {
+        if let Ok(cache) = self.model_facts.lock()
+            && let Some(&facts) = cache.get(model)
         {
-            return Some(max);
+            return Some(facts);
         }
         let response = self
             .http
@@ -139,25 +166,33 @@ impl OllamaClient {
             .await
             .ok()?;
         let body = response.text().await.ok()?;
-        let max = context_length_from_show(&body)?;
-        if let Ok(mut cache) = self.model_windows.lock() {
-            cache.insert(model.to_string(), max);
+        let facts = facts_from_show(&body)?;
+        if let Ok(mut cache) = self.model_facts.lock() {
+            cache.insert(model.to_string(), facts);
         }
-        Some(max)
+        Some(facts)
     }
 
-    /// The context window to send for this request: the effective window,
-    /// verified against the model's own maximum so the server can't quietly
-    /// cap `num_ctx` below what the prompt needs. Errors before anything is
-    /// sent when the prompt can't fit the model at all.
-    async fn window_for(
+    /// The per-request decisions that depend on the model's `/api/show`
+    /// facts: the context window to send (the effective window, verified
+    /// against the model's own maximum so the server can't quietly cap
+    /// `num_ctx` below what the prompt needs) and whether to disable
+    /// thinking. Errors before anything is sent when the prompt can't fit
+    /// the model at all.
+    async fn plan_request(
         &self,
         request: &CompletionRequest,
         estimate: u64,
-    ) -> Result<u32, LlmError> {
+    ) -> Result<(u32, bool), LlmError> {
         let effective = effective_num_ctx(self.num_ctx, estimate, request.max_tokens);
-        let model_max = self.model_context_length(&request.model).await;
-        verified_window(effective, estimate, request.max_tokens, model_max)
+        let facts = self.model_facts(&request.model).await.unwrap_or_default();
+        let num_ctx = verified_window(
+            effective,
+            estimate,
+            request.max_tokens,
+            facts.context_length,
+        )?;
+        Ok((num_ctx, facts.thinking))
     }
 }
 
@@ -169,12 +204,34 @@ impl OllamaClient {
 /// body without re-deriving the arch-prefixed key match; the client itself owns
 /// the request and caching.
 pub fn context_length_from_show(body: &str) -> Option<u64> {
+    facts_from_show(body)?.context_length
+}
+
+/// Parse an `/api/show` response into the facts this client acts on. `None`
+/// only when the body isn't JSON at all; a parsed body with neither fact
+/// still yields (and caches) a default, so a model that reports nothing
+/// isn't re-fetched on every request.
+fn facts_from_show(body: &str) -> Option<ModelFacts> {
     let show: Value = serde_json::from_str(body).ok()?;
-    show.get("model_info")?
-        .as_object()?
-        .iter()
-        .find(|(key, _)| key.ends_with(".context_length"))
-        .and_then(|(_, value)| value.as_u64())
+    let context_length = show
+        .get("model_info")
+        .and_then(Value::as_object)
+        .and_then(|info| {
+            info.iter()
+                .find(|(key, _)| key.ends_with(".context_length"))
+                .and_then(|(_, value)| value.as_u64())
+        });
+    // The top-level capabilities array, e.g. ["completion", "tools",
+    // "thinking"] (probed live on 0.31.1: qwen3:8b and deepseek-r1 report
+    // "thinking"; llama3.3 and mistral don't).
+    let thinking = show
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|caps| caps.iter().any(|cap| cap.as_str() == Some("thinking")));
+    Some(ModelFacts {
+        context_length,
+        thinking,
+    })
 }
 
 /// Reconcile the window this client wants with the model's maximum, when
@@ -225,12 +282,16 @@ fn build_http() -> reqwest::Client {
 
 /// Build the `/api/chat` request body. `num_ctx` and `num_predict` (our
 /// `max_tokens`) always ride in `options`; `temperature` joins only when set.
-/// Fails only when a message carries a PDF attachment (see [`push_wire_message`]).
+/// `disable_thinking` adds a top-level `"think": false` — set only for models
+/// whose capabilities include thinking, so a model can't spend its whole
+/// reply budget on a `thinking` field aarg ignores. Fails only when a message
+/// carries a PDF attachment (see [`push_wire_message`]).
 fn request_body(
     request: &CompletionRequest,
     stream: bool,
     keep_alive: &str,
     num_ctx: u32,
+    disable_thinking: bool,
 ) -> Result<Value, LlmError> {
     let messages = build_messages(&request.system, &request.messages)?;
     let mut options = json!({
@@ -247,6 +308,9 @@ fn request_body(
         "keep_alive": keep_alive,
         "options": options,
     });
+    if disable_thinking {
+        body["think"] = json!(false);
+    }
     if !request.tools.is_empty() {
         body["tools"] = json!(wire_tools(&request.tools));
     }
@@ -422,7 +486,10 @@ fn parse_completion(body: &str) -> Result<CompletionResponse, LlmError> {
 /// thinking model routes its chain of thought to the `thinking` field, which
 /// aarg ignores, so a reply cut off while still thinking would otherwise
 /// surface downstream as an empty reply and a JSON parse failure the user
-/// cannot act on. Mirrors the guard in the LM Studio client.
+/// cannot act on. With `"think": false` sent to every model that reports the
+/// thinking capability this is a backstop, still reachable when the
+/// capability lookup failed or a model thinks without reporting it. Mirrors
+/// the guard in the LM Studio client.
 fn empty_reply_at_limit() -> LlmError {
     LlmError::Api {
         status: 200,
@@ -552,8 +619,10 @@ fn handle_ndjson_line(line: &str, stats: &mut DoneStats) -> Result<Option<Stream
 impl LlmClient for OllamaClient {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let estimate = estimate_prompt_tokens(&request);
-        let num_ctx = self.window_for(&request, estimate).await?;
-        let response = self.post_chat(&request, false, num_ctx).await?;
+        let (num_ctx, disable_thinking) = self.plan_request(&request, estimate).await?;
+        let response = self
+            .post_chat(&request, false, num_ctx, disable_thinking)
+            .await?;
         let status = response.status().as_u16();
         let body = response.text().await?;
         if !(200..300).contains(&status) {
@@ -573,8 +642,10 @@ impl LlmClient for OllamaClient {
 
     async fn stream(&self, request: CompletionRequest) -> Result<TokenStream, LlmError> {
         let estimate = estimate_prompt_tokens(&request);
-        let num_ctx = self.window_for(&request, estimate).await?;
-        let response = self.post_chat(&request, true, num_ctx).await?;
+        let (num_ctx, disable_thinking) = self.plan_request(&request, estimate).await?;
+        let response = self
+            .post_chat(&request, true, num_ctx, disable_thinking)
+            .await?;
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let body = response.text().await?;
@@ -707,7 +778,7 @@ mod tests {
     fn request_body_places_system_first_and_sets_options() {
         let mut req = request();
         req.system = Some("be brief".to_string());
-        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let body = request_body(&req, false, "5m", 8192, false).unwrap();
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "be brief");
         assert_eq!(body["stream"], false);
@@ -718,10 +789,55 @@ mod tests {
     }
 
     #[test]
+    fn request_body_disables_thinking_only_when_asked() {
+        // A thinking-capable model gets a top-level "think": false; every
+        // other model's body carries no think key at all, since some server
+        // versions reject the field on models that can't think.
+        let req = request();
+        let plain = request_body(&req, false, "5m", 8192, false).unwrap();
+        assert!(plain.get("think").is_none());
+        let disabled = request_body(&req, false, "5m", 8192, true).unwrap();
+        assert_eq!(disabled["think"], false);
+        // Streaming requests carry the same flag.
+        let streaming = request_body(&req, true, "5m", 8192, true).unwrap();
+        assert_eq!(streaming["think"], false);
+        assert_eq!(streaming["stream"], true);
+    }
+
+    #[test]
+    fn facts_from_show_reads_the_thinking_capability() {
+        // The live /api/show shape on 0.31.1: a top-level capabilities array.
+        let thinking = r#"{
+            "capabilities": ["completion", "tools", "thinking"],
+            "model_info": {"qwen3.context_length": 40960}
+        }"#;
+        let facts = facts_from_show(thinking).unwrap();
+        assert!(facts.thinking);
+        assert_eq!(facts.context_length, Some(40960));
+
+        // A non-thinking model (llama3.3 reports ["completion", "tools"]).
+        let plain = r#"{
+            "capabilities": ["completion", "tools"],
+            "model_info": {"llama.context_length": 131072}
+        }"#;
+        let facts = facts_from_show(plain).unwrap();
+        assert!(!facts.thinking);
+        assert_eq!(facts.context_length, Some(131072));
+
+        // No capabilities array at all (an older server): thinking stays off.
+        let bare = r#"{"model_info": {"llama.context_length": 4096}}"#;
+        let facts = facts_from_show(bare).unwrap();
+        assert!(!facts.thinking);
+
+        // Not JSON: no facts, and the caller proceeds unverified.
+        assert_eq!(facts_from_show("not json"), None);
+    }
+
+    #[test]
     fn request_body_includes_temperature_when_set() {
         let mut req = request();
         req.temperature = Some(0.5);
-        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let body = request_body(&req, false, "5m", 8192, false).unwrap();
         assert!((body["options"]["temperature"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
     }
 
@@ -733,7 +849,7 @@ mod tests {
             description: "Fetch a posting".into(),
             input_schema: serde_json::json!({"type": "object"}),
         }];
-        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let body = request_body(&req, false, "5m", 8192, false).unwrap();
         let tool = &body["tools"][0];
         assert_eq!(tool["type"], "function");
         assert_eq!(tool["function"]["name"], "fetch_jd");
@@ -762,7 +878,7 @@ mod tests {
                 is_error: false,
             }]),
         ];
-        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let body = request_body(&req, false, "5m", 8192, false).unwrap();
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 3);
         // Native Ollama carries the arguments as an object, not a string.
@@ -784,7 +900,7 @@ mod tests {
                 data: "aGVsbG8=".into(),
             },
         )];
-        let body = request_body(&req, false, "5m", 8192).unwrap();
+        let body = request_body(&req, false, "5m", 8192, false).unwrap();
         let message = &body["messages"][0];
         assert_eq!(message["content"], "describe this");
         // Bare base64, no data: URI, no media type.
@@ -800,7 +916,7 @@ mod tests {
                 data: "JVBERi0=".into(),
             },
         )];
-        let err = request_body(&req, false, "5m", 8192).unwrap_err();
+        let err = request_body(&req, false, "5m", 8192, false).unwrap_err();
         match err {
             LlmError::Unsupported(message) => {
                 assert!(message.contains("PDF"));
@@ -820,7 +936,7 @@ mod tests {
             num_ctx > DEFAULT_NUM_CTX,
             "num_ctx {num_ctx} should exceed the floor"
         );
-        let body = request_body(&req, false, "5m", num_ctx).unwrap();
+        let body = request_body(&req, false, "5m", num_ctx, false).unwrap();
         assert_eq!(body["options"]["num_ctx"], num_ctx);
     }
 
