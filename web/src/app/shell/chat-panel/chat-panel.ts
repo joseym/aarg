@@ -309,8 +309,12 @@ export class ChatPanel {
    *  persistence; this drives the fixed inner width and the resize math. */
   readonly width = input(MIN_WIDTH);
   readonly close = output<void>();
-  /** Emitted continuously while the handle is dragged, with the new clamped width. */
+  /** Emitted continuously while the handle is dragged, with the new clamped width
+   *  (the shell updates the live column but does not persist). */
   readonly widthChange = output<number>();
+  /** Emitted once on pointer release, with the final width, so the shell persists
+   *  it exactly once per drag rather than on every move. */
+  readonly widthCommit = output<number>();
 
   private readonly scroll = viewChild<ElementRef<HTMLElement>>('scroll');
   private readonly inputEl = viewChild<ElementRef<HTMLTextAreaElement>>('input');
@@ -331,14 +335,21 @@ export class ChatPanel {
   private wireHistory: { from_user: boolean; text: string }[] = [];
   /** The build the current transcript belongs to, so a build switch resets it. */
   private currentBuildId: string | null = null;
+  /** Monotonic id of the current turn. Bumped on every send and on every build
+   *  switch, so an in-flight turn can tell it has been superseded and discard its
+   *  own deltas and result instead of bleeding them into a different build. */
+  private turnSeq = 0;
 
   constructor() {
     // Reset the conversation when the open build changes (or the context clears):
     // the transcript, history, and any in-flight state all belong to one build.
+    // Bumping the turn id here supersedes any turn still streaming for the old
+    // build, so its deltas and result are dropped rather than landing here.
     effect(() => {
       const id = this.store.context()?.buildId ?? null;
       if (id !== this.currentBuildId) {
         this.currentBuildId = id;
+        this.turnSeq++;
         this.messages.set([]);
         this.wireHistory = [];
         this.pending.set(null);
@@ -376,12 +387,18 @@ export class ChatPanel {
   /** Send the current draft as one chat turn, streaming the reply into the
    *  transcript. On failure the error shows in the transcript, the draft is
    *  restored so nothing typed is lost, and the wire history is left untouched
-   *  (so the next send doesn't carry a dangling user turn). */
+   *  (so the next send doesn't carry a dangling user turn).
+   *
+   *  A turn id is captured up front; if the build switches mid-flight (which
+   *  supersedes this turn via the reset effect) every continuation bails, so a
+   *  stale turn never renders its deltas into, appends its answer to, or
+   *  overwrites the history of the build now open. */
   protected async send(): Promise<void> {
     const ctx = this.store.context();
     const message = this.draft().trim();
     if (!message || this.busy() || !ctx) return;
 
+    const turn = ++this.turnSeq;
     this.draft.set('');
     this.messages.update((m) => [...m, { kind: 'user', text: message }]);
     this.busy.set(true);
@@ -398,8 +415,12 @@ export class ChatPanel {
           transcript: history,
           message,
         },
-        (delta) => this.pending.update((p) => (p ?? '') + delta),
+        // `text` is the running accumulated reply; only this turn may paint it.
+        (text) => {
+          if (this.turnSeq === turn) this.pending.set(text);
+        },
       );
+      if (this.turnSeq !== turn) return; // superseded by a build switch: discard
       this.messages.update((m) => [...m, { kind: 'assistant', text: reply }]);
       this.wireHistory = [
         ...history,
@@ -407,25 +428,33 @@ export class ChatPanel {
         { from_user: false, text: reply },
       ];
     } catch (err) {
+      if (this.turnSeq !== turn) return; // superseded: don't touch the new build
       this.messages.update((m) => [...m, { kind: 'error', text: errMessage(err) }]);
       // Restore the unsent draft so a failed turn loses nothing.
       this.draft.set(message);
     } finally {
-      this.pending.set(null);
-      this.busy.set(false);
-      // Return focus to the compose box for the next turn.
-      queueMicrotask(() => this.inputEl()?.nativeElement.focus());
+      // Only the owning turn clears the shared in-flight state — a superseded
+      // turn must not stomp a fresh turn's pending/busy on the new build.
+      if (this.turnSeq === turn) {
+        this.pending.set(null);
+        this.busy.set(false);
+        // Return focus to the compose box for the next turn.
+        queueMicrotask(() => this.inputEl()?.nativeElement.focus());
+      }
     }
   }
 
   // ── resize ────────────────────────────────────────────────────────────
   private resizeStartX = 0;
   private resizeStartWidth = 0;
+  /** The most recent width during the current drag, committed on release. */
+  private lastResizeWidth = 0;
 
   protected onResizeStart(ev: PointerEvent): void {
     ev.preventDefault();
     this.resizeStartX = ev.clientX;
     this.resizeStartWidth = this.width();
+    this.lastResizeWidth = this.width();
     const handle = ev.currentTarget as HTMLElement;
     handle.setPointerCapture(ev.pointerId);
     handle.addEventListener('pointermove', this.onResizeMove);
@@ -433,14 +462,20 @@ export class ChatPanel {
       handle.removeEventListener('pointermove', this.onResizeMove);
       handle.removeEventListener('pointerup', end);
       handle.removeEventListener('pointercancel', end);
+      // Persist exactly once, at the end of the drag, not on every move.
+      this.widthCommit.emit(this.lastResizeWidth);
     };
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);
   }
 
   private readonly onResizeMove = (ev: PointerEvent): void => {
-    const next = clamp(this.resizeStartWidth + (ev.clientX - this.resizeStartX), MIN_WIDTH, MAX_WIDTH);
-    this.widthChange.emit(next);
+    this.lastResizeWidth = clamp(
+      this.resizeStartWidth + (ev.clientX - this.resizeStartX),
+      MIN_WIDTH,
+      MAX_WIDTH,
+    );
+    this.widthChange.emit(this.lastResizeWidth);
   };
 }
 
