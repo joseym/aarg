@@ -138,7 +138,7 @@ pub async fn run(
     // Live progress + running cost for the long smart-tier calls, so the
     // loop is visibly working and the user can interrupt (FR-3.8). The spine
     // drives it for streamed runs; cheap/interactive calls leave it idle.
-    let reporter = StreamReporter::new(config.prices.clone(), subscription);
+    let reporter = StreamReporter::new(config.prices.clone(), billing);
     let ctx = AgentContext {
         llm: &*client,
         model: config.active_resolver(),
