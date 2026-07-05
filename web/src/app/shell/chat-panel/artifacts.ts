@@ -144,7 +144,10 @@ export function parseReply(raw: string): ReplySegment[] {
     // Unknown marker: skip it (drop the sentinel, render nothing).
     cursor = start + match[0].length;
   }
-  const tail = raw.slice(cursor);
+  // A reply can end on a truncated, never-closed marker (the model stopped mid
+  // token), which MARKER_GLOBAL cannot match because it has no closing bracket.
+  // Strip that trailing fragment so it is never shown as a raw sentinel.
+  const tail = raw.slice(cursor).replace(MARKER_PARTIAL_TAIL, '');
   if (tail.trim().length > 0) segments.push({ text: tail.trim() });
   return segments;
 }
