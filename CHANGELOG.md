@@ -2,6 +2,44 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.5.0 - 2026-07-05
+#### Features
+- (**cli**) make init, config, and key provider-aware - (0b55d33) - Josey Morton
+- (**config**) add LM Studio and Ollama provider settings - (fdbf8fd) - Josey Morton
+- (**llm**) surface hidden reasoning token counts from lm studio - (e37c341) - Josey Morton
+- (**llm**) add a hand-rolled Ollama native client - (22a9765) - Josey Morton
+- (**llm**) add a hand-rolled OpenAI-compatible client for LM Studio - (7187959) - Josey Morton
+- (**llm**) estimate prompt size and flag silent context truncation - (2969f0b) - Josey Morton
+- (**ping**) warn when the pinged model reasons before answering - (396b71c) - Josey Morton
+- (**providers**) run every seam through the active provider client - (568339c) - Josey Morton
+#### Bug Fixes
+- (**agent**) repair trailing-comma JSON before the parse fails - (c30f296) - Josey Morton
+- (**llm**) turn off thinking for ollama models that declare it - (71a0d92) - Josey Morton
+- (**llm**) refuse a reply spent entirely on hidden reasoning - (2499480) - Josey Morton
+- (**llm**) trim base_url slashes and refuse a 200 that carries an error - (923d766) - Josey Morton
+- (**llm**) verify num_ctx pre-send instead of trusting the count post-hoc - (b211d5e) - Josey Morton
+- (**llm**) stop double-counting the sizing margin in the reserve check - (7e140b9) - Josey Morton
+- (**llm**) rebuild the truncation guard on Ollama's probed clip arithmetic - (de5a2c2) - Josey Morton
+- (**llm**) give prefill the full request budget before the idle timer - (445e186) - Josey Morton
+- (**llm**) fail local streams that end before their terminator - (9a86420) - Josey Morton
+- (**llm**) type provider refusals as Unsupported instead of a fake HTTP 0 - (c12ec8f) - Josey Morton
+- (**serve**) never pass a provider's 2xx through with an error body - (d5be6c8) - Josey Morton
+- (**serve**) a no_model kind, and the local hint for hung servers - (f8149fa) - Josey Morton
+- (**tailor**) keep live dollar figures off local runs - (4a6626b) - Josey Morton
+- (**wasm**) surface the model's own error message in export rejections - (60efa25) - Josey Morton
+- (**web**) reject failed LLM proxy calls with the message, not the body - (81862b7) - Josey Morton
+#### Documentation
+- (**readme**) recommend MoE models and the LM Studio thinking toggle - (e907487) - Josey Morton
+- (**readme**) update the local thinking-model guidance - (c77fa04) - Josey Morton
+- (**readme**) document the local model providers - (c785a92) - Josey Morton
+- reflow the local models guide to one line per paragraph - (147b4f8) - Josey Morton
+- a setup guide for local models - (c141bc3) - Josey Morton
+- add contributing and build instructions - (d952609) - Josey Morton
+#### Refactoring
+- (**llm**) share line draining between the local stream parsers - (57dab66) - Josey Morton
+
+- - -
+
 ## v0.4.0 - 2026-07-04
 #### Features
 - (**release**) publish a Homebrew formula to joseym/homebrew-tap - (18070bd) - Josey Morton
