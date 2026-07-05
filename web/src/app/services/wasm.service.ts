@@ -148,6 +148,16 @@ interface WasmExports {
     modelsJson: string,
     llm: StringCallback,
   ): Promise<string>;
+  chat_reply(
+    datasetJson: string,
+    jdJson: string,
+    canonicalJson: string,
+    reportJson: string,
+    transcriptJson: string,
+    message: string,
+    modelsJson: string,
+    llm: StringCallback,
+  ): Promise<string>;
   project_human_llm(
     canonicalJson: string,
     datasetJson: string,
@@ -337,7 +347,17 @@ export class WasmService {
    *  once — retrying them would only stall the run. Each attempt is a fresh
    *  `fetch` with no client-side timeout, so backoff waits never stack onto a
    *  call's own duration. */
-  private readonly llm: StringCallback = async (requestJson) => {
+  private readonly llm: StringCallback = (requestJson) => this.postLlm(requestJson, null);
+
+  /** The shared `/api/llm` POST + retry engine behind {@link llm}. `onDelta`, when
+   *  given, receives each streamed delta's TEXT as it arrives — the chat panel
+   *  renders replies token-by-token from it. The tailor-loop path passes `null`,
+   *  so its char-count `streamHandler` tick (below, in {@link readSseStream}) is
+   *  untouched: this is purely additive to the existing streaming seam. */
+  private async postLlm(
+    requestJson: string,
+    onDelta: ((text: string) => void) | null,
+  ): Promise<string> {
     // Backoff before the 1st and 2nd retry; its length is the retry budget (2).
     const backoffMs = [2000, 5000];
     for (let attempt = 0; ; attempt++) {
@@ -389,7 +409,7 @@ export class WasmService {
       // contract). A stream that dies mid-flight is a retryable transport
       // failure; an `error` frame is an application error and is not retried.
       try {
-        return await this.readSseStream(res);
+        return await this.readSseStream(res, onDelta);
       } catch (err) {
         if (err instanceof StreamAppError) throw new Error(err.message);
         if (err instanceof StreamTransportError && attempt < backoffMs.length) {
@@ -401,14 +421,17 @@ export class WasmService {
         throw err instanceof Error ? err : new Error(String(err));
       }
     }
-  };
+  }
 
   /** Read an SSE `/api/llm` response to completion: accumulate `delta` frames
    *  (ticking `streamHandler` with the running char count), resolve with a
    *  `CompletionResponse` JSON string on the `done` frame, throw a
    *  {@link StreamAppError} on an `error` frame, and throw a
    *  {@link StreamTransportError} if the stream dies or ends without `done`. */
-  private async readSseStream(res: Response): Promise<string> {
+  private async readSseStream(
+    res: Response,
+    onDelta: ((text: string) => void) | null = null,
+  ): Promise<string> {
     if (!res.body) throw new StreamTransportError('the streamed response had no body', 0);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -443,6 +466,9 @@ export class WasmService {
             accumulated += evt.delta;
             chunks++;
             this.streamHandler?.(accumulated.length);
+            // Additive to the char-count tick above: hand the chat consumer the
+            // actual delta text so it can render the reply progressively.
+            onDelta?.(evt.delta);
           } else if ('done' in evt) {
             return JSON.stringify({
               text: accumulated,
@@ -576,6 +602,44 @@ export class WasmService {
         this.llm,
       ),
     );
+  }
+
+  /** One grounded chat turn about a build (Phase B). Runs the wasm `chat_reply`
+   *  engine, which drives a streaming, tools-empty Smart-tier request; `onDelta`
+   *  receives each token as it streams from `/api/llm`, and the promise resolves
+   *  with the complete assistant reply for the transcript.
+   *
+   *  `canonical`/`report` are optional — pass `null` for a JD-only conversation;
+   *  the binding sends `""`, which the export reads as "absent". `transcript` is
+   *  the prior completed turns (never a turn still in flight), so the wire never
+   *  ends on an orphaned user turn. */
+  async chatReply(
+    args: {
+      dataset: ResumeDataset;
+      jd: JobRequirements;
+      canonical: unknown | null;
+      report: AdversarialReport | null;
+      transcript: { from_user: boolean; text: string }[];
+      message: string;
+    },
+    onDelta: (text: string) => void,
+  ): Promise<string> {
+    const m = await this.load();
+    // A per-call llm callback that surfaces delta text, reusing the shared POST +
+    // retry engine; the default `this.llm` (tailor loop) is left untouched.
+    const llm: StringCallback = (requestJson) => this.postLlm(requestJson, onDelta);
+    const reply = await m.chat_reply(
+      JSON.stringify(args.dataset),
+      JSON.stringify(args.jd),
+      args.canonical == null ? '' : JSON.stringify(args.canonical),
+      args.report == null ? '' : JSON.stringify(args.report),
+      JSON.stringify(args.transcript),
+      args.message,
+      this.modelsJson(),
+      llm,
+    );
+    // `chat_reply` returns a bare JSON-encoded string, so parse unwraps the reply.
+    return JSON.parse(reply) as string;
   }
 
   async projectHuman(
