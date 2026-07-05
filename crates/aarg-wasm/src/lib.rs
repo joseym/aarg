@@ -47,6 +47,8 @@ use aarg_domain::agent::{Agent, AgentContext};
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::gap::GapReport;
 #[cfg(target_arch = "wasm32")]
+use aarg_domain::jdchat::{BuildContext, ChatTurn, JdChatInput, digest, stream_reply};
+#[cfg(target_arch = "wasm32")]
 use aarg_domain::llm::TokenUsage;
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::metric::{AnchorStyle, MetricTarget};
@@ -575,6 +577,110 @@ pub async fn review_draft(
         .await
         .map_err(|e| throw(error_chain(&e)))?;
     dump(&report).map_err(throw)
+}
+
+/// Parse an optional JSON argument: an empty string or the literal `"null"`
+/// means "absent" (`None`); anything else is parsed into `T`. The browser
+/// passes `""` for a build field a JD-only conversation has no value for.
+#[cfg(target_arch = "wasm32")]
+fn parse_optional<T: serde::de::DeserializeOwned>(
+    json: &str,
+    what: &str,
+) -> Result<Option<T>, String> {
+    let trimmed = json.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(None);
+    }
+    parse(trimmed, what).map(Some)
+}
+
+/// Answer one chat turn — the browser chat panel's honest advisor — by running
+/// the real `aarg-domain` chat engine over the JS `llm` callback. Advisory
+/// only: it produces no resume content and records nothing, so the
+/// never-fabricate guards (which gate resume *output*) do not apply. Honesty
+/// holds a different way, structurally: the engine is handed ONLY the recorded
+/// dataset (and the draft that shipped) plus a system prompt that forbids
+/// claiming unrecorded experience.
+///
+/// Arguments (every one a JSON string, the same convention as the other
+/// exports):
+/// - `dataset_json` — the `ResumeDataset`, digested into the grounding
+///   background (the whole record, deliberately unscoped for fit questions).
+/// - `jd_json` — the parsed `JobRequirements` the conversation is about.
+/// - `canonical_json` — the build's canonical `TailoredResume`, or `""`/`null`
+///   for a pre-build (JD-only) conversation. When present the advisor can
+///   reason about the draft that shipped.
+/// - `report_json` — the build's `AdversarialReport` (objections + score), or
+///   `""`/`null` when the build hasn't been reviewed. Only meaningful
+///   alongside `canonical_json`; ignored without it.
+/// - `transcript_json` — the prior turns as `[{"from_user": bool, "text":
+///   String}, ...]` (`[]` for a fresh conversation). Capped to the most recent
+///   turns inside the engine (`HISTORY_TURNS`).
+/// - `message` — the user's latest line.
+/// - `models_json` — the `{"cheap","mid","smart"}` (or single `{"model"}`) map.
+///
+/// **Streaming contract (Phase B):** the turn runs on the engine's streaming
+/// path — a Smart-tier, tools-empty request driven through `LlmClient::stream`.
+/// The `llm` callback therefore receives a request with an empty `tools` array,
+/// which the host may answer with an SSE stream from `/api/llm` (that route
+/// streams when `Accept: text/event-stream` and `tools` is empty). The JS
+/// callback can render those SSE deltas as they arrive and resolve with the
+/// final full `CompletionResponse`; this export returns the complete assistant
+/// reply for the transcript. (The current `BridgeClient::stream` buffers the
+/// callback's one response into a single delta, so incremental deltas across
+/// the Rust bridge await a future bridge upgrade — the JS side is where a UI
+/// renders deltas today.)
+///
+/// Returns the assistant's reply as a JSON string (a bare JSON-encoded string,
+/// e.g. `"Reliability leads the posting..."`).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub async fn chat_reply(
+    dataset_json: String,
+    jd_json: String,
+    canonical_json: String,
+    report_json: String,
+    transcript_json: String,
+    message: String,
+    models_json: String,
+    llm: js_sys::Function,
+) -> Result<String, JsValue> {
+    let dataset: ResumeDataset = parse(&dataset_json, "dataset").map_err(throw)?;
+    let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
+    let history: Vec<ChatTurn> = parse(&transcript_json, "chat transcript").map_err(throw)?;
+    // The build context is additive: absent for a pre-build (JD-only) chat.
+    let build = match parse_optional::<TailoredResume>(&canonical_json, "canonical draft")
+        .map_err(throw)?
+    {
+        Some(draft) => Some(BuildContext {
+            draft,
+            report: parse_optional(&report_json, "adversarial report").map_err(throw)?,
+        }),
+        None => None,
+    };
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, rx) = BridgeClient::new();
+    bridge::spawn_pump(rx, llm);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        // No sink across the bridge: the JS callback renders deltas from its
+        // own SSE stream (see the streaming contract above).
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+    let input = JdChatInput {
+        jd,
+        career: digest(&dataset),
+        build,
+        history,
+        message,
+    };
+    let reply = stream_reply(&ctx, &input)
+        .await
+        .map_err(|e| throw(error_chain(&e)))?;
+    dump(&reply).map_err(throw)
 }
 
 /// Project the canonical draft into the HUMAN variant payload (FR-5.1) by
