@@ -27,6 +27,7 @@ import type {
   JobRequirements,
   ProvenanceReport,
   ResumeDataset,
+  Variant,
   VariantPayload,
 } from '../../models';
 
@@ -208,38 +209,77 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                   (click)="previewMode.set('pixel')"
                 >Pixel-perfect</button>
               </div>
-              @if (templateOptions().length > 0) {
+              @if (unifiedTemplateGroups().length > 0) {
+                <!-- One picker spans both variants: an <optgroup> per variant
+                     that actually has a payload on this build, so a build
+                     missing one variant never offers a dead option for it.
+                     The option value encodes "<variant>::<template>"; picking
+                     one both selects the template AND swaps which variant the
+                     pixel-perfect preview (and its Download button) shows. -->
                 <label class="tpl">
                   <span class="tpl-label">Template:</span>
-                  <select [value]="chosenTemplate()" (change)="onTemplateChange($event)">
-                    @for (t of templateOptions(); track t) {
-                      <!-- [selected] as well as the select's [value]: when the async
-                           template list replaces the options after first render, a
-                           bare [value] binding isn't re-applied and the select can
-                           DISPLAY the wrong option; [selected] tracks the signal. -->
-                      <option [value]="t" [selected]="t === chosenTemplate()">{{ t }}</option>
+                  <select [value]="unifiedTemplateValue()" (change)="onUnifiedTemplateChange($event)">
+                    @for (group of unifiedTemplateGroups(); track group.variant) {
+                      <optgroup [label]="group.label">
+                        @for (t of group.templates; track t) {
+                          <!-- [selected] as well as the select's [value]: when the async
+                               template list replaces the options after first render, a
+                               bare [value] binding isn't re-applied and the select can
+                               DISPLAY the wrong option; [selected] tracks the signal. -->
+                          <option
+                            [value]="group.variant + '::' + t"
+                            [selected]="group.variant + '::' + t === unifiedTemplateValue()"
+                          >{{ t }}</option>
+                        }
+                      </optgroup>
                     }
                   </select>
                 </label>
               }
+              @if (previewMode() === 'pixel' && pixelPayload()) {
+                <button class="btn btn-sm" type="button" (click)="downloadPixelPdf()" [disabled]="pixelDownloading()">
+                  {{ pixelDownloading() ? 'Rendering…' : 'Download PDF' }}
+                </button>
+              }
             </div>
 
-            <!-- The PDF preview mounts on the FIRST Pixel-perfect entry, then
-                 stays mounted across Editing↔Pixel flips (hidden, never
-                 destroyed) so its per-template render cache survives a mode
-                 toggle instead of re-hitting Typst for an unchanged
-                 payload/template. -->
-            @if (effectivePayload(); as pp) {
-              @if (pixelSeen()) {
+            <!-- TWO pdf-preview instances, one per variant, each mounted lazily
+                 on its own first Pixel-perfect entry and kept mounted (hidden,
+                 never destroyed) after that — mirrors the original single-
+                 instance mount-once-then-hide design, just duplicated per
+                 variant. This is deliberate: a single shared instance clears
+                 its ENTIRE render cache whenever its payload reference changes
+                 (see pdf-preview.ts), so one instance ping-ponging between the
+                 human and ATS payload objects would re-hit Typst on every
+                 crossing. Two independent instances mean each variant's cache
+                 survives the other variant being viewed in between — switching
+                 ATS ⇄ Human repeatedly still hits Typst only once per
+                 (variant, template) pair. The Human instance's bindings
+                 (effectivePayload/chosenTemplate) are byte-identical to the
+                 pre-toggle single instance, so that path is unchanged. -->
+            @if (effectivePayload(); as hp) {
+              @if (pixelSeenHuman()) {
                 <app-pdf-preview
-                  [class.hide]="previewMode() !== 'pixel'"
-                  [variant]="pp.variant"
-                  [payload]="pp"
+                  [class.hide]="!(previewMode() === 'pixel' && pixelVariant() === 'human')"
+                  [variant]="hp.variant"
+                  [payload]="hp"
                   [template]="chosenTemplate() ?? ''"
                   (error)="onPreviewError($event)"
                 />
               }
-            } @else if (previewMode() === 'pixel') {
+            }
+            @if (bundle()?.ats_payload; as ap) {
+              @if (pixelSeenAts()) {
+                <app-pdf-preview
+                  [class.hide]="!(previewMode() === 'pixel' && pixelVariant() === 'ats')"
+                  [variant]="ap.variant"
+                  [payload]="ap"
+                  [template]="pixelTemplate() ?? ''"
+                  (error)="onPreviewError($event)"
+                />
+              }
+            }
+            @if (!pixelPayload() && previewMode() === 'pixel') {
               <div class="panel muted">This build has no résumé payload to preview.</div>
             }
 
@@ -441,11 +481,23 @@ export class TailoringWorkspace implements OnDestroy {
   /** The Final-preview fidelity sub-toggle: the editable HTML preview
    *  (`editing`) or the real Typst-rendered PDF in an iframe (`pixel`). */
   protected readonly previewMode = signal<'editing' | 'pixel'>('editing');
-  /** Latches true the first time Pixel-perfect is entered (per build). The PDF
-   *  preview mounts lazily on that first entry — no Typst render for a build
-   *  the user never inspects — but is then kept mounted and merely hidden on a
-   *  flip back to Editing, so its render cache survives mode toggles. */
-  protected readonly pixelSeen = signal(false);
+  /** Latch true the first time Pixel-perfect is entered showing that variant
+   *  (per build): each pdf-preview instance mounts lazily on ITS OWN first
+   *  view — no Typst render for a variant the user never inspects — then stays
+   *  mounted and merely hidden on a flip away, so its render cache survives
+   *  both Editing↔Pixel toggles and switching to the other variant. */
+  protected readonly pixelSeenHuman = signal(false);
+  protected readonly pixelSeenAts = signal(false);
+  /** Which variant the pixel-perfect preview (and its own Download button)
+   *  shows: `human` is the default and pre-existing behavior; `ats` swaps in
+   *  the build's ATS payload. Reset to `human` per build in {@link reset}. */
+  protected readonly pixelVariant = signal<Variant>('human');
+  /** The bare template name for the pixel preview's ATS branch specifically —
+   *  kept separate from {@link chosenTemplate} (the Human/default branch keeps
+   *  using that signal unchanged) so switching to ATS can pick its own
+   *  template (classic/minimal) without disturbing the Human selection. */
+  protected readonly pixelTemplate = signal<string | null>(null);
+  protected readonly pixelDownloading = signal(false);
   /** The templates resolvable per variant (`GET /api/templates`) — feeds the
    *  picker. `null` until loaded (or if the fetch fails, in which case the
    *  picker stays hidden and rendering falls back to the payload's own stamp). */
@@ -618,22 +670,82 @@ export class TailoringWorkspace implements OnDestroy {
     return next;
   });
 
-  /** The template names to offer for the CURRENT preview payload's variant —
-   *  ATS names for an ATS payload, human names for a human one. Degrades
-   *  gracefully against a server without `GET /api/templates` (an older binary
-   *  404s it) or a response with no entry for this variant: the picker then
-   *  offers just the payload's own bare template stamp, so the select is never
-   *  empty and pixel-perfect / Download keep working. Silent by design — a
-   *  capability degrade, not a user error, so no toast. The full server list
-   *  wins whenever the endpoint answers with names for this variant. */
-  protected readonly templateOptions = computed<string[]>(() => {
-    const payload = this.previewPayload();
+  /** Template names for the Human branch of the unified picker — mirrors
+   *  {@link pixelTemplateOptions}' degrade rules (server list, else the
+   *  payload's own stamp), scoped to the build's human payload specifically.
+   *  Empty when the build has no human payload, so a human-less build never
+   *  contributes a dead "Human" group to {@link unifiedTemplateGroups}. */
+  protected readonly humanTemplateOptions = computed<string[]>(() => {
+    const payload = this.bundle()?.human_payload;
     if (!payload) return [];
-    const t = this.templates();
-    const list = t ? (payload.variant === 'ats' ? t.ats : t.human) : [];
+    const list = this.templates()?.human ?? [];
     if (list.length > 0) return list;
-    // Endpoint errored/absent or listed nothing for this variant — seed with
-    // the build's actual template (its stamp minus the `ats/`/`human/` prefix).
+    const stamp = payload.template?.replace(/^(ats|human)\//, '');
+    return stamp ? [stamp] : [];
+  });
+
+  /** The unified template picker's grouped options — one `<optgroup>` per
+   *  variant that actually has a payload on this build (Human first, then
+   *  ATS), so a build missing a variant never offers a dead group for it. */
+  protected readonly unifiedTemplateGroups = computed<
+    { variant: Variant; label: string; templates: string[] }[]
+  >(() => {
+    const groups: { variant: Variant; label: string; templates: string[] }[] = [];
+    const human = this.humanTemplateOptions();
+    if (human.length > 0) groups.push({ variant: 'human', label: 'Human', templates: human });
+    const ats = this.pixelTemplateOptions();
+    if (ats.length > 0) groups.push({ variant: 'ats', label: 'ATS', templates: ats });
+    return groups;
+  });
+
+  /** The unified picker's current value, `"<variant>::<template>"` — the pair
+   *  the pixel-perfect preview is currently showing. Falls back to whichever
+   *  group IS rendered when {@link pixelVariant}'s own group is empty (an
+   *  ATS-only build defaults `pixelVariant` to `'human'` in {@link reset}
+   *  before the bundle loads; the bundle-load handler corrects it to `'ats'`
+   *  once it's known there's no human payload — this fallback just keeps the
+   *  select's value always matching a real `<option>` in the interim). */
+  protected readonly unifiedTemplateValue = computed<string>(() => {
+    const groups = this.unifiedTemplateGroups();
+    const wanted = this.pixelVariant();
+    const group = groups.find((g) => g.variant === wanted) ?? groups[0];
+    if (!group) return '';
+    const ownTemplate = wanted === 'ats' ? this.pixelTemplate() : this.chosenTemplate();
+    const template = group.variant === wanted ? ownTemplate : group.templates[0];
+    return `${group.variant}::${template ?? ''}`;
+  });
+
+  /** The payload the currently-selected pixel-perfect variant shows, and what
+   *  its own Download button downloads (each of the two mounted pdf-preview
+   *  instances below renders its OWN fixed variant directly; this computed
+   *  just tracks which one is "active" for the download/empty-state logic).
+   *  The `human` branch (the default) is the exact same expression as before
+   *  this toggle existed — {@link effectivePayload} — so the common case is
+   *  untouched. Picking `ats` swaps in the build's ATS payload directly, with
+   *  NO local-edit overlay: free edits are positional against the
+   *  human/default preview payload, and painting them onto the ATS payload's
+   *  (possibly differently-ordered) lines would risk showing text that never
+   *  traces to that payload's evidence — never-fabricate applies to which
+   *  payload an edit lands on, not just its content. */
+  protected readonly pixelPayload = computed<VariantPayload | null>(() =>
+    this.pixelVariant() === 'ats' ? (this.bundle()?.ats_payload ?? null) : this.effectivePayload(),
+  );
+
+  /** The bare template name the pixel preview and its download use: the shared
+   *  {@link chosenTemplate} for the Human branch (unchanged), else the
+   *  ATS-only {@link pixelTemplate}. */
+  protected readonly pixelShownTemplate = computed<string | null>(() =>
+    this.pixelVariant() === 'ats' ? this.pixelTemplate() : this.chosenTemplate(),
+  );
+
+  /** Template names for the pixel preview's ATS branch: the server list when
+   *  present, else the payload's own stamp, scoped to the build's ATS payload
+   *  specifically. */
+  protected readonly pixelTemplateOptions = computed<string[]>(() => {
+    const payload = this.bundle()?.ats_payload;
+    if (!payload) return [];
+    const list = this.templates()?.ats ?? [];
+    if (list.length > 0) return list;
     const stamp = payload.template?.replace(/^(ats|human)\//, '');
     return stamp ? [stamp] : [];
   });
@@ -710,9 +822,22 @@ export class TailoringWorkspace implements OnDestroy {
       untracked(() => this.chosenTemplate.set(stamp));
     });
 
-    // Latch the lazy PDF-preview mount on the first Pixel-perfect entry.
+    // Latch the lazy PDF-preview mount on the first Pixel-perfect entry,
+    // separately per variant (see pixelSeenHuman/pixelSeenAts).
     effect(() => {
-      if (this.previewMode() === 'pixel') this.pixelSeen.set(true);
+      if (this.previewMode() !== 'pixel') return;
+      if (this.pixelVariant() === 'ats') this.pixelSeenAts.set(true);
+      else this.pixelSeenHuman.set(true);
+    });
+
+    // Default the pixel preview's ATS template to whatever that payload was
+    // stamped with, whenever the build's ATS payload changes (a fresh build).
+    // Mirrors the chosenTemplate effect above, scoped to the ATS branch only —
+    // the Human branch keeps using chosenTemplate/that effect unchanged.
+    effect(() => {
+      const payload = this.bundle()?.ats_payload;
+      const stamp = payload?.template ? payload.template.replace(/^(ats|human)\//, '') : null;
+      untracked(() => this.pixelTemplate.set(stamp));
     });
 
     // Whenever the set of flagged lines changes (a re-check, an edit, a confirm),
@@ -728,10 +853,17 @@ export class TailoringWorkspace implements OnDestroy {
       this.reset();
       this.api.getBuild(id).subscribe({
         next: (d) => {
-          this.bundle.set(d as BuildBundle);
+          const bundle = d as BuildBundle;
+          this.bundle.set(bundle);
+          // reset() guesses `pixelVariant` as 'human' before the bundle is
+          // known; an ATS-only build (no human payload) has no Human group in
+          // the unified picker, so correct the guess here rather than leave
+          // unifiedTemplateValue() falling back to a group the signal didn't
+          // ask for.
+          if (!bundle.human_payload && bundle.ats_payload) this.pixelVariant.set('ats');
           // Seed "left for now" from the build's persisted triage so a leave
           // survives a reload (the reviewer rail reads `leftIds`).
-          this.leftIds.set(new Set((d as BuildBundle).triage?.left ?? []));
+          this.leftIds.set(new Set(bundle.triage?.left ?? []));
           this.loadDataset();
         },
         error: (err: unknown) => {
@@ -790,18 +922,34 @@ export class TailoringWorkspace implements OnDestroy {
     this.drawer.set(null);
     this.view.set('preview');
     this.previewMode.set('editing');
-    // Unmount the PDF preview for the incoming build (its onDestroy revokes the
-    // old build's cached object URLs); it re-mounts on the next pixel entry.
-    this.pixelSeen.set(false);
+    // Unmount both PDF previews for the incoming build (their onDestroy
+    // revokes the old build's cached object URLs); each re-mounts on its own
+    // next pixel entry.
+    this.pixelSeenHuman.set(false);
+    this.pixelSeenAts.set(false);
+    // Human is the default pixel-preview variant for every build — the
+    // pre-existing default, unchanged. Corrected to 'ats' once the bundle
+    // loads if this build turns out to have no human payload (see the
+    // getBuild subscription below).
+    this.pixelVariant.set('human');
   }
 
-  /** The picker changed the template: re-project the pixel-perfect iframe and
-   *  the next Download PDF against the newly-chosen (bare) name — and jump to
-   *  Pixel-perfect so the choice is immediately visible (picking a template is
-   *  a request to SEE it; staying in the HTML editor would render the change
-   *  invisibly in the background). */
-  protected onTemplateChange(e: Event): void {
-    this.chosenTemplate.set((e.target as HTMLSelectElement).value);
+  /** The unified picker changed: split its `"<variant>::<template>"` value back
+   *  into which variant to show and that variant's own template signal — the
+   *  Human option drives {@link chosenTemplate} (unchanged since before this
+   *  variant picker existed), the ATS option drives {@link pixelTemplate} — then
+   *  jump to Pixel-perfect so the choice is immediately visible (picking a
+   *  template is a request to SEE it; staying in the HTML editor would render
+   *  the change invisibly in the background). */
+  protected onUnifiedTemplateChange(e: Event): void {
+    const value = (e.target as HTMLSelectElement).value;
+    const sep = value.indexOf('::');
+    if (sep < 0) return;
+    const variant = value.slice(0, sep) as Variant;
+    const template = value.slice(sep + 2);
+    this.pixelVariant.set(variant);
+    if (variant === 'ats') this.pixelTemplate.set(template);
+    else this.chosenTemplate.set(template);
     this.previewMode.set('pixel');
   }
 
@@ -1714,6 +1862,30 @@ export class TailoringWorkspace implements OnDestroy {
       done();
       this.showToast('No rendered PDF or payload available for this build.');
     }
+  }
+
+  /** Download exactly what the pixel-perfect preview is currently showing —
+   *  the selected variant (Human or ATS) at its selected template. Independent
+   *  of {@link downloadPdf} (the header's own button), which keeps its
+   *  existing human-default behavior untouched. Filenames are
+   *  `resume.human.pdf` / `resume.ats.pdf` so the two variants never collide
+   *  on disk. */
+  protected downloadPixelPdf(): void {
+    const payload = this.pixelPayload();
+    if (!payload) return;
+    const templateName =
+      this.pixelShownTemplate() || payload.template?.replace(/^(ats|human)\//, '') || undefined;
+    this.pixelDownloading.set(true);
+    this.api.render(payload.variant, payload, templateName).subscribe({
+      next: (blob) => {
+        triggerDownload(blob, `resume.${payload.variant}.pdf`);
+        this.pixelDownloading.set(false);
+      },
+      error: (err: unknown) => {
+        this.pixelDownloading.set(false);
+        this.showToast(`Render failed: ${errMessage(err)}`);
+      },
+    });
   }
 
   private showToast(msg: string): void {
