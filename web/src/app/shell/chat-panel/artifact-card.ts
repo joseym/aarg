@@ -10,6 +10,7 @@ import {
 
 import { ApiService } from '../../services/api.service';
 import { ChatStore } from '../../services/chat-store';
+import { triggerDownload } from '../../shared/download';
 import {
   type ArtifactKind,
   type CoverPayload,
@@ -320,18 +321,6 @@ export class ArtifactCard implements OnInit {
 
 /** Synthetic filename for the JD's client-side .txt download (no stored file). */
 const JD_TXT = '__jd_txt__';
-
-/** Trigger a browser download of a blob under a filename. */
-function triggerDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
 
 /** Copy text to the clipboard, falling back to a hidden textarea when the async
  *  Clipboard API is unavailable (older engine, or a non-secure context). */
