@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::dataset::types::ResumeDataset;
 use crate::jd::JobRequirements;
-use crate::llm::{CompletionRequest, LlmError, Message, StreamEvent, TokenUsage};
+use crate::llm::{CompletionRequest, LlmError, Message, Role, StreamEvent, TokenUsage};
 use crate::review::{AdversarialReport, format_objection};
 use crate::tailor::TailoredResume;
 
@@ -271,6 +271,11 @@ pub async fn stream_reply(
         })
         .collect();
     messages.push(Message::user(input.message.clone()));
+    // The transcript is caller-supplied JSON: a browser that kept an
+    // unanswered user turn after a failed stream, or a cap that sliced mid-pair,
+    // can hand us a non-alternating sequence the provider APIs reject. Normalize
+    // so the sent messages always start with a user turn and strictly alternate.
+    let messages = normalize_turns(messages);
 
     let model = ctx.model.resolve(CHAT_AGENT_ID, CHAT_TIER).to_string();
     let request = CompletionRequest {
@@ -340,6 +345,32 @@ async fn stream_and_collect(
 fn cap_history(history: &[ChatTurn]) -> &[ChatTurn] {
     let start = history.len().saturating_sub(HISTORY_TURNS);
     &history[start..]
+}
+
+/// Coerce a message list into the strictly-alternating, user-first shape the
+/// provider APIs require. Two malformations can reach here from caller-supplied
+/// transcript JSON: consecutive same-role turns (a browser that kept an
+/// unanswered user turn after a failed stream, then appended the next one) and
+/// a leading assistant turn (the cap sliced a pair in half). Consecutive
+/// same-role turns are merged into one, so no words are lost, and a leading
+/// assistant orphan (which has no user turn to answer) is dropped.
+fn normalize_turns(messages: Vec<Message>) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
+    for message in messages {
+        match out.last_mut() {
+            Some(last) if last.role == message.role => {
+                // Same role back-to-back: fold the content in rather than send
+                // a shape the API rejects.
+                last.content.push_str("\n\n");
+                last.content.push_str(&message.content);
+            }
+            _ => out.push(message),
+        }
+    }
+    if out.first().is_some_and(|m| m.role == Role::Assistant) {
+        out.remove(0);
+    }
+    out
 }
 
 /// The grounding shared by both paths: the posting, the recorded background,
@@ -831,5 +862,64 @@ mod tests {
         // The earliest turns were dropped; the oldest survivor is turn 6.
         assert_eq!(request.messages[0].content, "turn number 6");
         assert_eq!(request.messages.last().unwrap().content, "latest");
+    }
+
+    #[tokio::test]
+    async fn a_non_alternating_transcript_is_normalized_to_user_first_alternation() {
+        let mock = MockLlmClient::default();
+        mock.enqueue("ok");
+
+        // The failure shape Phase B can produce: a leading assistant orphan
+        // (a cap sliced a pair) and an unanswered user turn a failed stream
+        // left behind, so two user turns land back to back.
+        let history = vec![
+            ChatTurn {
+                from_user: false,
+                text: "orphaned assistant turn".into(),
+            },
+            ChatTurn {
+                from_user: true,
+                text: "first question".into(),
+            },
+            ChatTurn {
+                from_user: true,
+                text: "unanswered follow-up".into(),
+            },
+        ];
+        stream_reply(&ctx(&mock), &input(None, history, "latest question"))
+            .await
+            .unwrap();
+
+        let request = &mock.requests()[0];
+        // The leading assistant is dropped and the run of user turns (the two
+        // history turns plus the latest) merges into one, so the sequence is
+        // user-first and strictly alternating - here, a single user turn.
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].role, crate::llm::Role::User);
+        let sent = &request.messages[0].content;
+        assert!(sent.contains("first question"));
+        assert!(sent.contains("unanswered follow-up"));
+        assert!(sent.contains("latest question"));
+        // The orphaned assistant turn, with no user turn to answer, is gone.
+        assert!(!sent.contains("orphaned assistant turn"));
+    }
+
+    #[test]
+    fn render_build_echoes_only_build_content() {
+        // The provenance property, pinned structurally: the rendered build is
+        // built entirely from the draft and the report, never invented text.
+        let rendered = render_build(&sample_build());
+
+        // Every free-text value from the draft and the reviewer appears.
+        assert!(rendered.contains("Staff Engineer")); // target_title
+        assert!(rendered.contains("Reliability-focused engineering leader.")); // summary
+        assert!(rendered.contains("Built the on-call rotation and ran incident response")); // bullet
+        assert!(rendered.contains("Reliability engineering")); // skill
+        assert!(rendered.contains("0.62")); // score
+        assert!(rendered.contains("Solid but under-quantified.")); // persona_notes
+        assert!(rendered.contains("the on-call bullet has no number")); // objection message
+        // Nothing the build never contained leaks in.
+        assert!(!rendered.contains("Kubernetes"));
+        assert!(!rendered.contains("fabricated"));
     }
 }
