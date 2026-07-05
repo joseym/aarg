@@ -353,9 +353,16 @@ fn llm_error_response(error: LlmError, base_url: Option<&str>) -> Resp {
             ref kind,
             ref message,
         } => {
-            // Reuse the provider's own status when it's a valid HTTP code; the
-            // message is the provider's, which never echoes the key.
-            let code = StatusCode::from_u16(status).map_or(502, |_| status);
+            // Reuse the provider's own status when it's a valid HTTP error
+            // code; the message is the provider's, which never echoes the
+            // key. A 2xx here means the provider hid an error inside a
+            // success reply (LM Studio does this when a reasoning budget
+            // runs out), and passing it through would let a client read the
+            // error body as a completed call.
+            let code = match StatusCode::from_u16(status) {
+                Ok(_) if status >= 400 => status,
+                _ => 502,
+            };
             error_response(code, kind, message.clone())
         }
         // A transport failure, including a down local server, named via
@@ -1763,6 +1770,30 @@ mod tests {
         // No base_url (Anthropic): never a local hint, even on a refusal.
         let message = describe_llm_error(&refused, None);
         assert!(!message.contains("start LM Studio"), "got: {message}");
+    }
+
+    #[test]
+    fn a_provider_error_hidden_in_a_success_status_becomes_a_502() {
+        // LM Studio reports an exhausted reasoning budget as an error inside
+        // an HTTP 200. The route must not hand that 200 to the browser: a
+        // client checking `res.ok` would parse the error body as a
+        // completion.
+        let hidden = LlmError::Api {
+            status: 200,
+            kind: "empty_reply".to_string(),
+            message: "the model produced no text".to_string(),
+        };
+        let resp = llm_error_response(hidden, None);
+        assert_eq!(resp.status(), 502);
+
+        // Real provider rejections keep their own status.
+        let rejected = LlmError::Api {
+            status: 429,
+            kind: "rate_limit".to_string(),
+            message: "slow down".to_string(),
+        };
+        let resp = llm_error_response(rejected, None);
+        assert_eq!(resp.status(), 429);
     }
 
     #[test]
