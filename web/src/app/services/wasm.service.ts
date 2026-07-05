@@ -347,22 +347,32 @@ export class WasmService {
    *  once — retrying them would only stall the run. Each attempt is a fresh
    *  `fetch` with no client-side timeout, so backoff waits never stack onto a
    *  call's own duration. */
-  private readonly llm: StringCallback = (requestJson) => this.postLlm(requestJson, null);
+  private readonly llm: StringCallback = (requestJson) => this.postLlm(requestJson, null, true);
 
-  /** The shared `/api/llm` POST + retry engine behind {@link llm}. `onDelta`, when
-   *  given, receives each streamed delta's TEXT as it arrives — the chat panel
-   *  renders replies token-by-token from it. The tailor-loop path passes `null`,
-   *  so its char-count `streamHandler` tick (below, in {@link readSseStream}) is
-   *  untouched: this is purely additive to the existing streaming seam. */
+  /** The shared `/api/llm` POST + retry engine behind {@link llm}. `onText`, when
+   *  given, receives the running accumulated reply text of the CURRENT attempt as
+   *  it streams — the chat panel renders replies from it. It is the accumulated
+   *  text (not a bare delta) so a retry, which restarts a fresh stream, replaces
+   *  the panel's partial rather than appending onto it; a reset to `''` fires at
+   *  each attempt start so the bubble clears before a retried stream.
+   *
+   *  `driveOverlay` gates the `streamHandler` char-tick and the `retryNotify`
+   *  backoff notice, which feed the tailor-run overlay's progress signals. The
+   *  tailor loop passes `true`; a chat turn passes `false`, so a chat turn that
+   *  overlaps a tailor run never ticks that run's char counter or resets its
+   *  stall detector (the chat renders from `onText` and shows its own errors). */
   private async postLlm(
     requestJson: string,
-    onDelta: ((text: string) => void) | null,
+    onText: ((text: string) => void) | null,
+    driveOverlay: boolean,
   ): Promise<string> {
     // Backoff before the 1st and 2nd retry; its length is the retry budget (2).
     const backoffMs = [2000, 5000];
     for (let attempt = 0; ; attempt++) {
-      // Each attempt starts the stream tick from zero — a retry re-accumulates.
-      this.streamHandler?.(0);
+      // Each attempt starts from zero: reset the overlay char tick (when driving
+      // it) and clear the streamed-text sink so a retry can't show partial+full.
+      if (driveOverlay) this.streamHandler?.(0);
+      onText?.('');
       let res: Response;
       try {
         res = await fetch('/api/llm', {
@@ -377,7 +387,7 @@ export class WasmService {
         // Transport-level failure (network dropped, request aborted by the OS).
         if (attempt < backoffMs.length) {
           console.warn(`/api/llm transport error; retry ${attempt + 1} after backoff`, err);
-          this.retryNotify?.('model call interrupted, retrying');
+          if (driveOverlay) this.retryNotify?.('model call interrupted, retrying');
           await delay(backoffMs[attempt]);
           continue;
         }
@@ -387,7 +397,7 @@ export class WasmService {
         // A provider overload (429 rate limit / 529 overloaded) is transient too.
         if ((res.status === 429 || res.status === 529) && attempt < backoffMs.length) {
           console.warn(`/api/llm overloaded (${res.status}); retry ${attempt + 1} after backoff`);
-          this.retryNotify?.('model call interrupted, retrying');
+          if (driveOverlay) this.retryNotify?.('model call interrupted, retrying');
           await delay(backoffMs[attempt]);
           continue;
         }
@@ -409,12 +419,12 @@ export class WasmService {
       // contract). A stream that dies mid-flight is a retryable transport
       // failure; an `error` frame is an application error and is not retried.
       try {
-        return await this.readSseStream(res, onDelta);
+        return await this.readSseStream(res, onText, driveOverlay);
       } catch (err) {
         if (err instanceof StreamAppError) throw new Error(err.message);
         if (err instanceof StreamTransportError && attempt < backoffMs.length) {
           console.warn(`/api/llm ${err.message}; retry ${attempt + 1} after backoff`);
-          this.retryNotify?.('model call interrupted, retrying');
+          if (driveOverlay) this.retryNotify?.('model call interrupted, retrying');
           await delay(backoffMs[attempt]);
           continue;
         }
@@ -430,7 +440,8 @@ export class WasmService {
    *  {@link StreamTransportError} if the stream dies or ends without `done`. */
   private async readSseStream(
     res: Response,
-    onDelta: ((text: string) => void) | null = null,
+    onText: ((text: string) => void) | null = null,
+    driveOverlay = true,
   ): Promise<string> {
     if (!res.body) throw new StreamTransportError('the streamed response had no body', 0);
     const reader = res.body.getReader();
@@ -465,10 +476,13 @@ export class WasmService {
           if ('delta' in evt) {
             accumulated += evt.delta;
             chunks++;
-            this.streamHandler?.(accumulated.length);
-            // Additive to the char-count tick above: hand the chat consumer the
-            // actual delta text so it can render the reply progressively.
-            onDelta?.(evt.delta);
+            // Char-tick drives the tailor-run overlay; skipped for a chat turn so
+            // it can't crosstalk a concurrent run's progress counter.
+            if (driveOverlay) this.streamHandler?.(accumulated.length);
+            // Hand the chat consumer the running accumulated text so it renders
+            // the reply progressively; a retry restarts `accumulated`, so this
+            // replaces the partial instead of appending onto it.
+            onText?.(accumulated);
           } else if ('done' in evt) {
             return JSON.stringify({
               text: accumulated,
@@ -605,9 +619,9 @@ export class WasmService {
   }
 
   /** One grounded chat turn about a build (Phase B). Runs the wasm `chat_reply`
-   *  engine, which drives a streaming, tools-empty Smart-tier request; `onDelta`
-   *  receives each token as it streams from `/api/llm`, and the promise resolves
-   *  with the complete assistant reply for the transcript.
+   *  engine, which drives a streaming, tools-empty Smart-tier request; `onText`
+   *  receives the running reply text as it streams from `/api/llm`, and the
+   *  promise resolves with the complete assistant reply for the transcript.
    *
    *  `canonical`/`report` are optional — pass `null` for a JD-only conversation;
    *  the binding sends `""`, which the export reads as "absent". `transcript` is
@@ -622,12 +636,14 @@ export class WasmService {
       transcript: { from_user: boolean; text: string }[];
       message: string;
     },
-    onDelta: (text: string) => void,
+    onText: (text: string) => void,
   ): Promise<string> {
     const m = await this.load();
-    // A per-call llm callback that surfaces delta text, reusing the shared POST +
-    // retry engine; the default `this.llm` (tailor loop) is left untouched.
-    const llm: StringCallback = (requestJson) => this.postLlm(requestJson, onDelta);
+    // A per-call llm callback that surfaces the reply text, reusing the shared
+    // POST + retry engine; `driveOverlay: false` keeps a chat turn off the
+    // tailor-run overlay's progress signals, and the default `this.llm` (tailor
+    // loop) is left untouched.
+    const llm: StringCallback = (requestJson) => this.postLlm(requestJson, onText, false);
     const reply = await m.chat_reply(
       JSON.stringify(args.dataset),
       JSON.stringify(args.jd),
