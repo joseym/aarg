@@ -196,7 +196,7 @@ export function resumeToText(canonical: unknown): string {
   if (roles.length > 0) {
     lines.push('', 'Experience');
     for (const role of roles) {
-      const heading = [role.title, role.company].filter(Boolean).join(' — ');
+      const heading = [role.title, role.company].filter(Boolean).join(' · ');
       if (heading) lines.push('', heading);
       for (const bullet of role.bullets ?? []) {
         if (bullet.text?.trim()) lines.push(`  - ${bullet.text.trim()}`);
