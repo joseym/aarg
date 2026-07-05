@@ -56,6 +56,19 @@ const NO_COMPANY = 'No company';
         <div class="side-head">
           <h2>Recent Builds</h2>
           <div class="side-head-r">
+            <button
+              class="chat-toggle"
+              type="button"
+              [class.on]="chatOpen()"
+              [attr.aria-pressed]="chatOpen()"
+              [attr.aria-label]="chatOpen() ? 'Close chat' : 'Open chat'"
+              title="Chat about the open build"
+              (click)="toggleChat.emit()"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z" />
+              </svg>
+            </button>
             <span class="count">{{ store.filtered().length }}</span>
             <button class="side-close" type="button" aria-label="Hide recent builds" (click)="closeNav.emit()">
               ✕
@@ -275,12 +288,19 @@ const NO_COMPANY = 'No company';
     .side-head h2 { font-size: 14px; letter-spacing: 0.02em; }
     .side-head-r { display: flex; align-items: center; gap: 10px; }
     .count { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
-    .side-close {
-      display: none; align-items: center; justify-content: center;
+    /* Header action buttons: .chat-toggle (all widths) opens the chat column,
+     * .side-close (mobile only) hides the drawer. */
+    .side-close, .chat-toggle {
+      display: inline-flex; align-items: center; justify-content: center;
       width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 8px;
-      background: var(--surface); color: var(--muted); cursor: pointer; font-size: 14px;
+      background: var(--surface); color: var(--muted); cursor: pointer;
+      transition: border-color 0.14s, color 0.14s;
     }
-    .side-close:hover { border-color: var(--fg); color: var(--fg); }
+    .side-close { display: none; font-size: 14px; }
+    .side-close:hover, .chat-toggle:hover { border-color: var(--fg); color: var(--fg); }
+    .side-close:focus-visible, .chat-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .chat-toggle.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    .chat-toggle svg { width: 15px; height: 15px; }
 
     /* Compact grouping + sort row, sitting under the section head. Narrow rail,
      * so house tokens only and no new hues. */
@@ -470,8 +490,11 @@ export class Sidebar {
   readonly open = input(false);
   /** Desktop-only collapse state (meaningless ≤1080px; see host CSS). */
   readonly collapsed = input(false);
+  /** Whether the chat panel is open, so the header toggle reflects its state. */
+  readonly chatOpen = input(false);
   readonly closeNav = output<void>();
   readonly toggleCollapse = output<void>();
+  readonly toggleChat = output<void>();
 
   /** Group builds under company headers. Default ON (the common request is to
    *  cluster by company); the choice persists in localStorage so turning it off
