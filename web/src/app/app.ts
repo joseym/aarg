@@ -62,11 +62,23 @@ export class App implements OnInit {
    *  persisted. Ignored ≤1080px, where the panel overlays full-width. */
   protected readonly chatWidth = signal(loadChatWidth());
 
-  /** Escape dismisses the mobile drawer or the chat overlay, whichever is open.
-   *  No-ops otherwise, so the key stays free for anything else listening. */
+  /** Whether a resize drag is in progress, so the shell can suppress the grid
+   *  column transition (it would rubber-band against the live drag). */
+  protected readonly chatResizing = signal(false);
+
+  /** Escape dismisses the mobile drawer or the chat, whichever is open. The chat
+   *  yields to any open dialog-like surface (the copilot Q&A, the refine drawer,
+   *  the edit-history popover, the delete confirm all mark themselves
+   *  `role="dialog"`/`"alertdialog"`), so one Escape that dismisses such a layer
+   *  does not also slam the chat shut. No-ops otherwise. */
   protected onEscape(): void {
-    if (this.navOpen()) this.navOpen.set(false);
-    else if (this.chatOpen()) this.setChatOpen(false);
+    if (this.navOpen()) {
+      this.navOpen.set(false);
+      return;
+    }
+    if (this.chatOpen() && !document.querySelector('[role="dialog"], [role="alertdialog"]')) {
+      this.setChatOpen(false);
+    }
   }
 
   protected closeNav(): void {
@@ -84,9 +96,19 @@ export class App implements OnInit {
     }
   }
 
-  /** Adopt a new chat width from the resize handle and persist it. */
+  /** Live width during a drag: update the column but do not persist yet (that
+   *  would write localStorage on every pointermove). Marks a drag in progress so
+   *  the shell drops the grid transition and the column tracks the pointer 1:1. */
   protected onChatWidth(width: number): void {
+    this.chatResizing.set(true);
     this.chatWidth.set(width);
+  }
+
+  /** Drag released: adopt the final width, persist it once, and re-enable the
+   *  column transition. */
+  protected onChatWidthCommit(width: number): void {
+    this.chatWidth.set(width);
+    this.chatResizing.set(false);
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(CHAT_WIDTH_KEY, String(Math.round(width)));
     }

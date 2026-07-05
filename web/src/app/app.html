@@ -5,6 +5,7 @@
   [class.nav-open]="navOpen()"
   [class.collapsed]="collapsed()"
   [class.chat-open]="chatOpen()"
+  [class.chat-resizing]="chatResizing()"
   [style.--chat-w.px]="chatOpen() ? chatWidth() : 0"
 >
   <div class="nav-scrim" (click)="navOpen.set(false)"></div>
@@ -22,6 +23,7 @@
     [width]="chatWidth()"
     (close)="toggleChat()"
     (widthChange)="onChatWidth($event)"
+    (widthCommit)="onChatWidthCommit($event)"
   />
   <main class="main">
     <router-outlet />
