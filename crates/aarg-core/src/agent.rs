@@ -364,7 +364,23 @@ where
         }
 
         let json = strip_fences(&response.text);
-        match serde_json::from_str::<A::Wire>(json) {
+        // Strict parse first. Only when that fails do we try the one
+        // deterministic repair local models reliably need — a trailing comma
+        // before a closing `]` or `}` — and reparse. A trailing comma is
+        // syntactically unambiguous, so dropping it changes no meaning; a
+        // repair that still doesn't parse surfaces the ORIGINAL strict error,
+        // so the corrective retry turn shows the real syntax problem rather
+        // than a post-repair artifact. Every agent goes through this seam, so
+        // all of them tolerate the sloppy JSON, not just the variant adapter.
+        let parsed = serde_json::from_str::<A::Wire>(json).or_else(|strict_err| {
+            let repaired = repair_trailing_commas(json);
+            if repaired != json {
+                serde_json::from_str::<A::Wire>(&repaired).map_err(|_| strict_err)
+            } else {
+                Err(strict_err)
+            }
+        });
+        match parsed {
             Ok(wire) => {
                 // Assembly failures are semantic verdicts (bad IDs, an
                 // empty selection), not malformed output — retrying the
@@ -498,6 +514,59 @@ pub fn strip_fences(text: &str) -> &str {
         None => rest,
     };
     body.trim_end().strip_suffix("```").unwrap_or(body).trim()
+}
+
+/// A deterministic, string-aware repair for the one malformed-JSON shape
+/// local models reliably emit: a trailing comma before a closing `]` or `}`
+/// (`{"a":1,}`, `[1,2,]`). Run ONLY after strict parsing fails, because the
+/// repair is lossy of nothing — a trailing comma carries no meaning — but it
+/// is still the smallest safe fix. Nothing else is touched: no quote fixing,
+/// no comment stripping, no key quoting; those are ambiguous and belong to a
+/// real parser, not a byte patch.
+///
+/// The walk tracks whether it is inside a string literal (and whether the
+/// current byte is escaped) so a comma *inside* a string value is never
+/// mistaken for structure: `{"note":"a, b,"}` comes back untouched. Only bare
+/// ASCII comma bytes are ever dropped and every other byte is copied as-is, so
+/// the result stays valid UTF-8 (a multibyte character's continuation bytes
+/// are all >= 0x80 and never collide with the ASCII bytes this inspects).
+pub fn repair_trailing_commas(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            out.push(b);
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+            out.push(b);
+            continue;
+        }
+        if b == b',' {
+            // Trailing when the next non-whitespace byte closes an array or
+            // object. Peek ahead without consuming; the empty tail (comma at
+            // end of input) simply finds nothing and is kept.
+            let next = bytes[i + 1..].iter().find(|&&c| !c.is_ascii_whitespace());
+            if next.is_some_and(|&c| c == b'}' || c == b']') {
+                continue; // drop the trailing comma
+            }
+        }
+        out.push(b);
+    }
+    // Only bare ASCII bytes were ever dropped, so `out` is still valid UTF-8;
+    // fall back to the untouched input on the impossible error rather than
+    // panic (the production lints forbid unwrap here anyway).
+    String::from_utf8(out).unwrap_or_else(|_| input.to_string())
 }
 
 /// The first stretch of an unparseable reply, for error messages:
@@ -972,5 +1041,95 @@ mod tests {
         assert_eq!(strip_fences("```json\n{\"a\": 1}\n```"), "{\"a\": 1}");
         assert_eq!(strip_fences("```\n{\"a\": 1}\n```"), "{\"a\": 1}");
         assert_eq!(strip_fences("  {\"a\": 1}  "), "{\"a\": 1}");
+    }
+
+    #[test]
+    fn repair_strips_a_trailing_comma_before_a_closer() {
+        assert_eq!(repair_trailing_commas("{\"a\":1,}"), "{\"a\":1}");
+        assert_eq!(repair_trailing_commas("[1,2,]"), "[1,2]");
+        // Whitespace and newlines between the comma and the closer are the
+        // common real shape (the model breaks the line); the closer still
+        // makes it trailing.
+        assert_eq!(repair_trailing_commas("{\"a\":1,\n}"), "{\"a\":1\n}");
+        assert_eq!(repair_trailing_commas("[1, 2 , ]"), "[1, 2  ]");
+    }
+
+    #[test]
+    fn repair_reaches_nested_trailing_commas() {
+        assert_eq!(
+            repair_trailing_commas("{\"a\":[1,2,],\"b\":{\"c\":3,},}"),
+            "{\"a\":[1,2],\"b\":{\"c\":3}}"
+        );
+    }
+
+    #[test]
+    fn repair_never_touches_a_comma_inside_a_string() {
+        // A comma that is string content, not structure, stays put.
+        let prose = "{\"note\":\"a, b, and c\"}";
+        assert_eq!(repair_trailing_commas(prose), prose);
+        // Even a string value that itself ends in a comma right before the
+        // closing quote is untouched — the closer that follows is outside it.
+        let ends_in_comma = "{\"note\":\"trailing,\"}";
+        assert_eq!(repair_trailing_commas(ends_in_comma), ends_in_comma);
+        // A brace inside a string must not fool the closer-peek, and an
+        // escaped quote must not end the string early.
+        let tricky = "{\"note\":\"x,}\",\"n\":1}";
+        assert_eq!(repair_trailing_commas(tricky), tricky);
+        let escaped = "{\"note\":\"say \\\"hi\\\",\",\"n\":1}";
+        assert_eq!(repair_trailing_commas(escaped), escaped);
+    }
+
+    #[test]
+    fn repair_leaves_valid_json_byte_identical() {
+        let clean = "{\"a\":1,\"b\":[2,3],\"c\":{\"d\":4}}";
+        assert_eq!(repair_trailing_commas(clean), clean);
+    }
+
+    #[tokio::test]
+    async fn a_trailing_comma_reply_is_repaired_without_a_retry() {
+        // The exact failure shape from build 056: a reply that is correct
+        // except for a trailing comma at the end of the object. It now parses
+        // on the first attempt — no corrective round-trip to the model.
+        let mock = MockLlmClient::default();
+        mock.enqueue("{\"value\": 40,}");
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        };
+
+        let run = EchoAgent.run(&ctx, 2).await.unwrap();
+
+        assert_eq!(run.output, 42);
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "repaired in place, no corrective retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_the_repair_cannot_fix_still_retries_then_fails() {
+        // Truncation is not a trailing comma, so the repair is a no-op and the
+        // existing retry/typed-error path is unchanged: one correction, then
+        // the typed BadReply.
+        let mock = MockLlmClient::default();
+        mock.enqueue("{\"value\": ");
+        mock.enqueue("still not json {");
+        let ctx = AgentContext {
+            llm: &mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        };
+
+        let err = EchoAgent.run(&ctx, 1).await.unwrap_err();
+        assert!(matches!(err, EchoError::BadReply { .. }));
+        assert_eq!(
+            mock.requests().len(),
+            2,
+            "the repair doesn't skip the retry"
+        );
     }
 }
