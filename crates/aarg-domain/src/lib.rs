@@ -27,6 +27,7 @@ pub mod enrich;
 pub mod gap;
 pub mod guide;
 pub mod jd;
+pub mod jdchat;
 pub mod keywords;
 pub mod metric;
 pub mod mirror;
