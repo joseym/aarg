@@ -16,6 +16,7 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../services/api.service';
 import { WasmService } from '../../services/wasm.service';
 import { CopilotHost } from '../../shared/copilot-host';
+import { triggerDownload } from '../../shared/download';
 import { BuildRunner } from '../../services/build-runner';
 import { ChatStore } from '../../services/chat-store';
 import type {
@@ -1882,17 +1883,6 @@ function withRemoved(s: ReadonlySet<string>, id: string): ReadonlySet<string> {
   const next = new Set(s);
   next.delete(id);
   return next;
-}
-
-function triggerDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }
 
 function errMessage(err: unknown): string {
