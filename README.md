@@ -379,10 +379,23 @@ A few things to know:
 - **Thinking models.** A reasoning model spends its output budget on hidden
   thinking before it answers, and can burn all of it. On Ollama, AARG turns
   thinking off by itself for models that declare the capability (qwen3,
-  deepseek-r1), so they just work. LM Studio has no per-request switch for
-  this, so prefer an instruct model there; `aarg llm ping` tells you when the
-  loaded model reasons, and an empty-reply failure reports how many tokens
-  went to hidden reasoning.
+  deepseek-r1), so they just work. LM Studio has no per-request switch, but
+  its per-model settings do: turn off "Enable Thinking" under the model's
+  Inference tab and the server obeys it. `aarg llm ping` tells you when the
+  loaded model still reasons, and an empty-reply failure reports how many
+  tokens went to hidden reasoning.
+- **Which model.** On Apple Silicon, a mixture-of-experts model with thinking
+  off is the sweet spot: only a few billion parameters are active per token,
+  so it generates several times faster than a dense model of similar quality.
+  In one comparison on the same job description, a 35B MoE (qwen3.6-35b-a3b)
+  scored within ten points of a hosted build in about two minutes, where a
+  dense 70B took fifteen minutes to score lower. Small instruct models (7B)
+  finish fast but draft thin resumes.
+- **Overflow policy (LM Studio).** Set the model's Context Overflow to the
+  stop-at-limit option. The default "Truncate Middle" silently cuts the middle
+  out of an oversized prompt, which for a resume pipeline means dropping
+  evidence; AARG detects the clipped reply and refuses it, but a loud server
+  error is better than a caught silent one.
 - **No default model.** AARG ships no local model name, so a local provider is
   unusable until you set one; if you forget, it says exactly which config key to
   set.
