@@ -202,12 +202,14 @@ impl Agent for JdChatAgent {
     fn user_message(&self, input: &JdChatInput) -> String {
         // The buffered path flattens everything into one user message: the
         // grounding block, then the conversation so far, then the latest line.
+        // It replays the WHOLE history (not the streaming path's cap): the CLI
+        // never streamed and its context budget was fine unbounded, so this is
+        // byte-identical to the pre-extraction command.
         let mut text = grounding_block(&input.jd, &input.career, input.build.as_ref());
 
-        let recent = cap_history(&input.history);
-        if !recent.is_empty() {
+        if !input.history.is_empty() {
             text.push_str("\nCONVERSATION SO FAR\n");
-            for turn in recent {
+            for turn in &input.history {
                 let who = if turn.from_user { "Candidate" } else { "You" };
                 text.push_str(&format!("{who}: {}\n", turn.text));
             }
@@ -333,7 +335,8 @@ async fn stream_and_collect(
 
 /// The most recent `HISTORY_TURNS` messages, oldest-first. A short session
 /// returns everything; a long one drops the earliest turns so the request
-/// stays within a sane context budget.
+/// stays within a sane context budget. Streaming-only: the buffered CLI path
+/// replays the whole history.
 fn cap_history(history: &[ChatTurn]) -> &[ChatTurn] {
     let start = history.len().saturating_sub(HISTORY_TURNS);
     &history[start..]
