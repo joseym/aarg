@@ -98,10 +98,21 @@ fn dump<T: serde::Serialize>(value: &T) -> Result<String, String> {
 /// failed" with the real reason (an LLM transport error, a reply that failed
 /// validation) buried underneath. Walking `std::error::Error::source()` and
 /// joining every level surfaces the whole story, so a rejected export carries
-/// e.g. "the draft evaluator failed: the LLM transport failed: the JS LLM
-/// callback rejected: Load failed" instead of just the first clause. Every
-/// export that rejects with a Rust error routes through here, so the browser
-/// always sees the full chain, never a lone opaque headline.
+/// e.g. "the draft evaluator failed: the model call failed: Load failed"
+/// instead of just the first clause. Every export that rejects with a Rust
+/// error routes through here, so the browser always sees the full chain,
+/// never a lone opaque headline.
+///
+/// One presentation fix-up on the joined chain: `LlmError::Transport`'s fixed
+/// headline, "the LLM transport failed", is rewritten to "the model call
+/// failed". In this crate that variant carries every failure of the JS `llm`
+/// callback — and since the callback rejects with the *server's* message (an
+/// unreachable local model server, a missing model, a provider reject), the
+/// failure it reports is usually the model call itself, not the transport to
+/// it. The chain ends up in the UI toast verbatim, so the headline should not
+/// misdirect. The wording can't change at the source: the Display lives in
+/// `aarg-core`, whose native clients use the same variant for real transport
+/// faults.
 ///
 /// Not gated to wasm alone: the native `cargo test` build exercises it (the
 /// wasm exports that call it are wasm-only, but the rendering logic is plain
@@ -115,7 +126,7 @@ fn error_chain<E: std::error::Error>(err: &E) -> String {
         out.push_str(&cause.to_string());
         source = cause.source();
     }
-    out
+    out.replace("the LLM transport failed:", "the model call failed:")
 }
 
 fn validate_impl(dataset_json: &str) -> Result<String, String> {
@@ -1922,11 +1933,13 @@ mod tests {
     // A three-level error whose top `Display` hides the two causes beneath it —
     // exactly the shape (`LoopError::Evaluate` → `ReviewError` → `LlmError`)
     // that used to reach the browser as the lone "the draft evaluator failed".
+    // The leaf mimics `LlmError::Transport`'s Display, so the chain also
+    // exercises the headline rewrite.
     #[derive(Debug)]
     struct Cause;
     impl std::fmt::Display for Cause {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "the JS LLM callback rejected: Load failed")
+            write!(f, "the LLM transport failed: Load failed")
         }
     }
     impl std::error::Error for Cause {}
@@ -1963,16 +1976,28 @@ mod tests {
         assert_eq!(
             error_chain(&err),
             "the draft evaluator failed: the reviewer failed: \
-             the JS LLM callback rejected: Load failed"
+             the model call failed: Load failed"
         );
     }
 
     #[test]
     fn error_chain_of_a_lone_error_is_just_its_message() {
-        // No source: the chain is exactly the one Display line, no trailing `: `.
+        // No source: the chain is exactly the one Display line (with the
+        // transport headline rewritten), no trailing `: `.
+        assert_eq!(error_chain(&Cause), "the model call failed: Load failed");
+    }
+
+    #[test]
+    fn error_chain_leaves_other_messages_untouched() {
+        // The rewrite targets only `LlmError::Transport`'s fixed headline; a
+        // chain without it renders verbatim.
+        let err = Middle(Cause);
+        assert!(error_chain(&err).starts_with("the reviewer failed: "));
         assert_eq!(
-            error_chain(&Cause),
-            "the JS LLM callback rejected: Load failed"
+            error_chain(&aarg_domain::llm::LlmError::Stream(
+                "the stream broke".into()
+            )),
+            "the response stream was malformed: the stream broke"
         );
     }
 
