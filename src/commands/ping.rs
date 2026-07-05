@@ -2,7 +2,9 @@
 //! provider and report what came back. Verifies the credential (or, for a local
 //! provider, connectivity), the model name, and latency in one shot. For a
 //! local provider it also checks the loaded context window, since a model
-//! loaded with too small a window silently clips aarg's prompts.
+//! loaded with too small a window silently clips aarg's prompts, and warns
+//! when the reply spent tokens on hidden reasoning, since a reasoning model
+//! makes slow builds and empty replies likely.
 
 use std::time::{Duration, Instant};
 
@@ -18,6 +20,14 @@ use crate::style;
 /// a window under this clips them.
 const MIN_CONTEXT_TOKENS: u64 = 8192;
 
+/// The reply budget for the ping. Sixteen tokens would cover "pong", but a
+/// reasoning model spends hundreds on hidden reasoning before the visible
+/// word (probed live: qwen3-1.7b on LM Studio used 210 reasoning tokens and
+/// still ran over a 256 budget on one try), and a ping that dies with an
+/// empty reply can't report the diagnosis below. The budget only bounds the
+/// reply; a non-reasoning model still answers in a few tokens.
+const PING_MAX_TOKENS: u32 = 1024;
+
 /// How long to wait on a local server's metadata endpoint before giving up. The
 /// check is a courtesy warning, so it must never hang the command.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -26,7 +36,7 @@ pub async fn run() -> Result<(), CliError> {
     let (client, config) = configured_client().await?;
     let request = CompletionRequest {
         model: config.active_model().to_string(),
-        max_tokens: 16,
+        max_tokens: PING_MAX_TOKENS,
         system: None,
         messages: vec![Message::user("Reply with the single word: pong")],
         temperature: None,
@@ -62,11 +72,28 @@ pub async fn run() -> Result<(), CliError> {
         )
     );
 
+    // When the reply spent tokens on hidden reasoning (LM Studio reports the
+    // count), say so: the same model on a build-sized prompt will be slow and
+    // can burn its whole budget before any visible text.
+    if let Some(count) = client.hidden_reasoning_tokens() {
+        eprintln!("{}", style::warn(reasoning_note(count)));
+    }
+
     // For a local provider, warn when the loaded/max context can't hold a
     // typical aarg prompt. Best-effort: a server that doesn't report it stays
     // quiet rather than nagging.
     report_local_context(&config).await;
     Ok(())
+}
+
+/// The one-line warning for a model that reasons. Factored out so the wording
+/// is testable without a live server.
+fn reasoning_note(count: u64) -> String {
+    format!(
+        "this model spent {count} tokens on hidden reasoning before answering · \
+         reasoning models make builds slow and empty-reply failures likely; \
+         prefer an instruct model"
+    )
 }
 
 /// Probe a local server for its context window and warn when it's under what
@@ -139,4 +166,17 @@ async fn ollama_context(http: &reqwest::Client, base_url: &str, model: &str) -> 
         .ok()?;
     let body = response.text().await.ok()?;
     crate::llm::ollama::context_length_from_show(&body)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reasoning_note_names_the_count_and_the_remedy() {
+        let note = reasoning_note(210);
+        assert!(note.contains("210 tokens on hidden reasoning"));
+        assert!(note.contains("instruct model"));
+    }
 }
