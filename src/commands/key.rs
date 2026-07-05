@@ -14,16 +14,35 @@ use crate::config::{AuthKind, Config, DEFAULT_KEY_LABEL};
 use crate::secrets;
 use crate::style;
 
+/// The keychain provider slot `aarg key` manages. Always Anthropic (matching
+/// `Provider::Anthropic.name()`): local providers need no credential, so these
+/// commands manage the Anthropic keychain no matter which provider is active.
+const KEYCHAIN_PROVIDER: &str = "anthropic";
+
+/// Note, when the active provider is local, that these commands touch the
+/// Anthropic keychain rather than the running provider, which needs no key.
+fn note_if_local(config: &Config) {
+    if config.provider.is_local() {
+        eprintln!(
+            "{}",
+            style::info(format!(
+                "the active provider ({}) is local and needs no key · these commands manage the Anthropic keychain",
+                config.provider.name()
+            ))
+        );
+    }
+}
+
 /// `aarg key list` — show the stored labels, marking the active one. Never
 /// prints a secret; labels only.
 pub async fn list() -> Result<(), CliError> {
     let config = Config::load()?;
-    let provider = config.provider;
+    note_if_local(&config);
 
     if config.anthropic.keys.is_empty() {
         // No labeled keys — but a pre-labels key may still be in the bare
         // slot, in which case it's what requests actually use.
-        match secrets::load_legacy_key(provider.name()).await? {
+        match secrets::load_legacy_key(KEYCHAIN_PROVIDER).await? {
             Some(_) => {
                 eprintln!(
                     "{}",
@@ -45,7 +64,7 @@ pub async fn list() -> Result<(), CliError> {
     let active = config.anthropic.active_label();
     eprintln!(
         "{}",
-        style::section(format!("Stored keys for {}", provider.name()))
+        style::section(format!("Stored keys for {KEYCHAIN_PROVIDER}"))
     );
     for label in &config.anthropic.keys {
         let marker = if label == active {
@@ -73,7 +92,7 @@ pub async fn list() -> Result<(), CliError> {
 /// a further one leaves the active key alone.
 pub async fn add(label: Option<String>, oauth: bool, cli: bool) -> Result<(), CliError> {
     let mut config = Config::load()?;
-    let provider = config.provider;
+    note_if_local(&config);
     let label = match &label {
         Some(label) => validate_key_label(label)?.to_string(),
         None => DEFAULT_KEY_LABEL.to_string(),
@@ -122,7 +141,7 @@ pub async fn add(label: Option<String>, oauth: bool, cli: bool) -> Result<(), Cl
             .with_display_mode(PasswordDisplayMode::Masked)
             .without_confirmation()
             .prompt()?;
-        secrets::store_api_key(provider.name(), &label, &secret).await?;
+        secrets::store_api_key(KEYCHAIN_PROVIDER, &label, &secret).await?;
     }
     config.anthropic.register_key(&label, kind);
 
@@ -180,12 +199,12 @@ pub async fn use_key(label: String) -> Result<(), CliError> {
 /// resolves in its place.
 pub async fn remove(label: String) -> Result<(), CliError> {
     let mut config = Config::load()?;
-    let provider = config.provider;
+    note_if_local(&config);
     if !config.anthropic.keys.iter().any(|stored| stored == &label) {
         return Err(CliError::NoSuchKey { label });
     }
 
-    secrets::delete_api_key(provider.name(), &label).await?;
+    secrets::delete_api_key(KEYCHAIN_PROVIDER, &label).await?;
     let was_active = config.anthropic.active_key.as_deref() == Some(label.as_str());
     config.anthropic.forget_key(&label);
     config.save()?;

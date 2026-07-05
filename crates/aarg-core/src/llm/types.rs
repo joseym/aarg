@@ -205,6 +205,13 @@ pub enum LlmError {
         message: String,
     },
 
+    /// The provider cannot serve this request faithfully: a PDF attachment a
+    /// local model can't read, or a prompt the model's context window clipped.
+    /// Synthesized client-side — no HTTP status is involved, which is why this
+    /// is not an `Api` error. The message says what to do instead.
+    #[error("this provider cannot serve the request: {0}")]
+    Unsupported(String),
+
     #[error("could not parse the API response")]
     Parse(#[source] serde_json::Error),
 

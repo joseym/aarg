@@ -6,13 +6,30 @@
 #[cfg(feature = "native")]
 pub mod anthropic;
 pub mod client;
+// Prompt-size estimation and the silent-truncation guard the local providers
+// share. Native-only: only the reqwest-backed local clients use it.
+#[cfg(feature = "native")]
+pub mod context;
+// Byte-buffer line draining shared by the two local stream parsers.
+#[cfg(feature = "native")]
+pub mod lines;
 pub mod mock;
+// The local-provider clients (Ollama's native API, and LM Studio via the
+// OpenAI-compatible API), native-only for the same reason as `anthropic`.
+#[cfg(feature = "native")]
+pub mod ollama;
+#[cfg(feature = "native")]
+pub mod openai_compat;
 pub mod types;
 
 #[cfg(feature = "native")]
 pub use anthropic::{AnthropicClient, Auth};
 pub use client::LlmClient;
 pub use mock::MockLlmClient;
+#[cfg(feature = "native")]
+pub use ollama::OllamaClient;
+#[cfg(feature = "native")]
+pub use openai_compat::OpenAiCompatClient;
 pub use types::{
     Attachment, CompletionRequest, CompletionResponse, LlmError, Message, Role, StreamEvent,
     TokenStream, TokenUsage, ToolCall, ToolResult, ToolSpec,

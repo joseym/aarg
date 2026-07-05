@@ -219,9 +219,12 @@ async fn call_callback(
     let promise = js_sys::Promise::resolve(&returned);
     let resolved = wasm_bindgen_futures::JsFuture::from(promise)
         .await
-        .map_err(|e| {
-            LlmError::Transport(format!("the JS LLM callback rejected: {}", stringify(&e)))
-        })?;
+        // A rejection's message is already self-describing: the JS callback
+        // rejects with the server's own error text ("start LM Studio…", "no
+        // model named…") or the browser's network error. No "the JS LLM
+        // callback rejected:" wrapper — every clause prepended here lands
+        // verbatim in the UI toast, ahead of the words the user needs.
+        .map_err(|e| LlmError::Transport(stringify(&e)))?;
     let text = resolved.as_string().ok_or_else(|| {
         LlmError::Transport("the JS LLM callback did not resolve to a JSON string".to_string())
     })?;

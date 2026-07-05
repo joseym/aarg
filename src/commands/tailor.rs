@@ -130,16 +130,18 @@ pub async fn run(
     let mut dataset = store::load()?;
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
-    // On a Claude plan the request cost is covered by the flat fee, so dollar
-    // estimates are suppressed everywhere this run reports cost.
-    let subscription = client.is_subscription();
+    // How the run is billed drives every cost surface below. On a Claude plan
+    // or a local model a dollar estimate would mislead, so both suppress it;
+    // `subscription` keeps the plan-specific wording where the two differ.
+    let billing = config.billing();
+    let subscription = matches!(billing, crate::config::Billing::Subscription);
     // Live progress + running cost for the long smart-tier calls, so the
     // loop is visibly working and the user can interrupt (FR-3.8). The spine
     // drives it for streamed runs; cheap/interactive calls leave it idle.
-    let reporter = StreamReporter::new(config.prices.clone(), subscription);
+    let reporter = StreamReporter::new(config.prices.clone(), billing);
     let ctx = AgentContext {
-        llm: &client,
-        model: &config.anthropic,
+        llm: &*client,
+        model: config.active_resolver(),
         tracer: &tracer,
         sink: Some(&reporter),
     };
@@ -967,40 +969,50 @@ pub async fn run(
     }
     eprintln!("  {score}");
 
-    // Cost summary. On a Claude plan the run is covered by the flat fee, so
-    // show tokens and say so rather than a misleading dollar figure, and skip
-    // the budget nudge (a dollar budget is meaningless on a plan).
-    if subscription {
-        eprintln!(
+    // Cost summary. A Claude plan covers the run in its flat fee and a local
+    // model is free, so both show tokens with a plain note rather than a
+    // misleading dollar figure, and skip the budget nudge (a dollar budget is
+    // meaningless without a per-token price).
+    use crate::config::Billing;
+    match billing {
+        Billing::Subscription => eprintln!(
             "  {}",
             style::dim(format!(
                 "{} in / {} out tokens  ·  covered by your Claude plan",
                 total.input_tokens, total.output_tokens
             ))
-        );
-    } else {
-        let cost = crate::pricing::cost_usd(model, &total, &config.prices);
-        let cost_note = match cost {
-            Some(c) => format!(
-                "~${c:.2}  ·  {} in / {} out tokens",
+        ),
+        Billing::Local => eprintln!(
+            "  {}",
+            style::dim(format!(
+                "{} in / {} out tokens  ·  local model, no cost",
                 total.input_tokens, total.output_tokens
-            ),
-            None => format!(
-                "{} in / {} out tokens",
-                total.input_tokens, total.output_tokens
-            ),
-        };
-        eprintln!("  {}", style::dim(cost_note));
-        if let (Some(c), Some(budget)) = (cost, config.limits.budget_usd)
-            && c > budget
-        {
-            eprintln!(
-                "  {}",
-                style::yellow(format!(
-                    "over your ${budget:.2} budget by ${:.2}",
-                    c - budget
-                ))
-            );
+            ))
+        ),
+        Billing::Metered => {
+            let cost = crate::pricing::cost_usd(model, &total, &config.prices);
+            let cost_note = match cost {
+                Some(c) => format!(
+                    "~${c:.2}  ·  {} in / {} out tokens",
+                    total.input_tokens, total.output_tokens
+                ),
+                None => format!(
+                    "{} in / {} out tokens",
+                    total.input_tokens, total.output_tokens
+                ),
+            };
+            eprintln!("  {}", style::dim(cost_note));
+            if let (Some(c), Some(budget)) = (cost, config.limits.budget_usd)
+                && c > budget
+            {
+                eprintln!(
+                    "  {}",
+                    style::yellow(format!(
+                        "over your ${budget:.2} budget by ${:.2}",
+                        c - budget
+                    ))
+                );
+            }
         }
     }
     Ok(())

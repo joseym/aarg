@@ -36,9 +36,7 @@ use crate::dataset::validate;
 use crate::fetch::{self, FetchError};
 use crate::gap::GapReport;
 use crate::jd::JobRequirements;
-use crate::llm::{
-    AnthropicClient, CompletionRequest, LlmClient, LlmError, StreamEvent, TokenUsage,
-};
+use crate::llm::{CompletionRequest, LlmClient, LlmError, StreamEvent, TokenUsage};
 use crate::pricing;
 use crate::render::{self, RenderError};
 use crate::review::AdversarialReport;
@@ -88,24 +86,40 @@ pub(super) async fn llm(req: Request<Incoming>) -> Resp {
     // CLI-delegated token is refreshed each time (mirrors the MCP server).
     // A credential failure (no key configured) is a server-config problem the
     // browser can't fix, so it's a 503 — never a leak of what the key is.
-    let client = match configured_client().await {
-        Ok((client, _config)) => client,
+    let (client, config) = match configured_client().await {
+        Ok(pair) => pair,
         Err(error) => {
-            return error_response(503, "no_credentials", error_chain(&error));
+            // Both are server-config problems the browser can't fix, so both
+            // are 503s, but they are distinct problems: a local provider with
+            // no model named is not a credential issue, and labeling it one
+            // would send the operator hunting through keychains.
+            let kind = match &error {
+                crate::commands::CliError::MissingLocalModel { .. } => "no_model",
+                _ => "no_credentials",
+            };
+            return error_response(503, kind, error_chain(&error));
         }
     };
+    // A local provider's base URL, so an unreachable-server error can name it
+    // and say how to start it; `None` for Anthropic, whose transport errors
+    // are plain network failures.
+    let base_url = config.active_base_url().map(str::to_string);
 
     if stream_mode(accepts_event_stream, &request) {
-        llm_stream(client, request).await
+        llm_stream(client, request, base_url).await
     } else {
-        llm_buffered(client, request).await
+        llm_buffered(client, request, base_url).await
     }
 }
 
 /// The buffered path: wait for the whole completion and return it as one JSON
 /// response. This is the original `/api/llm` behavior, unchanged, for a client
 /// that sent no `Accept: text/event-stream` (or a tool-bearing request).
-async fn llm_buffered(client: AnthropicClient, request: CompletionRequest) -> Resp {
+async fn llm_buffered(
+    client: Box<dyn LlmClient>,
+    request: CompletionRequest,
+    base_url: Option<String>,
+) -> Resp {
     match client.complete(request).await {
         Ok(response) => json_response(200, &response),
         Err(error) => {
@@ -116,9 +130,9 @@ async fn llm_buffered(client: AnthropicClient, request: CompletionRequest) -> Re
             // only a bounded snippet of the error itself.
             log(&format!(
                 "/api/llm upstream failed: {}",
-                clip(&error_chain(&error), 200)
+                clip(&describe_llm_error(&error, base_url.as_deref()), 200)
             ));
-            llm_error_response(error)
+            llm_error_response(error, base_url.as_deref())
         }
     }
 }
@@ -129,7 +143,11 @@ async fn llm_buffered(client: AnthropicClient, request: CompletionRequest) -> Re
 /// even be *opened* (a 401, a 429, an unreachable host), that surfaces the same
 /// way the buffered path surfaces it — a normal JSON error response the
 /// browser's non-2xx path handles — because no `200` has been sent yet.
-async fn llm_stream(client: AnthropicClient, request: CompletionRequest) -> Resp {
+async fn llm_stream(
+    client: Box<dyn LlmClient>,
+    request: CompletionRequest,
+    base_url: Option<String>,
+) -> Resp {
     // The stream's own `Done` event doesn't echo the model, so capture it from
     // the request before `stream` consumes it — the `done` frame needs it.
     let model = request.model.clone();
@@ -139,13 +157,13 @@ async fn llm_stream(client: AnthropicClient, request: CompletionRequest) -> Resp
         Err(error) => {
             log(&format!(
                 "/api/llm upstream failed: {}",
-                clip(&error_chain(&error), 200)
+                clip(&describe_llm_error(&error, base_url.as_deref()), 200)
             ));
-            return llm_error_response(error);
+            return llm_error_response(error, base_url.as_deref());
         }
     };
 
-    event_stream_response(sse_stream_body(stream, model))
+    event_stream_response(sse_stream_body(stream, model, base_url))
 }
 
 /// Turn a provider `TokenStream` into the SSE response body: each `StreamEvent`
@@ -160,7 +178,11 @@ async fn llm_stream(client: AnthropicClient, request: CompletionRequest) -> Resp
 /// type is `Infallible`: a mid-stream provider failure becomes an `error`
 /// *frame* (data on the already-`200` stream), never a transport error on the
 /// body.
-fn sse_stream_body(stream: crate::llm::TokenStream, model: String) -> super::Body {
+fn sse_stream_body(
+    stream: crate::llm::TokenStream,
+    model: String,
+    base_url: Option<String>,
+) -> super::Body {
     let frames = stream.map(move |item| {
         let bytes = match item {
             Ok(StreamEvent::TextDelta(text)) => sse_delta_frame(&text),
@@ -169,18 +191,52 @@ fn sse_stream_body(stream: crate::llm::TokenStream, model: String) -> super::Bod
             }
             Err(error) => {
                 // Same operator-visible line the buffered path writes, then the
-                // full chain goes to the browser as an error frame.
+                // full chain (with a local-server hint when that fits) goes to
+                // the browser as an error frame.
+                let message = describe_llm_error(&error, base_url.as_deref());
                 log(&format!(
                     "/api/llm upstream failed: {}",
-                    clip(&error_chain(&error), 200)
+                    clip(&message, 200)
                 ));
-                sse_error_frame(&error_chain(&error), is_transient(&error))
+                sse_error_frame(&message, is_transient(&error))
             }
         };
         Ok::<_, std::convert::Infallible>(Frame::data(bytes))
     });
 
     StreamBody::new(frames).boxed_unsync()
+}
+
+/// The error message to surface, enriched for the one case the raw transport
+/// error hides: a local provider whose server is down. A refused or unreachable
+/// connection to `base_url` (set only for a local provider) reads as an opaque
+/// "could not reach" chain, so name the server and how to start it. Anything
+/// else (an Anthropic network blip, an API rejection) passes through as its
+/// plain cause chain.
+fn describe_llm_error(error: &LlmError, base_url: Option<&str>) -> String {
+    let chain = error_chain(error);
+    match base_url {
+        Some(base) if looks_unreachable(&chain) => format!(
+            "{chain} · the local model server at {base} is not responding; start LM Studio (or run `ollama serve`), or fix the provider's base_url in your aarg config"
+        ),
+        _ => chain,
+    }
+}
+
+/// Whether an error chain looks like a refused, unreachable, or timed-out
+/// connection, the shapes a down or hung local server produces. A server that
+/// is listening but never answers (a wedged process, a model stuck loading)
+/// surfaces as reqwest's timeout rather than a refusal, and deserves the same
+/// start-the-server hint. Loose substring matching, since the exact phrasing
+/// varies by platform and reqwest version.
+fn looks_unreachable(chain: &str) -> bool {
+    let lower = chain.to_lowercase();
+    lower.contains("connection refused")
+        || lower.contains("tcp connect")
+        || lower.contains("connect error")
+        || lower.contains("could not reach")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
 }
 
 /// Whether a request's `Accept` header asks for an SSE stream. A browser
@@ -281,24 +337,37 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// Map an `LlmError` to a status + JSON body without leaking secrets. A
-/// missing key is a 503 (server misconfigured); a provider rejection passes
-/// its own HTTP status through; anything else is a 502 upstream error.
-fn llm_error_response(error: LlmError) -> Resp {
+/// missing key is a 503 (server misconfigured); a request the provider cannot
+/// serve (a PDF on a local model, a clipped context) is a 400 — the client
+/// asked for something this provider can't do, and no upstream failed; a
+/// provider rejection passes its own HTTP status through; anything else is a
+/// 502 upstream error.
+fn llm_error_response(error: LlmError, base_url: Option<&str>) -> Resp {
     match error {
         LlmError::MissingApiKey { .. } => {
             error_response(503, "no_credentials", error_chain(&error))
         }
+        LlmError::Unsupported(ref message) => error_response(400, "unsupported", message.clone()),
         LlmError::Api {
             status,
             ref kind,
             ref message,
         } => {
-            // Reuse the provider's own status when it's a valid HTTP code; the
-            // message is the provider's, which never echoes the key.
-            let code = StatusCode::from_u16(status).map_or(502, |_| status);
+            // Reuse the provider's own status when it's a valid HTTP error
+            // code; the message is the provider's, which never echoes the
+            // key. A 2xx here means the provider hid an error inside a
+            // success reply (LM Studio does this when a reasoning budget
+            // runs out), and passing it through would let a client read the
+            // error body as a completed call.
+            let code = match StatusCode::from_u16(status) {
+                Ok(_) if status >= 400 => status,
+                _ => 502,
+            };
             error_response(code, kind, message.clone())
         }
-        other => error_response(502, "upstream", error_chain(&other)),
+        // A transport failure, including a down local server, named via
+        // `base_url` when that's the cause.
+        other => error_response(502, "upstream", describe_llm_error(&other, base_url)),
     }
 }
 
@@ -830,10 +899,11 @@ pub(super) async fn create_build(req: Request<Incoming>) -> Resp {
         None
     };
     // Whether the active credential is a Claude plan — the same flag the CLI
-    // stamps into `meta.json`. Read from `Config` alone (see
-    // [`is_subscription_configured`]) so persisting a build never touches the
-    // keychain: this route saves a build, it does not spend the key.
-    let subscription = is_subscription_configured(&config);
+    // stamps into `meta.json`. Read from `Config` alone (via [`Config::billing`])
+    // so persisting a build never touches the keychain: this route saves a
+    // build, it does not spend the key. A local build is not a plan, so this is
+    // false there and the cost column falls back to tokens.
+    let subscription = matches!(config.billing(), crate::config::Billing::Subscription);
 
     let result = tokio::task::spawn_blocking(move || {
         persist_build(request, ats_chosen, human_chosen, subscription)
@@ -1471,10 +1541,9 @@ struct CostQuery {
 /// credential resolver): that function fetches the *actual secret* — a
 /// keychain read, possibly an OS permission prompt, or (for a `Cli`-delegated
 /// credential) a subprocess spawn — none of which this pure calculation
-/// needs or should pay for just to answer "would this be free." Whether the
-/// active credential is a subscription is knowable from `Config` alone (see
-/// [`is_subscription_configured`]), so this route only ever touches the
-/// config file, never the keychain.
+/// needs or should pay for just to answer "would this be free." How the active
+/// provider is billed is knowable from `Config` alone (via [`Config::billing`]),
+/// so this route only ever touches the config file, never the keychain.
 /// `GET /api/models` — the model tiers the browser should send with its
 /// in-browser LLM work, read from the same `Config` the CLI resolves against.
 /// Returning the three *resolved* tiers (not one hardcoded model) lets a
@@ -1483,18 +1552,20 @@ struct CostQuery {
 /// a terminal one instead of running everything on the priciest model. Config
 /// only; no keychain, no key spend.
 pub(super) async fn models() -> Resp {
-    use crate::agent::{ModelResolver, ModelTier};
+    use crate::agent::ModelTier;
     let config = match Config::load() {
         Ok(config) => config,
         Err(error) => return error_response(500, "config_error", error.to_string()),
     };
-    let anthropic = &config.anthropic;
+    // Resolve through the active provider, so a browser build on a local
+    // provider spends the local models the CLI would, not the Anthropic tiers.
+    let resolver = config.active_resolver();
     json_response(
         200,
         &json!({
-            "cheap": anthropic.resolve("", ModelTier::Cheap),
-            "mid": anthropic.resolve("", ModelTier::Mid),
-            "smart": anthropic.resolve("", ModelTier::Smart),
+            "cheap": resolver.resolve("", ModelTier::Cheap),
+            "mid": resolver.resolve("", ModelTier::Mid),
+            "smart": resolver.resolve("", ModelTier::Smart),
         }),
     )
 }
@@ -1530,67 +1601,43 @@ pub(super) async fn cost(req: Request<Incoming>) -> Resp {
     };
 
     // A config that fails to load isn't this pure calculation's problem to
-    // surface as an error — treat it as "no config, no subscription, no
-    // price overrides" and still answer off the built-in family rates.
+    // surface as an error; treat it as the default (metered Anthropic, no
+    // price overrides) and still answer off the built-in family rates.
     let config = Config::load().unwrap_or_default();
-    let subscription = is_subscription_configured(&config);
 
-    json_response(200, &cost_body(&query, subscription, &config.prices))
+    json_response(200, &cost_body(&query, config.billing(), &config.prices))
 }
 
-/// Whether the credential `aarg` would use *right now* is a Claude
-/// plan/subscription credential (`AuthKind::Oauth`, or `AuthKind::Cli` —
-/// `configured_client` always resolves a `Cli`-delegated label to an OAuth
-/// token, so it's a subscription too), without ever fetching the secret
-/// itself. Mirrors `configured_client`'s resolution order (env override
-/// first, then the configured active label) far enough to answer just this
-/// one question.
-fn is_subscription_configured(config: &Config) -> bool {
-    if env_var_set(config.anthropic.auth_token_env()) {
-        return true; // The OAuth/subscription env var is always a plan token.
-    }
-    if env_var_set(config.anthropic.api_key_env()) {
-        return false; // The API-key env var is never a plan token.
-    }
-    let override_label = std::env::var("AARG_KEY").ok();
-    let label = override_label
-        .as_deref()
-        .unwrap_or_else(|| config.anthropic.active_label());
-    matches!(
-        config.anthropic.kind_for(label),
-        crate::config::AuthKind::Oauth | crate::config::AuthKind::Cli
-    )
-}
-
-/// Whether an environment variable is set to a non-empty value — the same
-/// "unset or blank means absent" rule `configured_client`'s own
-/// `env_credential` uses, duplicated here (rather than reached for across a
-/// module boundary) because it's a one-line check.
-fn env_var_set(var: &str) -> bool {
-    std::env::var(var).is_ok_and(|value| !value.is_empty())
-}
-
-/// Build the `{"usd": ..., "subscription_note": ...}` body: `usd` is `null`
-/// either when the model isn't in the price table (an unpriced model is
-/// never guessed at) or when `subscription` is true, in which case
-/// `subscription_note` explains why — the run's cost is covered by the flat
-/// fee, the same reasoning `aarg history`'s `plan` cost-column marker uses.
-/// Split out from [`cost`] so the calculation is unit-testable without a
-/// keychain or a config file on disk.
+/// Build the `{"usd": ..., "subscription_note": ...}` body from how the active
+/// provider is billed. `usd` is a real figure only for a metered API key (and
+/// even then `null` for a model absent from the price table; an unpriced model
+/// is never guessed at). For a Claude plan or a local model a dollar figure
+/// would mislead, so `usd` is `null` and `subscription_note` carries the plain
+/// reason the browser shows instead (the same field the frontend already reads,
+/// so no client change is needed). Split out from [`cost`] so the calculation
+/// is unit-testable without a keychain or a config file on disk.
 fn cost_body(
     query: &CostQuery,
-    subscription: bool,
+    billing: crate::config::Billing,
     prices: &std::collections::BTreeMap<String, pricing::Price>,
 ) -> Value {
-    if subscription {
-        return json!({ "usd": Value::Null, "subscription_note": "covered by your Claude plan" });
+    use crate::config::Billing;
+    match billing {
+        Billing::Subscription => {
+            json!({ "usd": Value::Null, "subscription_note": "covered by your Claude plan" })
+        }
+        Billing::Local => {
+            json!({ "usd": Value::Null, "subscription_note": "local model, no cost" })
+        }
+        Billing::Metered => {
+            let usage = TokenUsage {
+                input_tokens: query.input,
+                output_tokens: query.output,
+            };
+            let usd = pricing::cost_usd(&query.model, &usage, prices);
+            json!({ "usd": usd, "subscription_note": Value::Null })
+        }
     }
-    let usage = TokenUsage {
-        input_tokens: query.input,
-        output_tokens: query.output,
-    };
-    let usd = pricing::cost_usd(&query.model, &usage, prices);
-    json!({ "usd": usd, "subscription_note": Value::Null })
 }
 
 /// Parse `model`/`input`/`output` out of a raw query string (the part of the
@@ -1677,6 +1724,76 @@ mod tests {
             input_schema: json!({ "type": "object" }),
         });
         assert!(!stream_mode(true, &with_tools));
+    }
+
+    #[test]
+    fn looks_unreachable_matches_down_and_hung_servers_only() {
+        // A refused TCP connect (server down) and a timeout (server hung or a
+        // model stuck loading) both get the hint.
+        assert!(looks_unreachable(
+            "could not reach the LLM API: error sending request: tcp connect error: Connection refused (os error 61)"
+        ));
+        assert!(looks_unreachable(
+            "could not reach the LLM API: error sending request: operation timed out"
+        ));
+        // A provider rejection is not a connectivity problem.
+        assert!(!looks_unreachable(
+            "the API rejected the request (HTTP 400, invalid_request_error): bad model"
+        ));
+    }
+
+    #[test]
+    fn describe_llm_error_adds_the_local_hint_only_when_it_applies() {
+        let base = Some("http://127.0.0.1:1234");
+
+        // Refused connection with a local base_url: the hint names the server.
+        let refused = LlmError::Stream("tcp connect error: Connection refused".to_string());
+        let message = describe_llm_error(&refused, base);
+        assert!(message.contains("http://127.0.0.1:1234"), "got: {message}");
+        assert!(message.contains("start LM Studio"), "got: {message}");
+
+        // Timeout with a local base_url: same hint (a hung server needs the
+        // same remedy as a down one).
+        let hung = LlmError::Stream("error sending request: operation timed out".to_string());
+        let message = describe_llm_error(&hung, base);
+        assert!(message.contains("ollama serve"), "got: {message}");
+
+        // A non-network error keeps its plain chain, no hint.
+        let rejected = LlmError::Api {
+            status: 400,
+            kind: "invalid_request_error".to_string(),
+            message: "bad model".to_string(),
+        };
+        let message = describe_llm_error(&rejected, base);
+        assert!(!message.contains("start LM Studio"), "got: {message}");
+
+        // No base_url (Anthropic): never a local hint, even on a refusal.
+        let message = describe_llm_error(&refused, None);
+        assert!(!message.contains("start LM Studio"), "got: {message}");
+    }
+
+    #[test]
+    fn a_provider_error_hidden_in_a_success_status_becomes_a_502() {
+        // LM Studio reports an exhausted reasoning budget as an error inside
+        // an HTTP 200. The route must not hand that 200 to the browser: a
+        // client checking `res.ok` would parse the error body as a
+        // completion.
+        let hidden = LlmError::Api {
+            status: 200,
+            kind: "empty_reply".to_string(),
+            message: "the model produced no text".to_string(),
+        };
+        let resp = llm_error_response(hidden, None);
+        assert_eq!(resp.status(), 502);
+
+        // Real provider rejections keep their own status.
+        let rejected = LlmError::Api {
+            status: 429,
+            kind: "rate_limit".to_string(),
+            message: "slow down".to_string(),
+        };
+        let resp = llm_error_response(rejected, None);
+        assert_eq!(resp.status(), 429);
     }
 
     #[test]
@@ -1771,7 +1888,7 @@ mod tests {
             }),
         ];
         let stream: crate::llm::TokenStream = Box::pin(futures_util::stream::iter(events));
-        let body = sse_stream_body(stream, "claude-mock".into());
+        let body = sse_stream_body(stream, "claude-mock".into(), None);
         let wire = body_to_string(body).await;
 
         // Exactly three frames, each its own `data: ...\n\n`, in order.
@@ -1794,7 +1911,7 @@ mod tests {
             Err(LlmError::Stream("the upstream fell over".into())),
         ];
         let stream: crate::llm::TokenStream = Box::pin(futures_util::stream::iter(events));
-        let wire = body_to_string(sse_stream_body(stream, "m".into())).await;
+        let wire = body_to_string(sse_stream_body(stream, "m".into(), None)).await;
 
         let frames: Vec<&str> = wire.split_terminator("\n\n").collect();
         assert_eq!(frames.len(), 2, "wire = {wire:?}");
@@ -1952,7 +2069,7 @@ mod tests {
             input: 1000,
             output: 500,
         };
-        let body = cost_body(&known, false, &prices);
+        let body = cost_body(&known, crate::config::Billing::Metered, &prices);
         let usd = body["usd"].as_f64().unwrap();
         assert!((usd - (1000.0 / 1_000_000.0 * 15.0 + 500.0 / 1_000_000.0 * 75.0)).abs() < 1e-9);
         assert!(body["subscription_note"].is_null());
@@ -1964,7 +2081,7 @@ mod tests {
             input: 1000,
             output: 500,
         };
-        let body = cost_body(&unknown, false, &prices);
+        let body = cost_body(&unknown, crate::config::Billing::Metered, &prices);
         assert!(body["usd"].is_null());
         assert!(body["subscription_note"].is_null());
     }
@@ -1972,16 +2089,31 @@ mod tests {
     #[test]
     fn cost_body_on_a_subscription_nulls_usd_and_explains_why() {
         let prices = std::collections::BTreeMap::new();
-        // Even a perfectly priceable model is suppressed once `subscription`
-        // is true — the run's cost is covered by the flat fee.
+        // Even a perfectly priceable model is suppressed on a plan; the run's
+        // cost is covered by the flat fee.
         let query = CostQuery {
             model: "claude-opus-4-8".to_string(),
             input: 1000,
             output: 500,
         };
-        let body = cost_body(&query, true, &prices);
+        let body = cost_body(&query, crate::config::Billing::Subscription, &prices);
         assert!(body["usd"].is_null());
         assert_eq!(body["subscription_note"], "covered by your Claude plan");
+    }
+
+    #[test]
+    fn cost_body_on_a_local_model_reports_no_cost() {
+        let prices = std::collections::BTreeMap::new();
+        // A local model is free, so usd is null and the note says so, shaped
+        // exactly like the subscription case the frontend already renders.
+        let query = CostQuery {
+            model: "qwen2.5-coder".to_string(),
+            input: 1000,
+            output: 500,
+        };
+        let body = cost_body(&query, crate::config::Billing::Local, &prices);
+        assert!(body["usd"].is_null());
+        assert_eq!(body["subscription_note"], "local model, no cost");
     }
 
     /// A minimal `CreateBuildRequest` as the browser would POST it: an empty

@@ -20,8 +20,8 @@ pub async fn run(path: PathBuf) -> Result<(), CliError> {
     let (client, config) = configured_client().await?;
     let tracer = super::default_tracer()?;
     let ctx = AgentContext {
-        llm: &client,
-        model: &config.anthropic,
+        llm: &*client,
+        model: config.active_resolver(),
         tracer: &tracer,
         sink: None,
     };

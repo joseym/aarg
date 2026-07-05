@@ -18,8 +18,8 @@ companion server (`aarg serve`).
 > **Status:** working end to end, from a command line or a local browser
 > workspace. Ingest, tailoring, the adversarial loop, both résumé variants,
 > history/diff, an interactive shell, and the in-browser build screen all work
-> today. Anthropic is the supported model provider; a fully-local option is
-> planned but not built yet.
+> today. Anthropic is the default model provider; LM Studio and Ollama run the
+> whole product on a local model with no API key (see [Local models](#local-models)).
 
 ## Demo
 
@@ -194,8 +194,9 @@ Beyond the core loop:
   tells you how to install it.
 - **Rust 1.89 or newer** (2024 edition) to build from source, whether with
   `cargo install aarg` or from a clone. The installer script needs no toolchain.
-- An **Anthropic API key**, or a Claude Pro/Max subscription (see
-  [Authentication](#authentication)).
+- An **Anthropic API key** or a Claude Pro/Max subscription (see
+  [Authentication](#authentication)), **or** a local model through LM Studio or
+  Ollama with no key at all (see [Local models](#local-models)).
 - **[wasm-pack](https://rustwasm.github.io/wasm-pack/) and Node.js with npm**,
   only for developing the web app. Every install already carries the built
   workspace, so skip these unless you're changing the front end.
@@ -340,6 +341,70 @@ API-key path is the supported one. For headless or CI use, set `ANTHROPIC_API_KE
 names conflict with another tool, point AARG at private ones with `api_key_env`
 / `auth_token_env` under `[anthropic]` and leave the standard vars free.
 
+## Local models
+
+AARG can run the whole loop against a model on your own machine, with no API key
+and no per-token cost. Two local providers are supported: [LM Studio](https://lmstudio.ai)
+(through its OpenAI-compatible server) and [Ollama](https://ollama.com). Start the
+server, run `aarg init`, and pick the provider; on a local provider `init` skips
+the key step and lets you choose a model the server already has. The full
+walkthrough, including which models work well and the server settings that
+matter, is in [docs/local-models.md](docs/local-models.md).
+
+Set the provider and model in `config.toml`, either through `aarg init` or by
+hand:
+
+```toml
+# LM Studio (defaults to http://127.0.0.1:1234)
+provider = "lmstudio"
+
+[lmstudio]
+model = "qwen2.5-coder-7b-instruct"
+```
+
+```toml
+# Ollama (defaults to http://127.0.0.1:11434)
+provider = "ollama"
+
+[ollama]
+model = "qwen3:8b"
+num_ctx = 8192      # context floor; grows per request when a prompt needs more
+keep_alive = "5m"   # how long the model stays resident between calls
+```
+
+A few things to know:
+
+- **Context window.** AARG's prompts run 4k-8k tokens, so load the model with a
+  context window of at least 8192. `aarg llm ping` reports the loaded window and
+  warns when it's too small; on LM Studio, reload the model with a larger context
+  length.
+- **Thinking models.** A reasoning model spends its output budget on hidden
+  thinking before it answers, and can burn all of it. On Ollama, AARG turns
+  thinking off by itself for models that declare the capability (qwen3,
+  deepseek-r1), so they just work. LM Studio has no per-request switch, but
+  its per-model settings do: turn off "Enable Thinking" under the model's
+  Inference tab and the server obeys it. `aarg llm ping` tells you when the
+  loaded model still reasons, and an empty-reply failure reports how many
+  tokens went to hidden reasoning.
+- **Which model.** On Apple Silicon, a mixture-of-experts model with thinking
+  off is the sweet spot: only a few billion parameters are active per token,
+  so it generates several times faster than a dense model of similar quality.
+  In one comparison on the same job description, a 35B MoE (qwen3.6-35b-a3b)
+  scored within ten points of a hosted build in about two minutes, where a
+  dense 70B took fifteen minutes to score lower. Small instruct models (7B)
+  finish fast but draft thin resumes.
+- **Overflow policy (LM Studio).** Set the model's Context Overflow to the
+  stop-at-limit option. The default "Truncate Middle" silently cuts the middle
+  out of an oversized prompt, which for a resume pipeline means dropping
+  evidence; AARG detects the clipped reply and refuses it, but a loud server
+  error is better than a caught silent one.
+- **No default model.** AARG ships no local model name, so a local provider is
+  unusable until you set one; if you forget, it says exactly which config key to
+  set.
+- **Typst is still required** to render the PDFs, the same as on Anthropic.
+- `aarg key` still manages the Anthropic keychain even while a local provider is
+  active, so you can keep a key on hand and switch back with `aarg config`.
+
 ## Commands
 
 | | |
@@ -408,7 +473,7 @@ flowchart TB
     subgraph core["aarg-core · the agent runtime"]
         direction TB
         RUNTIME["trait Agent · AgentContext · Tool · Tracer<br/>validation-retry · token accounting"]
-        CLIENTS["LLM clients<br/>Anthropic + scripted Mock, hand-rolled on reqwest<br/>behind a two-method LlmClient trait · Ollama planned"]
+        CLIENTS["LLM clients<br/>Anthropic · LM Studio · Ollama · scripted Mock<br/>hand-rolled on reqwest, behind a two-method LlmClient trait"]
         RUNTIME --> CLIENTS
     end
     ORCH --> AGENTS
@@ -462,8 +527,7 @@ posting (`aarg chat`), exporting finished PDFs under friendly company names
 (`aarg mcp`) that lets Claude Desktop and other MCP clients drive AARG by chat
 ([docs/mcp.md](docs/mcp.md)), and the browser workspace (`aarg serve`).
 
-**Not there yet**: a fully-local model provider (the client trait and per-agent
-model tiers are already in place for it to slot into); an experimental vision pass
+**Not there yet**: an experimental vision pass
 that reads the rendered layout the way a recruiter skims it; streamed (SSE) model
 responses in the browser, which today waits for a whole completion; and reaching
 the workspace safely past loopback (single-user, local-first is the design for
