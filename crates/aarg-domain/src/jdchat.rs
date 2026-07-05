@@ -45,6 +45,16 @@ const REPLY_BUDGET: u32 = 1024;
 /// both the buffered agent and the streaming turn.
 const CHAT_AGENT_ID: &str = "jd_chat_v1";
 
+/// The model tier chat runs on, the single source of truth for both paths.
+/// Chat is moderate-judgment advice (interpreting a posting, weighing fit,
+/// naming an honest gap), the same class of work the `Agent` trait defaults
+/// to, so it stays on `Mid`. Both the buffered agent and the streaming turn
+/// resolve this exact tier under the shared `CHAT_AGENT_ID`, so the same
+/// conversation costs the same whichever path drives it. The streaming path
+/// does not depend on the tier to stream, it drives `LlmClient::stream`
+/// directly.
+const CHAT_TIER: ModelTier = ModelTier::Mid;
+
 /// How many prior turns (a turn is one message, user *or* assistant) a request
 /// carries. The conversation grows without bound in a long session, but the
 /// context window does not, so only the most recent `HISTORY_TURNS` are
@@ -186,6 +196,9 @@ impl Agent for JdChatAgent {
     fn reply_budget(&self) -> u32 {
         REPLY_BUDGET
     }
+    fn model_tier(&self) -> ModelTier {
+        CHAT_TIER
+    }
     fn user_message(&self, input: &JdChatInput) -> String {
         // The buffered path flattens everything into one user message: the
         // grounding block, then the conversation so far, then the latest line.
@@ -257,10 +270,7 @@ pub async fn stream_reply(
         .collect();
     messages.push(Message::user(input.message.clone()));
 
-    let model = ctx
-        .model
-        .resolve(CHAT_AGENT_ID, ModelTier::Smart)
-        .to_string();
+    let model = ctx.model.resolve(CHAT_AGENT_ID, CHAT_TIER).to_string();
     let request = CompletionRequest {
         model,
         max_tokens: REPLY_BUDGET,
