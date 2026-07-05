@@ -89,7 +89,15 @@ pub(super) async fn llm(req: Request<Incoming>) -> Resp {
     let (client, config) = match configured_client().await {
         Ok(pair) => pair,
         Err(error) => {
-            return error_response(503, "no_credentials", error_chain(&error));
+            // Both are server-config problems the browser can't fix, so both
+            // are 503s, but they are distinct problems: a local provider with
+            // no model named is not a credential issue, and labeling it one
+            // would send the operator hunting through keychains.
+            let kind = match &error {
+                crate::commands::CliError::MissingLocalModel { .. } => "no_model",
+                _ => "no_credentials",
+            };
+            return error_response(503, kind, error_chain(&error));
         }
     };
     // A local provider's base URL, so an unreachable-server error can name it
@@ -215,15 +223,20 @@ fn describe_llm_error(error: &LlmError, base_url: Option<&str>) -> String {
     }
 }
 
-/// Whether an error chain looks like a refused or unreachable TCP connection,
-/// the shape a down local server produces. Loose substring matching, since the
-/// exact phrasing varies by platform and reqwest version.
+/// Whether an error chain looks like a refused, unreachable, or timed-out
+/// connection, the shapes a down or hung local server produces. A server that
+/// is listening but never answers (a wedged process, a model stuck loading)
+/// surfaces as reqwest's timeout rather than a refusal, and deserves the same
+/// start-the-server hint. Loose substring matching, since the exact phrasing
+/// varies by platform and reqwest version.
 fn looks_unreachable(chain: &str) -> bool {
     let lower = chain.to_lowercase();
     lower.contains("connection refused")
         || lower.contains("tcp connect")
         || lower.contains("connect error")
         || lower.contains("could not reach")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
 }
 
 /// Whether a request's `Accept` header asks for an SSE stream. A browser
@@ -1704,6 +1717,52 @@ mod tests {
             input_schema: json!({ "type": "object" }),
         });
         assert!(!stream_mode(true, &with_tools));
+    }
+
+    #[test]
+    fn looks_unreachable_matches_down_and_hung_servers_only() {
+        // A refused TCP connect (server down) and a timeout (server hung or a
+        // model stuck loading) both get the hint.
+        assert!(looks_unreachable(
+            "could not reach the LLM API: error sending request: tcp connect error: Connection refused (os error 61)"
+        ));
+        assert!(looks_unreachable(
+            "could not reach the LLM API: error sending request: operation timed out"
+        ));
+        // A provider rejection is not a connectivity problem.
+        assert!(!looks_unreachable(
+            "the API rejected the request (HTTP 400, invalid_request_error): bad model"
+        ));
+    }
+
+    #[test]
+    fn describe_llm_error_adds_the_local_hint_only_when_it_applies() {
+        let base = Some("http://127.0.0.1:1234");
+
+        // Refused connection with a local base_url: the hint names the server.
+        let refused = LlmError::Stream("tcp connect error: Connection refused".to_string());
+        let message = describe_llm_error(&refused, base);
+        assert!(message.contains("http://127.0.0.1:1234"), "got: {message}");
+        assert!(message.contains("start LM Studio"), "got: {message}");
+
+        // Timeout with a local base_url: same hint (a hung server needs the
+        // same remedy as a down one).
+        let hung = LlmError::Stream("error sending request: operation timed out".to_string());
+        let message = describe_llm_error(&hung, base);
+        assert!(message.contains("ollama serve"), "got: {message}");
+
+        // A non-network error keeps its plain chain, no hint.
+        let rejected = LlmError::Api {
+            status: 400,
+            kind: "invalid_request_error".to_string(),
+            message: "bad model".to_string(),
+        };
+        let message = describe_llm_error(&rejected, base);
+        assert!(!message.contains("start LM Studio"), "got: {message}");
+
+        // No base_url (Anthropic): never a local hint, even on a refusal.
+        let message = describe_llm_error(&refused, None);
+        assert!(!message.contains("start LM Studio"), "got: {message}");
     }
 
     #[test]
