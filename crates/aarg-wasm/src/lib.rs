@@ -45,6 +45,8 @@ pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::agent::{Agent, AgentContext};
 #[cfg(target_arch = "wasm32")]
+use aarg_domain::cover_interview::{CoverBrief, run_cover_interview};
+#[cfg(target_arch = "wasm32")]
 use aarg_domain::gap::GapReport;
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::jdchat::{BuildContext, ChatTurn, JdChatInput, digest, stream_reply};
@@ -1191,6 +1193,72 @@ pub async fn enrich_roles_interactive(
             ),
         };
     dump(&json).map_err(throw)
+}
+
+/// Run the cover-letter interview (the honesty layer for cover-letter
+/// generation, `cover_interview::run_cover_interview`): a short, adaptive
+/// session over the letter's angle, emphasis, tone, motivation, and
+/// constraints, each slot offering a guarded suggestion before the plain
+/// question (see the module doc on `run_cover_interview` for the full
+/// mechanism). Mirrors `tune_interactive`'s shape among the interactive
+/// exports: it drives the canonical draft and the JD, not the dataset, so —
+/// like `tune_interactive` — there is no dataset to return alongside the
+/// result.
+///
+/// `canonical_json`/`jd_json` are the build's `TailoredResume` and
+/// `JobRequirements`, already available in the workspace wherever a cover
+/// letter can be drafted.
+///
+/// Every `CoverBrief` field comes only from the candidate's own typed
+/// answers or an explicitly accepted suggestion (never from a question's or
+/// a declined suggestion's own text) — the same structural guarantee
+/// `run_cover_interview`'s own doc comment describes. This binding adds no
+/// further path for a claim to enter: it neither reads nor writes the
+/// dataset, and the browser hands the returned brief straight to
+/// `POST /api/builds/:id/cover` as grounding, never as a resume edit.
+///
+/// `run_cover_interview` degrades rather than propagating an `AskError` on
+/// an abandoned session (a non-interactive user, a blank answer, or a
+/// dismissed suggestion menu all fall back to whatever brief was gathered so
+/// far — see that function's doc comment) — so in practice this export
+/// always resolves with a brief, possibly empty, never rejects for a merely
+/// cancelled interview. The `Err` arm below exists for the same reason every
+/// other interactive export's does: a genuine failure (not a cancellation)
+/// should still surface as a rejected promise with its full cause chain,
+/// rather than being swallowed into a silent empty brief.
+///
+/// Returns the resulting `CoverBrief` as JSON — a bare object, not wrapped in
+/// `{brief, aborted}`: an empty brief already reads as "no grounding" to
+/// `write_cover_letter` (see `CoverLetterInput::brief`'s doc comment), so the
+/// caller can always draft from whatever came back rather than branching on
+/// a separate abort flag.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn cover_interview_interactive(
+    canonical_json: String,
+    jd_json: String,
+    models_json: String,
+    llm: js_sys::Function,
+    user: js_sys::Function,
+) -> Result<String, JsValue> {
+    let resume: TailoredResume = parse(&canonical_json, "canonical draft").map_err(throw)?;
+    let jd: JobRequirements = parse(&jd_json, "job requirements").map_err(throw)?;
+    let models = Models::from_json(&models_json).map_err(throw)?;
+    let (client, llm_rx) = BridgeClient::new();
+    bridge::spawn_pump(llm_rx, llm);
+    let (user_handle, user_rx) = BridgeUser::new();
+    bridge::spawn_user_pump(user_rx, user);
+    let ctx = AgentContext {
+        llm: &client,
+        model: &models,
+        tracer: &Tracer::DISABLED,
+        sink: None,
+    };
+
+    let brief: CoverBrief = run_cover_interview(&resume, &jd, &user_handle, &ctx)
+        .await
+        .map_err(|e| throw(error_chain(&e)))?;
+    dump(&brief).map_err(throw)
 }
 
 /// Run the conversational "tune" session over a finished canonical draft —
