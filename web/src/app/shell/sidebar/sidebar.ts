@@ -5,6 +5,7 @@ import { filter, firstValueFrom, map } from 'rxjs';
 
 import { ApiService } from '../../services/api.service';
 import { BuildsStore } from '../../services/builds-store';
+import { ChatStore } from '../../services/chat-store';
 import { CopilotHost } from '../../shared/copilot-host';
 import type { BuildSummary } from '../../models';
 
@@ -222,24 +223,41 @@ const NO_COMPANY = 'No company';
         }
       </div>
 
-      <!-- Desktop chat open/close grip, pinned to the rail's right edge (the
-           sidebar-to-chat boundary when the chat is open). Chevron points out
-           (right) to open, in (left) to close. The chat panel's own resize
-           handle lives on its far edge, so the two never meet. Hidden on the
-           mobile drawer, where the header button above takes over. -->
+    </aside>
+
+    <!-- Desktop chat open/close grabber: a full-viewport-height bar docked to
+         the sidebar's right edge (300px expanded, 48px collapsed — the
+         sidebar-to-chat boundary when the chat is open), with a single caret
+         centered inside it. It sits outside <aside> and is position: fixed
+         with its own height: 100vh, rather than living inside the sidebar at
+         height: 100% — the sidebar's own box grows with the build list and
+         can run well past one screen, which is what previously left the
+         caret stranded at the midpoint of a very tall list. Fixed at exactly
+         one viewport tall, the bar (and the caret centered in it) can never
+         be taller than the screen, so it stays put as the page scrolls,
+         mirroring how the chat panel's own resize handle is a fixed,
+         viewport-height strip on its far edge (the two never meet). Points
+         right (open) or is rotated to point left (close, via .open). Hidden
+         on the mobile drawer (the header button above takes over) and when
+         no build is open — the chat talks about a build, so an idle grabber
+         would only open an empty panel. Kept visible while the chat is open
+         so it can always be closed. -->
+    @if (chatOpen() || chatAvailable()) {
       <button
         class="chat-grip"
         type="button"
         [class.open]="chatOpen()"
+        [style.left.px]="collapsed() ? 48 : 300"
         [attr.aria-expanded]="chatOpen()"
         [attr.aria-label]="chatOpen() ? 'Close chat' : 'Open chat'"
+        [attr.title]="chatOpen() ? 'Close chat' : 'Open chat'"
         (click)="toggleChat.emit()"
       >
-        <svg class="grip-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+        <svg class="grip-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
           <path d="M9 6l6 6-6 6" />
         </svg>
       </button>
-    </aside>
+    }
   `,
   styles: `
     :host { display: contents; }
@@ -262,8 +280,8 @@ const NO_COMPANY = 'No company';
     .collapse-toggle {
       display: none;
       align-items: center; justify-content: center;
-      /* right: 32px clears the 24px edge grip pinned at right: 0. */
-      position: absolute; top: 14px; right: 32px; z-index: 2;
+      /* right: 38px clears the 30px edge grip pinned at right: 0. */
+      position: absolute; top: 14px; right: 38px; z-index: 2;
       width: 26px; height: 26px;
       border: 1px solid var(--border); border-radius: 7px;
       background: var(--surface); color: var(--muted); cursor: pointer;
@@ -328,27 +346,44 @@ const NO_COMPANY = 'No company';
     .chat-toggle.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     .chat-toggle svg { width: 15px; height: 15px; }
 
-    /* Desktop edge grip: a full-height raised strip on the rail's right edge.
-     * The chevron points right (out) to open the chat, left (in) to close it. */
+    /* The chat open/close grabber: a full-height bar docked to the sidebar's
+     * right edge, fixed to exactly one viewport tall (position: fixed with
+     * height: 100vh) rather than sized to the sidebar's own box, which grows
+     * with the build list and can run well past one screen — that mismatch
+     * is what previously left the caret centered on a box far taller than
+     * the visible page. Fixed at 100vh, the bar (and the caret flex-centered
+     * inside it) can never exceed the screen, so it stays put as the page
+     * scrolls. left tracks the sidebar's own width (300px / 48px collapsed,
+     * set inline from the component) so it always sits flush against the
+     * sidebar-to-chat boundary; translateX(-100%) docks its right edge to
+     * that line, matching how the chat panel's own resize handle sits on its
+     * far edge (the two never meet). */
     .chat-grip {
-      position: absolute; top: 0; right: 0; z-index: 3;
-      width: 24px; height: 100%; padding: 0;
+      position: fixed; top: 0; left: 0; z-index: 40;
+      height: 100vh; width: 26px; padding: 0;
+      transform: translateX(-100%);
       display: flex; align-items: center; justify-content: center;
       border: 0; border-left: 1px solid var(--border);
       background: color-mix(in oklch, var(--surface) 55%, transparent);
-      color: var(--faint); cursor: pointer;
-      transition: background 0.15s, color 0.15s;
+      color: var(--muted); cursor: pointer;
+      transition: left 0.25s cubic-bezier(0.2, 0.7, 0.2, 1),
+        background 0.15s, color 0.15s;
     }
     .chat-grip:hover { background: var(--surface-2); color: var(--fg); }
+    .chat-grip.open { color: var(--accent); }
     .chat-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-    .chat-grip .grip-chev {
-      width: 16px; height: 16px;
+    .grip-chev {
+      width: 13px; height: 13px; opacity: 0.7;
       transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1);
     }
+    .chat-grip:hover .grip-chev, .chat-grip.open .grip-chev { opacity: 1; }
     .chat-grip.open .grip-chev { transform: rotate(180deg); }
-    @media (prefers-reduced-motion: reduce) { .chat-grip .grip-chev { transition: none; } }
-    /* Mobile: the sidebar is an overlay drawer, so the edge grip doesn't apply;
-     * the header chat button takes over. */
+    @media (prefers-reduced-motion: reduce) {
+      .grip-chev { transition: none; }
+      .chat-grip { transition: background 0.15s, color 0.15s; }
+    }
+    /* Mobile: the sidebar is an overlay drawer, so the edge control doesn't
+     * apply; the header chat button takes over. */
     @media (max-width: 1080px) {
       .chat-grip { display: none; }
       .side-close, .chat-toggle { display: inline-flex; }
@@ -539,6 +574,12 @@ export class Sidebar {
   private readonly el = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly router = inject(Router);
   private readonly copilot = inject(CopilotHost);
+  private readonly chatStore = inject(ChatStore);
+
+  /** Whether there's an open build to chat about. The chat panel talks about a
+   *  specific build, so with no context the grip has nothing to open — it hides
+   *  rather than sitting as a strip that opens an empty panel. */
+  protected readonly chatAvailable = computed(() => this.chatStore.context() !== null);
   readonly open = input(false);
   /** Desktop-only collapse state (meaningless ≤1080px; see host CSS). */
   readonly collapsed = input(false);
