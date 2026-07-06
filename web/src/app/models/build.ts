@@ -8,6 +8,7 @@ import type { GapReport } from './gap';
 import type { AdversarialReport } from './review';
 import type { AtsReport } from './ats';
 import type { VariantPayload } from './variant';
+import type { CoverLetter } from './cover';
 
 /** `meta.json`: how a build was produced. */
 export interface BuildMeta {
@@ -61,6 +62,10 @@ export interface BuildDetail {
   /** The ATS variant payload (deterministic projection of the canonical draft). */
   ats_payload?: VariantPayload;
   ats_report?: AtsReport;
+  /** The drafted cover letter's parsed fields (`cover_payload.json`), not just
+   *  its rendered PDF (`GET .../files/cover_letter.pdf`). Absent for a build
+   *  that has a tailored résumé but no cover letter drafted yet. */
+  cover_payload?: CoverLetter;
   /** Per-build objection triage (`triage.json`): the objection ids left for now.
    *  Always present (empty when the build has no triage file yet), so the
    *  workspace seeds its "left" set without a missing-key branch. */
