@@ -1050,7 +1050,7 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
             let user = auto_user();
             tailor::run(jd, variant.variants(), template, cover, user.as_ref()).await?
         }
-        Command::Cover { build } => cover::run(build).await?,
+        Command::Cover { build, interactive } => cover::run(build, interactive).await?,
         Command::Export { build, to } => export::run(build, to).await?,
         Command::Open { build } => open::run(build).await?,
         Command::Render {
