@@ -21,6 +21,18 @@
 //! recorded as a candidate fact. A skipped or partial interview degrades
 //! to an empty or partial brief rather than blocking whatever generates
 //! the letter later.
+//!
+//! For four of the five topics, the interview also offers a guarded,
+//! evidence-grounded suggestion first — the same "propose one draft, the
+//! candidate disposes" mechanism [`strengthen`](crate::strengthen) uses
+//! for weak bullets, [`CoverSuggestAgent`] draws only on the JD and the
+//! candidate's own tailored résumé, and [`cover_suggest_flow`] is the
+//! guard that keeps a decline or an unreachable model from ever reaching
+//! the user as a menu. `motivation` gets the strictest reading of that
+//! prompt: it may surface an evidence-based fit observation, never a
+//! first-person claim of enthusiasm. `constraints` skips the mechanism
+//! entirely and goes straight to the plain question — there is no honest
+//! way to suggest a restriction the candidate never raised.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -28,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{Agent, AgentContext};
 use crate::jd::JobRequirements;
 use crate::llm::LlmError;
-use crate::tailor::TailoredResume;
+use crate::tailor::{TailoredResume, within_evidence};
 use crate::user::{Answer, AskError, Question, UserHandle};
 
 /// A leading question is one short sentence.
@@ -41,7 +53,20 @@ const REPLY_BUDGET: u32 = 256;
 /// topic, with a follow-up on the occasional thin answer — without
 /// letting a bad session run long. Any sane positive value works; this
 /// exists only to guarantee termination.
+///
+/// Counts everything actually put in front of the user — an interview
+/// question or a suggestion menu — the same way a model's empty "I have
+/// enough" reply doesn't count today. A suggestion that's declined, or a
+/// tweak the guard rejects, is never shown, so it costs nothing against
+/// this cap either.
 const MAX_QUESTIONS: usize = 6;
+
+/// How many times a suggested answer can be tweaked before "Tweak it"
+/// stops being offered. Mirrors `strengthen`'s `InterviewLimits::revises`,
+/// kept as a plain constant here since this module takes no limits
+/// argument; any sane positive value works, this only guarantees the
+/// tweak loop terminates.
+const SUGGEST_REVISES: usize = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoverInterviewError {
@@ -66,9 +91,11 @@ pub enum CoverInterviewError {
 ///
 /// Every field is populated ONLY from the candidate's own typed answers.
 /// [`CoverInterviewAgent`]'s `Output` is a question (or the empty-string
-/// "done" signal) — never a fact — so there is no channel for the model
-/// that asks the questions to write into this struct. [`run_cover_interview`]
-/// is the only code that ever constructs a populated one.
+/// "done" signal), and [`CoverSuggestAgent`]'s `Output` is a proposed
+/// answer the candidate must explicitly accept — neither is ever written
+/// into this struct directly. [`run_cover_interview`] is the only code
+/// that ever constructs a populated one, and [`Slot::record`] is the only
+/// place that ever writes a field.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CoverBrief {
@@ -85,7 +112,8 @@ pub struct CoverBrief {
     pub tone: Option<String>,
     /// Why this role, at this company — the one thing genuinely not on a
     /// résumé, and the reason this interview exists rather than letting a
-    /// model invent enthusiasm.
+    /// model invent enthusiasm. Appended to, not overwritten, on a
+    /// follow-up answer.
     pub motivation: Option<String>,
     /// Anything the candidate wants the letter to avoid or must include,
     /// in their own words.
@@ -118,6 +146,20 @@ impl Slot {
         Slot::Constraints,
     ];
 
+    /// A short, stable name for this slot — used as the machine-readable
+    /// tag the suggestion agent is told which topic it's on (alongside
+    /// `topic`'s full sentence), and in the suggestion menu shown to the
+    /// user.
+    fn key(self) -> &'static str {
+        match self {
+            Slot::Angle => "angle",
+            Slot::Emphasis => "emphasis",
+            Slot::Tone => "tone",
+            Slot::Motivation => "motivation",
+            Slot::Constraints => "constraints",
+        }
+    }
+
     /// What this turn is about, handed to the agent so its question
     /// stays on topic.
     fn topic(self) -> &'static str {
@@ -149,8 +191,19 @@ impl Slot {
         }
     }
 
+    /// Whether this slot gets a suggestion attempt before the plain
+    /// interview question. True for every slot except `Constraints`: a
+    /// short free-form "anything to avoid" field where a suggestion
+    /// doesn't save effort and risks putting words in the candidate's
+    /// mouth about a restriction they never raised.
+    fn suggestible(self) -> bool {
+        !matches!(self, Slot::Constraints)
+    }
+
     /// Record a non-blank answer into the field this topic owns. The only
-    /// place a `CoverBrief` field is ever written.
+    /// place a `CoverBrief` field is ever written — whether the answer
+    /// came from a typed reply or an accepted suggestion, it arrives here
+    /// the same way.
     fn record(self, brief: &mut CoverBrief, answer: String) {
         match self {
             Slot::Angle => append_scalar(&mut brief.angle, answer),
@@ -164,7 +217,7 @@ impl Slot {
 
 /// Merge a second answer for the same scalar slot instead of discarding
 /// the first. A follow-up turn produces a second, genuinely additional
-/// answer about the same topic - not a correction of the first - so both
+/// answer about the same topic — not a correction of the first — so both
 /// must survive verbatim in the final brief; joined on their own line so
 /// they stay readable and distinguishable downstream.
 fn append_scalar(field: &mut Option<String>, answer: String) {
@@ -178,7 +231,7 @@ fn append_scalar(field: &mut Option<String>, answer: String) {
 }
 
 // ---------------------------------------------------------------------
-// The agent: ask one grounded question at a time
+// Agent 1: ask one grounded question at a time
 // ---------------------------------------------------------------------
 
 /// One exchange in the interview so far, scoped to the current topic.
@@ -302,14 +355,313 @@ pub struct RawQuestion {
 }
 
 // ---------------------------------------------------------------------
+// Agent 2: suggest a starting point from the JD and tailored résumé
+// ---------------------------------------------------------------------
+
+/// What the suggestion agent needs: the same JD/résumé grounding the
+/// question agent sees, which slot this turn concerns (its short key and
+/// its full topic sentence), and any revision notes from an earlier
+/// "tweak it" round.
+#[derive(Serialize)]
+pub struct CoverSuggestInput {
+    pub slot: String,
+    pub topic: String,
+    pub jd_title: String,
+    pub jd_company: String,
+    pub jd_required_skills: Vec<String>,
+    pub jd_responsibilities: Vec<String>,
+    pub resume_target_title: Option<String>,
+    pub resume_summary: String,
+    pub resume_skills: Vec<String>,
+    /// Every recorded bullet across the tailored résumé's selected roles,
+    /// labeled by role — the material `emphasis` picks from and `angle`
+    /// or `motivation` may point to, never invent beyond.
+    pub resume_bullets: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+/// Drafts one proposed answer for a suggestible slot as a *starting
+/// point*, grounded only in the JD and the candidate's own tailored
+/// résumé. Mirrors [`strengthen::StrengthenSuggestAgent`](crate::strengthen::StrengthenSuggestAgent):
+/// it proposes, the candidate disposes (use / tweak / own words / skip),
+/// and [`run_cover_suggest`]'s guard plus the user-as-final-gate menu keep
+/// it from ever silently becoming a recorded fact.
+pub struct CoverSuggestAgent;
+
+#[async_trait]
+impl Agent for CoverSuggestAgent {
+    type Input = CoverSuggestInput;
+    type Wire = RawSuggestion;
+    type Output = String;
+    type Error = CoverInterviewError;
+
+    fn id(&self) -> &'static str {
+        "cover_suggest_v1"
+    }
+    fn system_prompt(&self) -> &str {
+        SUGGEST_PROMPT
+    }
+    fn reply_budget(&self) -> u32 {
+        REPLY_BUDGET
+    }
+    fn user_message(&self, input: &CoverSuggestInput) -> String {
+        let mut text = format!("The posting: {} at {}\n", input.jd_title, input.jd_company);
+        if !input.jd_required_skills.is_empty() {
+            text.push_str(&format!(
+                "Required skills: {}\n",
+                input.jd_required_skills.join(", ")
+            ));
+        }
+        if !input.jd_responsibilities.is_empty() {
+            text.push_str("Responsibilities:\n");
+            for duty in &input.jd_responsibilities {
+                text.push_str(&format!("  - {duty}\n"));
+            }
+        }
+        if let Some(title) = &input.resume_target_title {
+            text.push_str(&format!("\nTheir tailored resume targets: {title}\n"));
+        }
+        if !input.resume_summary.is_empty() {
+            text.push_str(&format!("Resume summary: {}\n", input.resume_summary));
+        }
+        if !input.resume_skills.is_empty() {
+            text.push_str(&format!(
+                "Resume skills: {}\n",
+                input.resume_skills.join(", ")
+            ));
+        }
+        if !input.resume_bullets.is_empty() {
+            text.push_str("\nRecorded accomplishments (facts you may draw on):\n");
+            for bullet in &input.resume_bullets {
+                text.push_str(&format!("  - {bullet}\n"));
+            }
+        }
+        text.push_str(&format!(
+            "\nThis turn's topic ({}): {}\n",
+            input.slot, input.topic
+        ));
+        if !input.notes.is_empty() {
+            text.push_str("\nThe candidate asked you to revise your previous suggestion:\n");
+            for note in &input.notes {
+                text.push_str(&format!("- {note}\n"));
+            }
+        }
+        text.push_str("\nPropose one suggestion for this topic, using only the facts above.");
+        text
+    }
+    fn bad_reply(&self, snippet: String, source: serde_json::Error) -> CoverInterviewError {
+        CoverInterviewError::BadReply { snippet, source }
+    }
+    fn assemble(
+        &self,
+        wire: RawSuggestion,
+        _input: CoverSuggestInput,
+    ) -> Result<String, CoverInterviewError> {
+        Ok(wire.suggestion)
+    }
+}
+
+const SUGGEST_PROMPT: &str = r#"You help a job candidate prepare a cover letter by drafting ONE possible answer for a single topic - the angle, what to emphasize, the tone, or a motivation prompt - as a starting point they will review, edit, or reject. You are given the job posting, their tailored resume, and which topic this turn is about.
+
+Ground every word in ONLY the posting and the resume you are given. Never invent a fact, a number, an employer, or a feeling that is not present in that material.
+
+How to handle each topic:
+- angle: suggest a throughline connecting the resume's strongest evidence to the posting's core asks (e.g. "you might lead with your regulatory build-out experience, since the posting's top requirement is governance").
+- emphasis: pick 2-3 already-recorded accomplishments from the resume that best match the posting's top requirements. Select existing facts; invent nothing new.
+- tone: suggest a plain, reasonable framing for how the letter should sound, drawing on the resume's own voice if it signals one, otherwise a sensible default.
+- motivation: this is the one topic you must handle with the most caution. Why the candidate personally wants this role is not recorded anywhere - it is personal to them, never a fact you can know. NEVER write in the first person and NEVER claim enthusiasm, passion, or personal motivation on the candidate's behalf. You may ONLY surface an evidence-based fit observation - a plain statement of where the posting's ask and the resume's recorded experience line up (e.g. "the posting emphasizes governance work; your recorded experience shows you built out a compliance program, which is a direct match") - framed as something the candidate could build their own answer around, never as a first-person statement of why they want the job. If you cannot produce even that honestly, decline.
+
+If you cannot answer honestly for the topic given, reply with an empty string rather than reaching for anything invented. This is expected and correct far more often for motivation than for the other topics.
+
+If the candidate gave revision notes, follow them, but every rule above still binds even if a note asks you to go further than the evidence supports.
+
+Reply with exactly one JSON object and nothing else - no markdown fences:
+{"suggestion": "your one suggestion for this topic, or an empty string if you cannot do it honestly"}"#;
+
+#[derive(Debug, Deserialize)]
+pub struct RawSuggestion {
+    #[serde(default)]
+    suggestion: String,
+}
+
+/// What the user chose to do with a suggested answer for a slot. Mirrors
+/// `strengthen::SuggestOutcome`.
+enum CoverSuggestOutcome {
+    /// Take this answer (already guard-clean) and record it.
+    Accepted(String),
+    /// Decline the suggestion and answer the interview question in their
+    /// own words.
+    OwnWords,
+    /// Leave this slot exactly as it is — no suggestion, no interview.
+    Skip,
+}
+
+/// Every string a cover-letter suggestion may draw a fact from: the
+/// posting's stated requirements and the candidate's own tailored résumé.
+/// Mirrors `strengthen::RoleEvidence::texts`, scoped to the whole JD and
+/// résumé rather than one role's bullets, since a cover letter's angle or
+/// motivation can reasonably draw on any part of either.
+fn cover_evidence_texts(jd: &JobRequirements, resume: &TailoredResume) -> Vec<String> {
+    let mut texts = vec![jd.title.clone(), jd.company.clone(), resume.summary.clone()];
+    texts.extend(jd.required_skills.iter().map(|s| s.name.clone()));
+    texts.extend(jd.responsibilities.clone());
+    texts.extend(resume.skills_section.skills.clone());
+    if let Some(title) = &resume.target_title {
+        texts.push(title.clone());
+    }
+    texts.extend(resume_bullet_lines(resume));
+    texts
+}
+
+/// Every recorded bullet across the tailored résumé's selected roles,
+/// labeled by role — the raw material a suggestion may select from or
+/// point to, never invent beyond.
+fn resume_bullet_lines(resume: &TailoredResume) -> Vec<String> {
+    resume
+        .roles
+        .iter()
+        .flat_map(|role| {
+            role.bullets
+                .iter()
+                .map(move |bullet| format!("{} at {}: {}", role.title, role.company, bullet.text))
+        })
+        .collect()
+}
+
+/// One suggestion attempt, fully guarded. Returns the candidate answer
+/// only if the agent produced a non-empty suggestion that differs from
+/// `previous` (the suggestion already on screen, if any — `None` on the
+/// first attempt) and introduces no fact outside the JD and résumé it was
+/// given. Otherwise `None`, and the caller offers nothing new.
+async fn run_cover_suggest(
+    ctx: &AgentContext<'_>,
+    slot: Slot,
+    jd: &JobRequirements,
+    resume: &TailoredResume,
+    notes: &[String],
+    previous: Option<&str>,
+) -> Option<String> {
+    let input = CoverSuggestInput {
+        slot: slot.key().to_string(),
+        topic: slot.topic().to_string(),
+        jd_title: jd.title.clone(),
+        jd_company: jd.company.clone(),
+        jd_required_skills: jd.required_skills.iter().map(|s| s.name.clone()).collect(),
+        jd_responsibilities: jd.responsibilities.clone(),
+        resume_target_title: resume.target_title.clone(),
+        resume_summary: resume.summary.clone(),
+        resume_skills: resume.skills_section.skills.clone(),
+        resume_bullets: resume_bullet_lines(resume),
+        notes: notes.to_vec(),
+    };
+    let run = CoverSuggestAgent.run(ctx, input).await.ok()?;
+    let suggestion = run.output.trim().to_string();
+    if suggestion.is_empty() || Some(suggestion.as_str()) == previous {
+        return None; // nothing to offer, or no real change from a tweak
+    }
+    // May draw only on what the posting states and what the candidate has
+    // already recorded on their resume - never a fact from neither.
+    let evidence = cover_evidence_texts(jd, resume);
+    let allowed: Vec<&str> = evidence.iter().map(String::as_str).collect();
+    if within_evidence(&suggestion, &allowed) {
+        Some(suggestion)
+    } else {
+        None
+    }
+}
+
+/// Offer a guarded, evidence-grounded suggestion for one suggestible slot
+/// before the plain interview question for that slot, and let the user
+/// accept it, tweak it, switch to their own words, or skip the slot
+/// entirely. Returns `None` when no honest suggestion could be produced,
+/// so the caller falls through to the interview unchanged. Mirrors
+/// `strengthen::suggest_flow`.
+///
+/// A suggestion that's never shown to the user — declined outright, or a
+/// tweak the guard rejects — costs nothing against `MAX_QUESTIONS`,
+/// exactly like the interview agent's own "done" signal never counting.
+/// Only a suggestion actually PRESENTED to the user (the initial menu,
+/// and each re-shown menu after a tweak) counts, the same way a real
+/// interview question counts and an empty "I have enough" reply doesn't.
+async fn cover_suggest_flow(
+    ctx: &AgentContext<'_>,
+    slot: Slot,
+    jd: &JobRequirements,
+    resume: &TailoredResume,
+    user: &dyn UserHandle,
+    asked: &mut usize,
+) -> Result<Option<CoverSuggestOutcome>, AskError> {
+    if *asked >= MAX_QUESTIONS {
+        return Ok(None);
+    }
+    let mut notes: Vec<String> = Vec::new();
+    let Some(mut suggestion) = run_cover_suggest(ctx, slot, jd, resume, &notes, None).await else {
+        return Ok(None); // no honest suggestion; the caller uses the interview
+    };
+    *asked += 1; // about to show this to the user, same accounting as a real question
+
+    let mut revises_left = SUGGEST_REVISES;
+    loop {
+        let mut options = vec!["Use this wording".to_string()];
+        if revises_left > 0 && *asked < MAX_QUESTIONS {
+            options.push("Tweak it".to_string());
+        }
+        options.push("Answer in my own words".to_string());
+        options.push("Skip this one".to_string());
+
+        let choice = match user
+            .ask(Question::Select {
+                prompt: format!("a possible {}:\n  \"{suggestion}\"", slot.key()),
+                options: options.clone(),
+            })
+            .await?
+        {
+            Answer::Choice(i) => options.get(i).map(String::as_str),
+            _ => Some("Answer in my own words"), // unexpected shape; defer to the user
+        };
+
+        match choice {
+            Some("Use this wording") => {
+                return Ok(Some(CoverSuggestOutcome::Accepted(suggestion)));
+            }
+            Some("Answer in my own words") => return Ok(Some(CoverSuggestOutcome::OwnWords)),
+            Some("Skip this one") => return Ok(Some(CoverSuggestOutcome::Skip)),
+            Some("Tweak it") => {
+                let note = match user
+                    .ask(Question::Text {
+                        prompt: "what should change?".to_string(),
+                    })
+                    .await?
+                {
+                    Answer::Text(t) if !t.trim().is_empty() => t.trim().to_string(),
+                    _ => continue, // no guidance given; re-show the same suggestion
+                };
+                notes.push(note);
+                revises_left -= 1;
+                // Keep the prior suggestion if the new one fails, is empty, or
+                // is unchanged - a tweak can never regress to something worse.
+                if let Some(next) =
+                    run_cover_suggest(ctx, slot, jd, resume, &notes, Some(&suggestion)).await
+                {
+                    suggestion = next;
+                }
+                *asked += 1; // re-presenting the (possibly updated) suggestion
+            }
+            _ => return Ok(Some(CoverSuggestOutcome::OwnWords)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
 // The interview loop
 // ---------------------------------------------------------------------
 
 /// Walk the candidate through a short, adaptive interview about the
 /// cover letter's angle, emphasis, tone, motivation, and constraints, and
 /// return what they said as a [`CoverBrief`]. Every field comes from the
-/// user's own typed answers — the agent only ever asks (see
-/// [`CoverBrief`]'s doc comment for how that's enforced structurally).
+/// user's own typed answers, whether typed directly or accepted from a
+/// suggestion — the agents only ever ask or propose (see [`CoverBrief`]'s
+/// doc comment for how that's enforced structurally).
 ///
 /// Degrades rather than blocking: a non-interactive user, or any `ask`
 /// failure partway through, returns whatever partial brief was gathered
@@ -331,6 +683,27 @@ pub async fn run_cover_interview(
         if asked >= MAX_QUESTIONS {
             break;
         }
+
+        // Offer a guarded suggestion first for every slot except
+        // constraints (see `Slot::suggestible`). Accepting records the
+        // answer through the same `Slot::record` path an interview
+        // answer takes, then moves straight to the next slot; declining,
+        // skipping, or getting no honest suggestion falls through to (or
+        // past) the interview below, which is otherwise unchanged.
+        if slot.suggestible() {
+            match cover_suggest_flow(ctx, slot, jd, resume, user, &mut asked).await? {
+                Some(CoverSuggestOutcome::Accepted(text)) => {
+                    slot.record(&mut brief, text);
+                    continue;
+                }
+                Some(CoverSuggestOutcome::Skip) => continue,
+                Some(CoverSuggestOutcome::OwnWords) | None => {}
+            }
+            if asked >= MAX_QUESTIONS {
+                break;
+            }
+        }
+
         let mut transcript: Vec<QnA> = Vec::new();
         // At most two turns per topic: an opening question and, only when
         // the model judges the first answer too thin, one follow-up.
@@ -447,6 +820,18 @@ mod tests {
         }
     }
 
+    /// Enqueue the fastest possible resolution for one slot: a declined
+    /// suggestion (where the slot offers one) followed by an immediate
+    /// "done" from the interviewer, so the slot contributes nothing to
+    /// the brief and never asks the user anything. Used to keep a test's
+    /// mock script focused on the one slot actually under test.
+    fn enqueue_skip(mock: &MockLlmClient, slot: Slot) {
+        if slot.suggestible() {
+            mock.enqueue(r#"{"suggestion": ""}"#);
+        }
+        mock.enqueue(r#"{"question": ""}"#);
+    }
+
     /// A `UserHandle` standing in for a non-interactive run (CI, a piped
     /// command): never interactive, and any `ask` would fail — matching
     /// the real `NonInteractiveUser` in the binary crate, which this
@@ -473,6 +858,14 @@ mod tests {
     }
 
     #[test]
+    fn the_suggest_prompt_forbids_first_person_motivation_claims() {
+        assert!(SUGGEST_PROMPT.contains(
+            "NEVER write in the first person and NEVER claim enthusiasm, passion, or personal motivation"
+        ));
+        assert!(SUGGEST_PROMPT.contains("evidence-based fit observation"));
+    }
+
+    #[test]
     fn record_merges_a_second_answer_into_a_scalar_slot_instead_of_overwriting() {
         let mut brief = CoverBrief::default();
         Slot::Angle.record(&mut brief, "lead with reliability".into());
@@ -483,17 +876,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_constraints_is_not_suggestible() {
+        assert!(Slot::Angle.suggestible());
+        assert!(Slot::Emphasis.suggestible());
+        assert!(Slot::Tone.suggestible());
+        assert!(Slot::Motivation.suggestible());
+        assert!(!Slot::Constraints.suggestible());
+    }
+
+    #[test]
+    fn an_empty_json_object_deserializes_to_the_default_brief() {
+        let brief: CoverBrief = serde_json::from_str("{}").unwrap();
+        assert_eq!(brief, CoverBrief::default());
+    }
+
+    #[test]
+    fn cover_brief_round_trips_through_json() {
+        let brief = CoverBrief {
+            angle: Some("lead with reliability".into()),
+            emphasis: vec!["incident response".into()],
+            tone: Some("direct".into()),
+            motivation: Some("used their product for years".into()),
+            constraints: vec!["skip my current employer".into()],
+        };
+        let json = serde_json::to_string(&brief).unwrap();
+        let back: CoverBrief = serde_json::from_str(&json).unwrap();
+        assert_eq!(brief.angle, back.angle);
+        assert_eq!(brief.emphasis, back.emphasis);
+        assert_eq!(brief.tone, back.tone);
+        assert_eq!(brief.motivation, back.motivation);
+        assert_eq!(brief.constraints, back.constraints);
+    }
+
+    #[test]
+    fn an_empty_cover_brief_also_round_trips() {
+        let brief = CoverBrief::default();
+        let json = serde_json::to_string(&brief).unwrap();
+        let back: CoverBrief = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.angle, None);
+        assert!(back.emphasis.is_empty());
+    }
+
     #[tokio::test]
     async fn a_full_interview_records_only_the_users_answers() {
         let mock = MockLlmClient::default();
-        // One real question per topic, then an empty "done" reply, for
-        // each of the five topics in order.
+        // A declined suggestion, then one real question, then an empty
+        // "done" reply, for each of the four suggestible topics; the
+        // fifth (constraints) skips the suggestion step entirely.
+        mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
         mock.enqueue(r#"{"question": ""}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "What should this letter highlight?"}"#);
         mock.enqueue(r#"{"question": ""}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Formal or conversational?"}"#);
         mock.enqueue(r#"{"question": ""}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Why this company specifically?"}"#);
         mock.enqueue(r#"{"question": ""}"#);
         mock.enqueue(r#"{"question": "Anything to avoid mentioning?"}"#);
@@ -535,13 +975,14 @@ mod tests {
     #[tokio::test]
     async fn a_follow_up_answer_on_a_scalar_slot_is_preserved_alongside_the_first() {
         let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": ""}"#); // angle: no suggestion offered
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#); // opening
         mock.enqueue(r#"{"question": "Anything else about the angle?"}"#); // thin answer -> follow-up
         mock.enqueue(r#"{"question": ""}"#); // now satisfied
-        // The other four topics resolve immediately with nothing more to say.
-        for _ in 0..4 {
-            mock.enqueue(r#"{"question": ""}"#);
-        }
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
         user.answer(Answer::Text("lead with the reliability angle".into()));
@@ -563,9 +1004,16 @@ mod tests {
     #[tokio::test]
     async fn a_blank_answer_leaves_its_slot_empty_without_crashing() {
         let mock = MockLlmClient::default();
-        for _ in 0..5 {
-            mock.enqueue(r#"{"question": "Tell me more?"}"#);
-        }
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "Tell me more?"}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "Tell me more?"}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "Tell me more?"}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "Tell me more?"}"#);
+        mock.enqueue(r#"{"question": "Tell me more?"}"#); // constraints: no suggestion
+
         let user = ScriptedUser::new();
         for _ in 0..5 {
             user.answer(Answer::Text("   ".into())); // blank every topic
@@ -587,12 +1035,21 @@ mod tests {
         let mock = MockLlmClient::default();
         // The interviewer never says "done" and the user never goes
         // blank, so without a cap this would run all five topics to
-        // their two-turn-each ceiling (ten questions).
-        for i in 0..10 {
-            mock.enqueue(format!(r#"{{"question": "question number {i}?"}}"#));
-        }
+        // their two-turn-each ceiling. Each of angle/emphasis/tone also
+        // declines a suggestion first (which costs nothing against the
+        // cap - see `MAX_QUESTIONS`'s doc comment), so the cap still
+        // bites after exactly three full topics' worth of real questions.
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "question number 0?"}"#);
+        mock.enqueue(r#"{"question": "question number 1?"}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "question number 2?"}"#);
+        mock.enqueue(r#"{"question": "question number 3?"}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "question number 4?"}"#);
+        mock.enqueue(r#"{"question": "question number 5?"}"#);
         let user = ScriptedUser::new();
-        for i in 0..10 {
+        for i in 0..6 {
             user.answer(Answer::Text(format!("answer number {i}")));
         }
 
@@ -600,12 +1057,17 @@ mod tests {
             .await
             .unwrap();
 
-        // Capped at MAX_QUESTIONS: exactly that many questions were
-        // actually asked (and answered), not the ten the topics allow.
-        assert_eq!(mock.requests().len(), MAX_QUESTIONS);
-        // The first three topics (angle, emphasis, tone) each got their
-        // full two turns before the cap bit; motivation and constraints
-        // never got a chance to record anything.
+        // Capped at MAX_QUESTIONS real questions asked, not the ten the
+        // topics would otherwise allow.
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| r.system.as_deref() == Some(QUESTION_PROMPT))
+                .count(),
+            MAX_QUESTIONS
+        );
+        // angle, emphasis, and tone each got their full two turns before
+        // the cap bit; motivation and constraints never got a chance.
         assert_eq!(brief.motivation, None);
         assert!(brief.constraints.is_empty());
     }
@@ -628,13 +1090,15 @@ mod tests {
 
     #[tokio::test]
     async fn an_ask_failure_partway_through_keeps_the_partial_brief() {
-        // Only one scripted reply and one scripted answer: the angle
-        // topic completes normally, its follow-up turn finds the mock
-        // exhausted (so it just moves on), and the emphasis topic's
-        // fallback question then finds no answer queued at all - the
-        // `ask` fails, and the loop must return what it already
+        // Angle declines a suggestion, then its interview opens normally;
+        // its follow-up turn finds the mock exhausted (so it just moves
+        // on). Emphasis's suggestion attempt then also finds the mock
+        // exhausted (no honest suggestion, agent unreachable), and its
+        // interview's fallback opening question finds no answer queued at
+        // all - the `ask` fails, and the loop must return what it already
         // gathered rather than erroring the whole flow.
         let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
         let user = ScriptedUser::new();
         user.answer(Answer::Text("lead with the reliability angle".into()));
@@ -651,36 +1115,218 @@ mod tests {
         assert!(brief.emphasis.is_empty());
     }
 
-    #[test]
-    fn cover_brief_round_trips_through_json() {
-        let brief = CoverBrief {
-            angle: Some("lead with reliability".into()),
-            emphasis: vec!["incident response".into()],
-            tone: Some("direct".into()),
-            motivation: Some("used their product for years".into()),
-            constraints: vec!["skip my current employer".into()],
-        };
-        let json = serde_json::to_string(&brief).unwrap();
-        let back: CoverBrief = serde_json::from_str(&json).unwrap();
-        assert_eq!(brief.angle, back.angle);
-        assert_eq!(brief.emphasis, back.emphasis);
-        assert_eq!(brief.tone, back.tone);
-        assert_eq!(brief.motivation, back.motivation);
-        assert_eq!(brief.constraints, back.constraints);
+    #[tokio::test]
+    async fn a_guard_clean_suggestion_can_be_accepted() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"suggestion": "you might lead with your reliability platform work, since the posting's top ask is platform reliability"}"#,
+        );
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choice(0)); // "Use this wording"
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // Recorded exactly as suggested, via the normal Slot::record path -
+        // and no interview question was ever asked for angle.
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some(
+                "you might lead with your reliability platform work, since the posting's top ask is platform reliability"
+            )
+        );
+        assert_eq!(mock.requests().len(), 8);
     }
 
-    #[test]
-    fn an_empty_cover_brief_also_round_trips() {
-        let brief = CoverBrief::default();
-        let json = serde_json::to_string(&brief).unwrap();
-        let back: CoverBrief = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.angle, None);
-        assert!(back.emphasis.is_empty());
+    #[tokio::test]
+    async fn a_declined_suggestion_falls_through_silently_with_no_menu() {
+        let mock = MockLlmClient::default();
+        enqueue_skip(&mock, Slot::Angle);
+        // Emphasis declines a suggestion, then the interview asks and gets
+        // an answer directly - proven by there being only ONE queued
+        // answer, and it a Text, not a Choice: if a menu had wrongly been
+        // shown, it would have consumed this Text as a Select response and
+        // the interview's own question would then find nothing queued.
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "What should this letter highlight?"}"#);
+        mock.enqueue(r#"{"question": ""}"#);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("the incident response work".into()));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.emphasis,
+            vec!["the incident response work".to_string()]
+        );
     }
 
-    #[test]
-    fn an_empty_json_object_deserializes_to_the_default_brief() {
-        let brief: CoverBrief = serde_json::from_str("{}").unwrap();
-        assert_eq!(brief, CoverBrief::default());
+    #[tokio::test]
+    async fn a_suggestion_that_invents_a_fact_is_rejected_and_falls_back_to_the_interview() {
+        let mock = MockLlmClient::default();
+        // Neither the JD nor the resume mentions a percentage; the model
+        // invents "40%". The guard rejects it before any menu is shown.
+        mock.enqueue(r#"{"suggestion": "lead with the 40% reliability improvement"}"#);
+        mock.enqueue(r#"{"question": "What angle would you rather take?"}"#);
+        mock.enqueue(r#"{"question": ""}"#);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        // No Choice queued first: a rejected suggestion offers no menu.
+        user.answer(Answer::Text("lead with the reliability angle".into()));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("lead with the reliability angle")
+        );
+    }
+
+    #[tokio::test]
+    async fn tweaking_a_suggestion_revises_then_accepts() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
+        mock.enqueue(r#"{"suggestion": "you might lead with your incident response leadership"}"#);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choice(1)); // "Tweak it"
+        user.answer(Answer::Text("talk about incident response instead".into()));
+        user.answer(Answer::Choice(0)); // "Use this wording" (the revised suggestion)
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("you might lead with your incident response leadership")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_tweak_keeps_the_prior_suggestion() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
+        mock.enqueue(r#"{"suggestion": ""}"#); // the tweak declines
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choice(1)); // "Tweak it"
+        user.answer(Answer::Text("say something else".into()));
+        user.answer(Answer::Choice(0)); // "Use this wording" (still the ORIGINAL)
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("you might lead with your platform reliability work")
+        );
+    }
+
+    #[tokio::test]
+    async fn choosing_own_words_falls_through_to_the_plain_interview() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
+        mock.enqueue(r#"{"question": "What angle would you rather take?"}"#);
+        mock.enqueue(r#"{"question": ""}"#);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        // Suggestion menu is [Use, Tweak, Answer in my own words, Skip].
+        user.answer(Answer::Choice(2)); // "Answer in my own words"
+        user.answer(Answer::Text("lead with the reliability angle".into()));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("lead with the reliability angle")
+        );
+    }
+
+    #[tokio::test]
+    async fn skipping_a_suggestion_leaves_the_slot_empty_with_no_interview() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Choice(3)); // "Skip this one"
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(brief.angle, None);
+        // Exactly the scripted calls happened - no extra interview
+        // question was asked for the skipped slot.
+        assert_eq!(mock.requests().len(), 8);
+    }
+
+    #[tokio::test]
+    async fn constraints_never_triggers_a_suggestion_attempt() {
+        let mock = MockLlmClient::default();
+        enqueue_skip(&mock, Slot::Angle);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        mock.enqueue(r#"{"question": "Anything to avoid mentioning?"}"#);
+        mock.enqueue(r#"{"question": ""}"#);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("don't mention my current employer".into()));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.constraints,
+            vec!["don't mention my current employer".to_string()]
+        );
+        // Exactly one suggestion attempt per suggestible slot (angle,
+        // emphasis, tone, motivation) - constraints skips the suggestion
+        // step entirely and goes straight to the interview question.
+        let suggest_calls = mock
+            .requests()
+            .iter()
+            .filter(|r| r.system.as_deref() == Some(SUGGEST_PROMPT))
+            .count();
+        assert_eq!(suggest_calls, 4);
     }
 }
