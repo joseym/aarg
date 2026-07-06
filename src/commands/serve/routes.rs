@@ -642,12 +642,19 @@ pub(super) async fn list_builds() -> Resp {
 /// `GET /api/builds/:id/files/:name`). A non-numeric id, or a build with no
 /// artifacts at all, is a `404`.
 pub(super) async fn get_build(id: &str) -> Resp {
-    if !is_numeric_id(id) {
-        return error_response(404, "not_found", format!("no build {id:?}"));
-    }
     let Ok(root) = crate::builds::builds_root() else {
         return error_response(500, "internal", "could not locate the builds directory");
     };
+    get_build_in(&root, id)
+}
+
+/// The disk-touching half of [`get_build`], with the builds root injected so a
+/// test can drive it against a tempdir — the same split [`delete_build_in`]
+/// uses for the same reason.
+fn get_build_in(root: &Path, id: &str) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
     let dir = root.join(id);
     if !dir.is_dir() {
         return error_response(404, "not_found", format!("no build {id:?}"));
@@ -673,6 +680,12 @@ pub(super) async fn get_build(id: &str) -> Resp {
         // only once at least one edit has been saved; the browser reads it to
         // render the cross-session undo history near the fidelity bar.
         ("edit_log", "edit_log.json"),
+        // The parsed cover letter (not just its rendered PDF, which the browser
+        // already reaches via `GET .../files/cover_letter.pdf`). Present only
+        // once a cover letter has been drafted for this build — a build can be
+        // a résumé alone — so a later editing view has the structured data to
+        // feed the provenance checker without re-parsing the PDF.
+        ("cover_payload", "cover_payload.json"),
     ] {
         if let Some(value) = read_json_artifact(&dir.join(file)) {
             obj.insert(key.into(), value);
@@ -2239,6 +2252,57 @@ mod tests {
     async fn get_build_rejects_a_non_numeric_id() {
         let resp = get_build("../etc").await;
         assert_eq!(resp.status(), 404);
+    }
+
+    /// `cover_payload` follows the exact best-effort convention as
+    /// `human_payload`/`ats_payload`: present (and parsed) when
+    /// `cover_payload.json` is on disk, quietly absent for a build that has
+    /// only a résumé and no cover letter yet — never an error either way.
+    #[tokio::test]
+    async fn get_build_includes_cover_payload_when_present_and_omits_it_when_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A build needs at least one artifact to read as present at all.
+        builds::write_json(&dir, "jd.json", &json!({})).unwrap();
+
+        // No cover letter drafted yet: the key is simply missing.
+        let resp = get_build_in(root.path(), "001");
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body.get("cover_payload").is_none(),
+            "unexpected cover_payload: {body:?}"
+        );
+
+        // Draft one, write it the same way `POST .../cover` does, and it
+        // shows up parsed, not as an opaque blob.
+        let letter = CoverLetter {
+            contact: crate::dataset::types::Contact {
+                full_name: "Ada Lovelace".into(),
+                email: "ada@example.com".into(),
+                phone: None,
+                location: None,
+                links: Vec::new(),
+            },
+            company: "Acme".into(),
+            title: "Engineer".into(),
+            greeting: "Dear Hiring Manager,".into(),
+            paragraphs: vec!["I would love to build things.".into()],
+            signoff: "Sincerely,".into(),
+        };
+        builds::write_json(&dir, "cover_payload.json", &letter).unwrap();
+
+        let resp = get_build_in(root.path(), "001");
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["cover_payload"]["company"], "Acme");
+        assert_eq!(
+            body["cover_payload"]["paragraphs"][0],
+            "I would love to build things."
+        );
     }
 
     #[tokio::test]
