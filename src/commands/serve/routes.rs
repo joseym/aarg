@@ -31,6 +31,7 @@ use crate::commands::configured_client;
 use crate::commands::tailor::{resolve_ats_template, resolve_human_template};
 use crate::config::Config;
 use crate::cover::CoverLetter;
+use crate::cover_interview::CoverBrief;
 use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
 use crate::dataset::validate;
@@ -1484,6 +1485,15 @@ struct GenerateCoverResponse {
     usage: TokenUsage,
 }
 
+/// The `POST /api/builds/:id/cover` request body — entirely optional. An absent
+/// `brief` (or an absent/empty body) means a plain draft with no interview
+/// grounding, exactly as before this field existed.
+#[derive(Deserialize, Default)]
+struct GenerateCoverRequest {
+    #[serde(default)]
+    brief: Option<CoverBrief>,
+}
+
 /// `POST /api/builds/:id/cover` — draft a cover letter for an existing build and
 /// render it into the build directory: the browser's way into the same
 /// [`CoverLetterAgent`](crate::cover::CoverLetterAgent) the CLI's `aarg cover`
@@ -1497,11 +1507,41 @@ struct GenerateCoverResponse {
 /// Because it spends the key, this route sits behind the same content-type gate
 /// `/api/llm` does (see `serve::requires_json_body`), which is what keeps a
 /// drive-by cross-origin POST from triggering a paid draft. The request body is
-/// ignored — the build id is the whole input.
-pub(super) async fn generate_build_cover(id: &str, state: &AppState) -> Resp {
+/// optional JSON, `{"brief"?: CoverBrief}` — an absent field, an absent `brief`
+/// key, or an empty body all mean "no interview", the same as `aarg cover`
+/// without `--interactive`. When present, `brief` is the result of a prior
+/// `cover_interview_interactive` session (the browser's cover-letter copilot)
+/// and is handed straight to `write_cover_letter` as grounding; every string it
+/// carries already passed that interview's own never-fabricate guard (see
+/// `cover_interview`'s module doc), so this route adds no new claim path.
+pub(super) async fn generate_build_cover(
+    req: Request<Incoming>,
+    id: &str,
+    state: &AppState,
+) -> Resp {
+    // Checked before touching the body, like every other id-guarded route: a
+    // traversal-shaped id is refused before any bytes are read off the wire.
     if !is_numeric_id(id) {
         return error_response(404, "not_found", format!("no build {id:?}"));
     }
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let brief: Option<CoverBrief> = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<GenerateCoverRequest>(&body) {
+            Ok(request) => request.brief,
+            Err(error) => {
+                return error_response(
+                    400,
+                    "bad_request",
+                    format!("invalid cover request: {error}"),
+                );
+            }
+        }
+    };
     // Fail fast with the install message if typst is absent, before spending the
     // key on a draft that could never render — the same gate create_build uses.
     if let Err(error) = render::ensure_available() {
@@ -1568,11 +1608,18 @@ pub(super) async fn generate_build_cover(id: &str, state: &AppState) -> Resp {
         tracer: &tracer,
         sink: None,
     };
-    let (letter, warnings, usage) =
-        match crate::cover::write_cover_letter(&ctx, &resume, &jd, &samples, None).await {
-            Ok(triple) => triple,
-            Err(error) => return cover_error_response(error, base_url.as_deref()),
-        };
+    let (letter, warnings, usage) = match crate::cover::write_cover_letter(
+        &ctx,
+        &resume,
+        &jd,
+        &samples,
+        brief.as_ref(),
+    )
+    .await
+    {
+        Ok(triple) => triple,
+        Err(error) => return cover_error_response(error, base_url.as_deref()),
+    };
 
     // Render + persist off the async worker (the `typst` subprocess and file
     // writes are blocking), serialized through the build-write mutex so it can't
@@ -2200,28 +2247,14 @@ mod tests {
         assert_eq!(resp.status(), 400);
     }
 
-    /// A throwaway `AppState` for a handler test that never touches the static
-    /// source or a real socket — only the write mutexes and the bound port are
-    /// ever read on these paths.
-    fn test_state() -> AppState {
-        use std::sync::Arc;
-        AppState {
-            source: super::super::StaticSource::None,
-            dataset_write: Arc::new(tokio::sync::Mutex::new(())),
-            build_write: Arc::new(tokio::sync::Mutex::new(())),
-            bound_port: 0,
-            allowed_hosts: Arc::new(Vec::new()),
-        }
-    }
-
-    /// The cover route guards its id exactly like the other build routes: a
-    /// traversal-shaped id is a 404 raised before any disk read, any keychain
-    /// touch, or any key spend — the same gate that protects `get_build`.
-    #[tokio::test]
-    async fn generate_build_cover_rejects_a_non_numeric_id() {
-        let resp = generate_build_cover("../etc", &test_state()).await;
-        assert_eq!(resp.status(), 404);
-    }
+    // `generate_build_cover` now takes a `Request<Incoming>` (the optional
+    // `brief` body), so it joins every other body-taking route in this file
+    // (`put_dataset`, `save_build_edits`, `save_build_triage`, `create_build`,
+    // `render`, `llm`, `fetch_jd`) in having no direct handler-level test —
+    // `hyper::body::Incoming` isn't constructible outside a real connection.
+    // Its id guard is still the same `is_numeric_id` call (see the function
+    // body, checked before the body is ever read) covered by
+    // `the_build_id_gate_accepts_only_plain_digits` above.
 
     /// An LLM failure from the cover agent is mapped to the same status the
     /// `/api/llm` route would give it (a missing key is a 503), so the browser's

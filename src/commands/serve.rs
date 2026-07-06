@@ -388,7 +388,9 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::DeleteBuild(id) => routes::delete_build(&id, &state).await,
             ApiRoute::SaveBuildEdits(id) => routes::save_build_edits(req, &id, &state).await,
             ApiRoute::SaveBuildTriage(id) => routes::save_build_triage(req, &id, &state).await,
-            ApiRoute::GenerateBuildCover(id) => routes::generate_build_cover(&id, &state).await,
+            ApiRoute::GenerateBuildCover(id) => {
+                routes::generate_build_cover(req, &id, &state).await
+            }
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
             ApiRoute::Cost => routes::cost(req).await,
