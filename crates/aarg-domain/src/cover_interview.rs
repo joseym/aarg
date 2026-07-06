@@ -105,7 +105,13 @@ pub struct CoverBrief {
     /// whatever the candidate already said for this topic.
     pub angle: Option<String>,
     /// Specific things from their background the candidate wants the
-    /// letter to lead with. Empty if they had nothing to add.
+    /// letter to lead with. Empty if they had nothing to add. Its first
+    /// entry may be whatever the candidate volunteered to the interview's
+    /// leading open question, before any of the guided topics below — an
+    /// unstructured note (a personal project, a detail the résumé doesn't
+    /// carry) rather than a résumé accomplishment specifically, but it
+    /// belongs here for the same reason: it's the candidate's own words on
+    /// something they want foregrounded.
     pub emphasis: Vec<String>,
     /// How the letter should sound (e.g. "direct, a little informal").
     /// Appended to, not overwritten, on a follow-up answer.
@@ -658,8 +664,11 @@ async fn cover_suggest_flow(
 
 /// Walk the candidate through a short, adaptive interview about the
 /// cover letter's angle, emphasis, tone, motivation, and constraints, and
-/// return what they said as a [`CoverBrief`]. Every field comes from the
-/// user's own typed answers, whether typed directly or accepted from a
+/// return what they said as a [`CoverBrief`]. Opens with one free-form
+/// question — anything they already know they want said — before the
+/// guided topics, for a candidate who would rather say it once than answer
+/// several separate questions; every field comes from the user's own typed
+/// answers either way, whether typed directly or accepted from a
 /// suggestion — the agents only ever ask or propose (see [`CoverBrief`]'s
 /// doc comment for how that's enforced structurally).
 ///
@@ -676,6 +685,31 @@ pub async fn run_cover_interview(
     let mut brief = CoverBrief::default();
     if !user.is_interactive() {
         return Ok(brief);
+    }
+
+    // A single open door before the guided walk-through: some candidates
+    // already know exactly what they want said and would rather say it once
+    // than answer several separate questions. Fixed text, no model call, so
+    // it costs nothing against MAX_QUESTIONS. Purely additive — leaving it
+    // blank changes nothing about the slots that follow, and matched (not
+    // `?`-propagated) so abandoning it degrades the same way an abandoned
+    // slot does, even though nothing has been gathered yet at this point.
+    match user
+        .ask(Question::Text {
+            prompt: "Anything specific you already know you want this letter to say? \
+                     Leave blank to skip and answer a few short questions instead."
+                .to_string(),
+        })
+        .await
+    {
+        Ok(Answer::Text(open)) => {
+            let open = open.trim();
+            if !open.is_empty() {
+                brief.emphasis.push(open.to_string());
+            }
+        }
+        Ok(_) => {}
+        Err(_) => return Ok(brief),
     }
 
     let mut asked = 0usize;
@@ -949,6 +983,7 @@ mod tests {
         mock.enqueue(r#"{"question": ""}"#);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Text("lead with the reliability angle".into()));
         user.answer(Answer::Text("the incident response work".into()));
         user.answer(Answer::Text("direct and a little informal".into()));
@@ -994,6 +1029,7 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Text("lead with the reliability angle".into()));
         user.answer(Answer::Text(
             "also mention the regulatory build-out work".into(),
@@ -1024,6 +1060,7 @@ mod tests {
         mock.enqueue(r#"{"question": "Tell me more?"}"#); // constraints: no suggestion
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("   ".into())); // blank the leading open question too
         for _ in 0..5 {
             user.answer(Answer::Text("   ".into())); // blank every topic
         }
@@ -1058,6 +1095,7 @@ mod tests {
         mock.enqueue(r#"{"question": "question number 4?"}"#);
         mock.enqueue(r#"{"question": "question number 5?"}"#);
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         for i in 0..6 {
             user.answer(Answer::Text(format!("answer number {i}")));
         }
@@ -1099,19 +1137,21 @@ mod tests {
 
     #[tokio::test]
     async fn an_ask_failure_partway_through_keeps_the_partial_brief() {
-        // Angle declines a suggestion, then its interview opens normally;
-        // its follow-up turn finds the mock exhausted (so it just moves
-        // on). Emphasis's suggestion attempt then also finds the mock
-        // exhausted (no honest suggestion, agent unreachable), and its
-        // interview's fallback opening question finds no answer queued at
-        // all - the `ask` fails, and the loop must return what it already
-        // gathered rather than erroring the whole flow.
+        // The leading open question is declined first. Angle then declines
+        // a suggestion, and its interview opens normally; its follow-up
+        // turn finds the mock exhausted (so it just moves on). Emphasis's
+        // suggestion attempt then also finds the mock exhausted (no
+        // honest suggestion, agent unreachable), and its interview's
+        // fallback opening question finds no answer queued at all - the
+        // `ask` fails, and the loop must return what it already gathered
+        // rather than erroring the whole flow.
         let mock = MockLlmClient::default();
         mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Text("lead with the reliability angle".into()));
-        // No second answer queued: ScriptedUser::ask fails NotInteractive.
+        // No third answer queued: ScriptedUser::ask fails NotInteractive.
 
         let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
             .await
@@ -1140,6 +1180,7 @@ mod tests {
         mock.enqueue(r#"{"question": ""}"#);
         mock.enqueue(r#"{"suggestion": "you might lead with your incident response work"}"#);
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Text("lead with the reliability angle".into()));
         // No Choice queued for emphasis's suggestion menu: `ScriptedUser::ask`
         // fails `NotInteractive`, the same shape a dismissed browser modal
@@ -1169,6 +1210,7 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Choice(0)); // "Use this wording"
 
         let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
@@ -1203,6 +1245,7 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Text("the incident response work".into()));
 
         let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
@@ -1229,7 +1272,8 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
-        // No Choice queued first: a rejected suggestion offers no menu.
+        user.answer(Answer::Text("".into())); // decline the leading open question
+        // No Choice queued next: a rejected suggestion offers no menu.
         user.answer(Answer::Text("lead with the reliability angle".into()));
 
         let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
@@ -1253,6 +1297,7 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Choice(1)); // "Tweak it"
         user.answer(Answer::Text("talk about incident response instead".into()));
         user.answer(Answer::Choice(0)); // "Use this wording" (the revised suggestion)
@@ -1278,6 +1323,7 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Choice(1)); // "Tweak it"
         user.answer(Answer::Text("say something else".into()));
         user.answer(Answer::Choice(0)); // "Use this wording" (still the ORIGINAL)
@@ -1304,6 +1350,7 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         // Suggestion menu is [Use, Tweak, Answer in my own words, Skip].
         user.answer(Answer::Choice(2)); // "Answer in my own words"
         user.answer(Answer::Text("lead with the reliability angle".into()));
@@ -1328,6 +1375,7 @@ mod tests {
         enqueue_skip(&mock, Slot::Constraints);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Choice(3)); // "Skip this one"
 
         let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
@@ -1351,6 +1399,7 @@ mod tests {
         mock.enqueue(r#"{"question": ""}"#);
 
         let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
         user.answer(Answer::Text("don't mention my current employer".into()));
 
         let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
@@ -1370,5 +1419,84 @@ mod tests {
             .filter(|r| r.system.as_deref() == Some(SUGGEST_PROMPT))
             .count();
         assert_eq!(suggest_calls, 4);
+    }
+
+    #[tokio::test]
+    async fn the_leading_question_records_a_real_answer_as_the_first_emphasis_entry() {
+        let mock = MockLlmClient::default();
+        // Every guided slot declines its suggestion and gets an
+        // immediate "done" from the interviewer, so nothing but the
+        // leading question ever reaches the user.
+        enqueue_skip(&mock, Slot::Angle);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text(
+            "I want to highlight my experience building this exact tool with AI-native practices"
+                .into(),
+        ));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.emphasis,
+            vec![
+                "I want to highlight my experience building this exact tool with AI-native practices"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blank_leading_answer_pushes_nothing_and_the_guided_slots_proceed_normally() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": ""}"#); // angle: no suggestion offered
+        mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
+        mock.enqueue(r#"{"question": ""}"#);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("   ".into())); // blank leading question
+        user.answer(Answer::Text("lead with the reliability angle".into()));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // The blank leading answer pushed nothing into emphasis...
+        assert!(brief.emphasis.is_empty());
+        // ...and the guided walk-through still ran normally afterward.
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("lead with the reliability angle")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_exhausted_queue_at_the_leading_question_abandons_before_any_slot_is_reached() {
+        let mock = MockLlmClient::default();
+        let user = ScriptedUser::new();
+        // No answers queued at all: the leading question's `ask` fails
+        // immediately, the same degrade contract as an ask failure
+        // partway through the guided slots, except nothing has been
+        // gathered yet.
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(brief, CoverBrief::default());
+        assert!(
+            mock.requests().is_empty(),
+            "the leading question costs no model call, and no slot is ever reached"
+        );
     }
 }
