@@ -5,7 +5,12 @@
 
 .shell {
   display: grid;
-  grid-template-columns: 288px 1fr;
+  /* Three columns: build menu · chat panel · workspace. The middle column is
+   * `--chat-w` wide (set inline from the chat-open + chat-width state) and 0
+   * when the chat is closed, so opening the chat pushes the workspace right and
+   * closing it reflows the workspace back — a real column, not a floating
+   * overlay. The chat panel content is clipped when the column is 0. */
+  grid-template-columns: 300px var(--chat-w, 0px) 1fr;
   min-height: calc(100vh - 60px);
   transition: grid-template-columns 0.25s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
@@ -14,8 +19,14 @@
  * ≤1080px this is ignored entirely — the drawer always opens full-width. */
 @media (min-width: 1081px) {
   .shell.collapsed {
-    grid-template-columns: 44px 1fr;
+    grid-template-columns: 48px var(--chat-w, 0px) 1fr;
   }
+}
+
+/* While the chat handle is being dragged the column must track the pointer 1:1;
+ * the 0.25s transition would otherwise lag and rubber-band behind the drag. */
+.shell.chat-resizing {
+  transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -59,11 +70,38 @@
   transition: opacity 0.2s, visibility 0s;
 }
 
+/* Dismiss scrim behind the chat overlay. Desktop keeps the chat as an in-flow
+ * column, so the scrim is inert there (display:none); it only appears ≤1080px
+ * where the panel overlays full-width, sitting just under the panel (z 43 vs
+ * 44) so a tap outside closes it. */
+.chat-scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 43;
+  background: color-mix(in oklch, var(--fg) 30%, transparent);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.2s, visibility 0s linear 0.2s;
+}
+
 @media (max-width: 1080px) {
   .shell {
     grid-template-columns: 1fr;
   }
   .main {
     padding: 28px 18px 56px;
+  }
+  .chat-scrim {
+    display: block;
+  }
+  .shell.chat-open .chat-scrim {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    transition: opacity 0.2s, visibility 0s;
   }
 }

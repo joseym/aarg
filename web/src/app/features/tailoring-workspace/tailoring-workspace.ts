@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  type OnDestroy,
   computed,
   effect,
   inject,
@@ -15,7 +16,9 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../services/api.service';
 import { WasmService } from '../../services/wasm.service';
 import { CopilotHost } from '../../shared/copilot-host';
+import { triggerDownload } from '../../shared/download';
 import { BuildRunner } from '../../services/build-runner';
+import { ChatStore } from '../../services/chat-store';
 import type {
   AdversarialReport,
   BuildDetail,
@@ -413,11 +416,12 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     }
   `,
 })
-export class TailoringWorkspace {
+export class TailoringWorkspace implements OnDestroy {
   private readonly api = inject(ApiService);
   private readonly wasm = inject(WasmService);
   protected readonly copilot = inject(CopilotHost);
   private readonly buildRunner = inject(BuildRunner);
+  private readonly chatStore = inject(ChatStore);
 
   readonly id = input.required<string>();
 
@@ -736,6 +740,36 @@ export class TailoringWorkspace {
         },
       });
     });
+
+    // Publish this build's context to the shell chat panel so it can hold a
+    // grounded conversation about the open build. Needs the dataset and JD (the
+    // grounding); the canonical draft and reviewer report ride along when the
+    // build has them (a JD-only context still chats, degraded). Cleared on the
+    // way out by ngOnDestroy.
+    effect(() => {
+      const dataset = this.dataset();
+      const jd = this.jd();
+      const bundle = this.bundle();
+      if (!dataset || !jd) {
+        this.chatStore.setContext(null);
+        return;
+      }
+      this.chatStore.setContext({
+        buildId: this.id(),
+        title: this.jobTitle(),
+        dataset,
+        jd,
+        canonical: bundle?.canonical ?? null,
+        report: bundle?.adversarial_report ?? null,
+        pdfs: bundle?.pdfs ?? [],
+      });
+    });
+  }
+
+  /** Leaving the workspace: drop the chat context so the shell panel falls back
+   *  to its idle prompt instead of chatting about a build no longer open. */
+  ngOnDestroy(): void {
+    this.chatStore.setContext(null);
   }
 
   private reset(): void {
@@ -1849,17 +1883,6 @@ function withRemoved(s: ReadonlySet<string>, id: string): ReadonlySet<string> {
   const next = new Set(s);
   next.delete(id);
   return next;
-}
-
-function triggerDownload(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }
 
 function errMessage(err: unknown): string {

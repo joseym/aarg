@@ -56,6 +56,22 @@ const NO_COMPANY = 'No company';
         <div class="side-head">
           <h2>Recent Builds</h2>
           <div class="side-head-r">
+            <!-- Mobile-only chat button: the desktop affordance is the edge grip
+                 below. Sized/aligned to match the drawer-close control it sits
+                 beside in this header row. -->
+            <button
+              class="chat-toggle"
+              type="button"
+              [class.on]="chatOpen()"
+              [attr.aria-pressed]="chatOpen()"
+              [attr.aria-label]="chatOpen() ? 'Close chat' : 'Open chat'"
+              title="Chat about the open build"
+              (click)="toggleChat.emit()"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z" />
+              </svg>
+            </button>
             <span class="count">{{ store.filtered().length }}</span>
             <button class="side-close" type="button" aria-label="Hide recent builds" (click)="closeNav.emit()">
               ✕
@@ -205,6 +221,24 @@ const NO_COMPANY = 'No company';
           </div>
         }
       </div>
+
+      <!-- Desktop chat open/close grip, pinned to the rail's right edge (the
+           sidebar-to-chat boundary when the chat is open). Chevron points out
+           (right) to open, in (left) to close. The chat panel's own resize
+           handle lives on its far edge, so the two never meet. Hidden on the
+           mobile drawer, where the header button above takes over. -->
+      <button
+        class="chat-grip"
+        type="button"
+        [class.open]="chatOpen()"
+        [attr.aria-expanded]="chatOpen()"
+        [attr.aria-label]="chatOpen() ? 'Close chat' : 'Open chat'"
+        (click)="toggleChat.emit()"
+      >
+        <svg class="grip-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+          <path d="M9 6l6 6-6 6" />
+        </svg>
+      </button>
     </aside>
   `,
   styles: `
@@ -228,7 +262,8 @@ const NO_COMPANY = 'No company';
     .collapse-toggle {
       display: none;
       align-items: center; justify-content: center;
-      position: absolute; top: 14px; right: 10px; z-index: 1;
+      /* right: 32px clears the 24px edge grip pinned at right: 0. */
+      position: absolute; top: 14px; right: 32px; z-index: 2;
       width: 26px; height: 26px;
       border: 1px solid var(--border); border-radius: 7px;
       background: var(--surface); color: var(--muted); cursor: pointer;
@@ -239,8 +274,9 @@ const NO_COMPANY = 'No company';
     .collapse-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .collapse-toggle .chev { width: 14px; height: 14px; transition: transform 0.2s; }
 
+    /* Sits in the collapsed rail's left region (its right 24px is the grip). */
     .rail-label {
-      position: absolute; top: 58px; left: 50%; z-index: 1;
+      position: absolute; top: 58px; left: 13px; z-index: 1;
       transform: translateX(-50%) rotate(180deg);
       writing-mode: vertical-rl;
       font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.12em;
@@ -251,7 +287,9 @@ const NO_COMPANY = 'No company';
      * at all, so the drawer's own transform-based open/close is untouched. */
     @media (min-width: 1081px) {
       .collapse-toggle { display: inline-flex; }
-      :host(.collapsed) .collapse-toggle { right: 50%; transform: translateX(50%); }
+      /* Collapsed rail (48px) reserves its right 24px for the edge grip, so pin
+       * the caret to the left instead of centering it under the grip. */
+      :host(.collapsed) .collapse-toggle { right: auto; left: 5px; transform: none; }
       :host(.collapsed) .collapse-toggle .chev { transform: rotate(180deg); }
       :host(.collapsed) .side-content {
         opacity: 0;
@@ -275,12 +313,46 @@ const NO_COMPANY = 'No company';
     .side-head h2 { font-size: 14px; letter-spacing: 0.02em; }
     .side-head-r { display: flex; align-items: center; gap: 10px; }
     .count { font-family: var(--font-mono); font-size: 11px; color: var(--faint); }
-    .side-close {
+    /* Header action buttons, both mobile-only (the drawer has no edge grip):
+     * .chat-toggle opens the chat overlay, .side-close hides the drawer. Same
+     * box so they align on one baseline in the header row. */
+    .side-close, .chat-toggle {
       display: none; align-items: center; justify-content: center;
       width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 8px;
-      background: var(--surface); color: var(--muted); cursor: pointer; font-size: 14px;
+      background: var(--surface); color: var(--muted); cursor: pointer;
+      transition: border-color 0.14s, color 0.14s;
     }
-    .side-close:hover { border-color: var(--fg); color: var(--fg); }
+    .side-close { font-size: 14px; }
+    .side-close:hover, .chat-toggle:hover { border-color: var(--fg); color: var(--fg); }
+    .side-close:focus-visible, .chat-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .chat-toggle.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    .chat-toggle svg { width: 15px; height: 15px; }
+
+    /* Desktop edge grip: a full-height raised strip on the rail's right edge.
+     * The chevron points right (out) to open the chat, left (in) to close it. */
+    .chat-grip {
+      position: absolute; top: 0; right: 0; z-index: 3;
+      width: 24px; height: 100%; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+      border: 0; border-left: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 55%, transparent);
+      color: var(--faint); cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .chat-grip:hover { background: var(--surface-2); color: var(--fg); }
+    .chat-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+    .chat-grip .grip-chev {
+      width: 16px; height: 16px;
+      transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1);
+    }
+    .chat-grip.open .grip-chev { transform: rotate(180deg); }
+    @media (prefers-reduced-motion: reduce) { .chat-grip .grip-chev { transition: none; } }
+    /* Mobile: the sidebar is an overlay drawer, so the edge grip doesn't apply;
+     * the header chat button takes over. */
+    @media (max-width: 1080px) {
+      .chat-grip { display: none; }
+      .side-close, .chat-toggle { display: inline-flex; }
+    }
 
     /* Compact grouping + sort row, sitting under the section head. Narrow rail,
      * so house tokens only and no new hues. */
@@ -470,8 +542,11 @@ export class Sidebar {
   readonly open = input(false);
   /** Desktop-only collapse state (meaningless ≤1080px; see host CSS). */
   readonly collapsed = input(false);
+  /** Whether the chat panel is open, so the header toggle reflects its state. */
+  readonly chatOpen = input(false);
   readonly closeNav = output<void>();
   readonly toggleCollapse = output<void>();
+  readonly toggleChat = output<void>();
 
   /** Group builds under company headers. Default ON (the common request is to
    *  cluster by company); the choice persists in localStorage so turning it off
