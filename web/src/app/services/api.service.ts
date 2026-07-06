@@ -15,6 +15,7 @@ import type {
   TailoredResume,
   AdversarialReport,
   TokenUsage,
+  GenerateCoverResponse,
 } from '../models';
 
 /** The `POST /api/builds` body: everything the browser's wasm tailor loop
@@ -94,6 +95,21 @@ export class ApiService {
   removeBuild(id: string): Observable<{ removed: string }> {
     return this.http.delete<{ removed: string }>(
       `${this.base}/builds/${encodeURIComponent(id)}`,
+    );
+  }
+
+  /** `POST /api/builds/:id/cover` — draft (or redraft) a cover letter for the
+   *  build server-side: the same `CoverLetterAgent` the CLI's `aarg cover` runs.
+   *  It grounds the letter in the build's canonical résumé and JD, renders
+   *  `cover_letter.pdf` into the build, and returns the letter plus any
+   *  never-fabricate warnings. The body is empty, but the JSON content-type
+   *  header is mandatory (the route sits behind the same content-type gate the
+   *  paid `/api/llm` route does). */
+  generateCover(id: string): Observable<GenerateCoverResponse> {
+    return this.http.post<GenerateCoverResponse>(
+      `${this.base}/builds/${encodeURIComponent(id)}/cover`,
+      {},
+      { headers: { 'Content-Type': 'application/json' } },
     );
   }
 

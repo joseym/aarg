@@ -5,9 +5,13 @@ import {
   output,
 } from '@angular/core';
 
-/** The Coverage-map / Final-preview segmented control, shared by the build
- *  overview and the tailoring workspace. First segment is `coverage`, second is
- *  `preview`; the host owns the selected value and reacts to {@link change}. */
+/** The value of the workspace view control: the coverage map, the résumé
+ *  (`preview`, labelled "Resume"), or the cover letter. */
+export type WorkspaceView = 'coverage' | 'preview' | 'cover';
+
+/** The workspace view control: a three-way segmented control over the coverage
+ *  map, the résumé preview, and the cover letter. The host owns the selected
+ *  value and reacts to {@link change}. */
 @Component({
   selector: 'app-view-toggle',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -35,7 +39,19 @@ import {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="M4 3h11l5 5v13H4z" /><path d="M15 3v5h5M8 13h8M8 17h8" />
         </svg>
-        Final preview
+        Resume
+      </button>
+      <button
+        type="button"
+        role="tab"
+        [class.on]="selected() === 'cover'"
+        [attr.aria-selected]="selected() === 'cover'"
+        (click)="change.emit('cover')"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M4 4h16v16H4z" /><path d="M4 7l8 6 8-6" />
+        </svg>
+        Cover Letter
       </button>
     </div>
   `,
@@ -50,6 +66,6 @@ import {
   `,
 })
 export class ViewToggle {
-  readonly selected = input.required<'coverage' | 'preview'>();
-  readonly change = output<'coverage' | 'preview'>();
+  readonly selected = input.required<WorkspaceView>();
+  readonly change = output<WorkspaceView>();
 }

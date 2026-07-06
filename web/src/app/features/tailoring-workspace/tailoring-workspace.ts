@@ -33,11 +33,12 @@ import type {
 
 import { ResumePreview } from './resume-preview';
 import { PdfPreview } from './pdf-preview';
+import { CoverView, coverExists } from './cover-view';
 import { ReviewerRail } from './reviewer-rail';
 import { RefineDrawer } from './refine-drawer';
 import { EditBar, type EditLogRow } from './edit-bar';
 import { CoverageMap } from '../../shared/coverage-map';
-import { ViewToggle } from '../../shared/view-toggle';
+import { ViewToggle, type WorkspaceView } from '../../shared/view-toggle';
 import { ScorePanel } from '../../shared/score-panel';
 import {
   band,
@@ -81,7 +82,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
   selector: 'app-tailoring-workspace',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(document:keydown)': 'onKeydown($event)' },
-  imports: [RouterLink, ResumePreview, PdfPreview, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel, EditBar],
+  imports: [RouterLink, ResumePreview, PdfPreview, CoverView, CoverageMap, ViewToggle, ReviewerRail, RefineDrawer, ScorePanel, EditBar],
   template: `
     <!-- ── workspace context bar (job + coverage + actions) ── -->
     <div class="ctxbar">
@@ -164,6 +165,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
           <div class="pv-head">
             <app-view-toggle [selected]="view()" (change)="view.set($event)" />
 
+            @if (view() !== 'cover') {
             <div class="cc-wrap">
               <button class="claimcheck" [attr.data-state]="claimState()" (click)="runClaimCheck()" [attr.aria-busy]="claimState() === 'checking'">
                 <span class="cc-dot" aria-hidden="true"></span>
@@ -190,6 +192,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                 </div>
               }
             </div>
+            }
           </div>
 
           @if (view() === 'preview') {
@@ -303,6 +306,14 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                 <div class="panel muted">This build has no résumé payload to preview.</div>
               }
             }
+          } @else if (view() === 'cover') {
+            <app-cover-view
+              [buildId]="id()"
+              [hasCover]="hasCover()"
+              [canonicalPresent]="canonicalPresent()"
+              (generated)="onCoverGenerated()"
+              (notify)="onCoverNotify($event)"
+            />
           } @else {
             <app-coverage-map
               [jd]="jd()"
@@ -477,7 +488,7 @@ export class TailoringWorkspace implements OnDestroy {
   private readonly claimsFlagged = signal(false);
 
   // ── local UI state ───────────────────────────────────────────────────
-  protected readonly view = signal<'preview' | 'coverage'>('preview');
+  protected readonly view = signal<WorkspaceView>('preview');
   /** The Final-preview fidelity sub-toggle: the editable HTML preview
    *  (`editing`) or the real Typst-rendered PDF in an iframe (`pixel`). */
   protected readonly previewMode = signal<'editing' | 'pixel'>('editing');
@@ -604,6 +615,14 @@ export class TailoringWorkspace implements OnDestroy {
   protected readonly status = computed<'Tailored' | 'Exported'>(() =>
     (this.bundle()?.pdfs?.length ?? 0) > 0 ? 'Exported' : 'Tailored',
   );
+
+  /** Whether this build already has a rendered cover letter on disk — drives the
+   *  Cover Letter view between its Generate landing and its PDF preview. */
+  protected readonly hasCover = computed(() => coverExists(this.bundle()?.pdfs));
+  /** Whether the build carries a canonical draft. A cover is drawn from one, so
+   *  a build without it degrades the Cover Letter view to an explanatory empty
+   *  state instead of offering a Generate that would 404. */
+  protected readonly canonicalPresent = computed(() => !!this.bundle()?.canonical);
   protected readonly provenance = computed(() => {
     const meta = this.bundle()?.meta;
     if (!meta) return null;
@@ -1320,6 +1339,19 @@ export class TailoringWorkspace implements OnDestroy {
       },
       error: (err: unknown) => this.showToast(`Couldn’t reload the build: ${errMessage(err)}`),
     });
+  }
+
+  /** A cover letter was drafted (or redrafted) in the Cover Letter view: reload
+   *  the bundle so `cover_letter.pdf` joins the build's `pdfs` list (and the
+   *  chat context), which flips {@link hasCover} true. */
+  protected onCoverGenerated(): void {
+    this.reloadBundle();
+  }
+
+  /** Surface a Cover Letter view message (a generation error) through the shared
+   *  workspace toast. */
+  protected onCoverNotify(msg: string): void {
+    this.showToast(msg);
   }
 
   /** Template helpers for the edit-history disclosure. */
