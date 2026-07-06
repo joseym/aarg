@@ -6,6 +6,7 @@ export * from './gap';
 export * from './variant';
 export * from './review';
 export * from './provenance';
+export * from './cover-provenance';
 export * from './ats';
 export * from './dataset';
 export * from './llm';

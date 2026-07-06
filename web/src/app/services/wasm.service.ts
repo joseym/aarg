@@ -7,10 +7,12 @@ import type {
   VariantPayload,
   AdversarialReport,
   ProvenanceReport,
+  CoverProvenanceReport,
   WeightedCoverage,
   Objection,
   Models,
   CoverBrief,
+  CoverLetter,
 } from '../models';
 
 /** A JS callback the core hands one JSON string and awaits a JSON string from.
@@ -121,6 +123,12 @@ interface WasmExports {
   project_ats(canonicalJson: string): string;
   check_claims(canonicalJson: string, payloadJson: string): string;
   check_provenance(canonicalJson: string, datasetJson: string): string;
+  check_cover_provenance(
+    letterJson: string,
+    resumeJson: string,
+    jdJson: string,
+    briefJson: string,
+  ): string;
   weighted_coverage(gapJson: string, jdJson: string): string;
   normalize_dashes(text: string): string;
   scrub_resume(canonicalJson: string): string;
@@ -545,6 +553,28 @@ export class WasmService {
   async checkProvenance(canonical: unknown, dataset: ResumeDataset): Promise<ProvenanceReport> {
     const m = await this.load();
     return JSON.parse(m.check_provenance(JSON.stringify(canonical), JSON.stringify(dataset)));
+  }
+
+  /** The cover-letter analog of {@link checkProvenance}: classify every body
+   *  paragraph of a drafted `letter` by whether it traces back to the `resume`,
+   *  the `jd`, and an optional prior cover-letter interview `brief` (omit or
+   *  pass `null` when there was none — `check_cover_provenance` treats an
+   *  absent brief exactly like `write_cover_letter` does). */
+  async checkCoverProvenance(
+    letter: CoverLetter,
+    resume: unknown,
+    jd: JobRequirements,
+    brief?: CoverBrief | null,
+  ): Promise<CoverProvenanceReport> {
+    const m = await this.load();
+    return JSON.parse(
+      m.check_cover_provenance(
+        JSON.stringify(letter),
+        JSON.stringify(resume),
+        JSON.stringify(jd),
+        JSON.stringify(brief ?? null),
+      ),
+    );
   }
 
   async weightedCoverage(gap: GapReport, jd: JobRequirements): Promise<WeightedCoverage> {
