@@ -54,11 +54,7 @@ export function coverExists(pdfs: readonly string[] | undefined): boolean {
         <div class="cover-actions">
           <button class="btn" type="button" (click)="download()" [disabled]="!url()">Download PDF</button>
           <button class="btn" type="button" (click)="generate()" [disabled]="generating()">
-            @if (generating()) {
-              <span class="spin" aria-hidden="true"></span> Regenerating…
-            } @else {
-              Regenerate
-            }
+            {{ generating() ? 'Regenerating…' : 'Regenerate' }}
           </button>
         </div>
       </div>
@@ -101,11 +97,7 @@ export function coverExists(pdfs: readonly string[] | undefined): boolean {
           <div class="cover-error" role="alert">{{ e }}</div>
         }
         <button class="btn btn-primary" type="button" (click)="generate()" [disabled]="generating()">
-          @if (generating()) {
-            <span class="spin light" aria-hidden="true"></span> Generating…
-          } @else {
-            Generate cover letter
-          }
+          {{ generating() ? 'Generating…' : 'Generate cover letter' }}
         </button>
         @if (generating()) {
           <span class="gen-note">This is a live model call and takes a few seconds.</span>
@@ -144,7 +136,6 @@ export function coverExists(pdfs: readonly string[] | undefined): boolean {
     .cover-text p { margin: 12px 0 0; line-height: 1.6; font-size: 14.5px; }
 
     .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: cv-spin 0.7s linear infinite; }
-    .spin.light { border-color: color-mix(in oklch, oklch(97% 0.02 40) 45%, transparent); border-top-color: oklch(97% 0.02 40); }
     @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
     @keyframes cv-spin { to { transform: rotate(360deg); } }
   `,
