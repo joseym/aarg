@@ -10,7 +10,8 @@
 //! client-side), scrub AI-tell dashes from a draft or payload before it
 //! ships, mirror JD phrasing a recorded skill already backs, and classify
 //! every line of a canonical draft by whether it traces back to the
-//! dataset (the free-edit UI's provenance story). Everything
+//! dataset (the free-edit UI's provenance story) — plus the same
+//! provenance story for a drafted cover letter's body paragraphs. Everything
 //! crosses the JS boundary as JSON, the same shape the CLI reads and writes
 //! on disk. The logic lives in plain `*_impl` functions (`Result<String,
 //! String>`, or a plain `String` for the one infallible export) so it is
@@ -29,6 +30,8 @@
 
 use wasm_bindgen::prelude::*;
 
+use aarg_domain::cover::CoverLetter;
+use aarg_domain::cover_interview::CoverBrief;
 use aarg_domain::dataset::types::ResumeDataset;
 use aarg_domain::jd::JobRequirements;
 use aarg_domain::tailor::TailoredResume;
@@ -45,7 +48,7 @@ pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::agent::{Agent, AgentContext};
 #[cfg(target_arch = "wasm32")]
-use aarg_domain::cover_interview::{CoverBrief, run_cover_interview};
+use aarg_domain::cover_interview::run_cover_interview;
 #[cfg(target_arch = "wasm32")]
 use aarg_domain::gap::GapReport;
 #[cfg(target_arch = "wasm32")]
@@ -209,6 +212,28 @@ fn check_provenance_impl(canonical_json: &str, dataset_json: &str) -> Result<Str
     let draft: TailoredResume = parse(canonical_json, "canonical draft")?;
     let dataset: ResumeDataset = parse(dataset_json, "dataset")?;
     dump(&aarg_domain::provenance::check_provenance(&draft, &dataset))
+}
+
+fn check_cover_provenance_impl(
+    letter_json: &str,
+    resume_json: &str,
+    jd_json: &str,
+    brief_json: &str,
+) -> Result<String, String> {
+    let letter: CoverLetter = parse(letter_json, "cover letter")?;
+    let resume: TailoredResume = parse(resume_json, "canonical draft")?;
+    let jd: JobRequirements = parse(jd_json, "job requirements")?;
+    // A bare JSON `null` (every caller with no interview brief) deserializes
+    // straight to `None`, the same way an absent `brief` field would on a
+    // struct — see `CoverLetterInput::brief`'s doc comment for the same
+    // convention on the domain side.
+    let brief: Option<CoverBrief> = parse(brief_json, "cover brief")?;
+    dump(&aarg_domain::cover_provenance::check_cover_provenance(
+        &letter,
+        &resume,
+        &jd,
+        brief.as_ref(),
+    ))
 }
 
 /// How much a matched requirement counts toward coverage, by how hard the JD
@@ -398,6 +423,29 @@ pub fn keyword_key(name: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn check_provenance(canonical_json: &str, dataset_json: &str) -> Result<String, JsValue> {
     check_provenance_impl(canonical_json, dataset_json).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Classify every body paragraph of a drafted `CoverLetter` by whether it
+/// traces back to the evidence corpus built from the canonical
+/// `TailoredResume`, the `jd`, and an optional prior cover-letter interview
+/// `CoverBrief` — the cover-letter analog of [`check_provenance`] above, with
+/// a three-way grounded/unrecorded/exempt call suited to prose rather than
+/// résumé lines (see `cover_provenance`'s module doc). Informational only,
+/// like `check_provenance`: it never rejects a paragraph, it reports.
+///
+/// `brief_json` is the JSON encoding of `Option<CoverBrief>` — pass the
+/// literal string `"null"` when no interview was run (every one-shot caller
+/// does), or the `CoverBrief` object from `cover_interview_interactive` when
+/// one was. Returns the `CoverProvenanceReport` as JSON.
+#[wasm_bindgen]
+pub fn check_cover_provenance(
+    letter_json: &str,
+    resume_json: &str,
+    jd_json: &str,
+    brief_json: &str,
+) -> Result<String, JsValue> {
+    check_cover_provenance_impl(letter_json, resume_json, jd_json, brief_json)
+        .map_err(|e| JsValue::from_str(&e))
 }
 
 /// The headline coverage number, weighted by how hard the JD asks for each
@@ -2458,6 +2506,124 @@ mod tests {
         let err =
             check_provenance_impl(&canonical_json_with_summary("s"), "{ not json").unwrap_err();
         assert!(err.contains("invalid dataset"), "got {err:?}");
+    }
+
+    // A well-formed `CoverLetter` carrying exactly the given body paragraphs
+    // — same hand-built-JSON approach as `canonical_json_with_summary`, since
+    // `CoverLetter` (owned by the domain crate this round) has no test
+    // constructor either.
+    fn cover_letter_json(paragraphs: &[&str]) -> String {
+        serde_json::json!({
+            "contact": {
+                "full_name": "Test Person",
+                "email": "t@example.com",
+                "phone": null,
+                "location": null,
+                "links": []
+            },
+            "company": "Acme",
+            "title": "Platform Engineer",
+            "greeting": "Dear Acme hiring team,",
+            "paragraphs": paragraphs,
+            "signoff": "Test Person"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn check_cover_provenance_classifies_a_paragraph_that_echoes_the_summary_as_grounded() {
+        // A paragraph restating the résumé's own summary, round-tripped
+        // through JSON the way a browser caller would — the cover-letter
+        // analog of `check_provenance_classifies_a_verbatim_summary_line`.
+        let letter = cover_letter_json(&["Engineering leader with a delivery focus."]);
+        let resume = canonical_json_with_summary("Engineering leader with a delivery focus.");
+        let jd = jd_json_with_phrase("collaborative culture");
+
+        let out = check_cover_provenance_impl(&letter, &resume, &jd, "null")
+            .expect("check_cover_provenance should accept well-formed input");
+        let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let paragraphs = report["paragraphs"].as_array().unwrap();
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0]["status"], "grounded");
+    }
+
+    #[test]
+    fn check_cover_provenance_reads_a_provided_brief_as_grounding() {
+        // Proves `brief_json` actually deserializes past the bare `"null"`
+        // path: the same paragraph is `unrecorded` with no brief and
+        // `grounded` once a brief backs its one distinctive fact ("ChessCoach",
+        // mirrored from the domain module's own
+        // `a_paragraph_grounded_only_in_the_brief_is_grounded` test).
+        let letter =
+            cover_letter_json(&["On my own time I built ChessCoach, a chess training app."]);
+        let resume = canonical_json_with_summary("Engineering leader with a delivery focus.");
+        let jd = jd_json_with_phrase("collaborative culture");
+
+        let without =
+            check_cover_provenance_impl(&letter, &resume, &jd, "null").expect("well-formed input");
+        let without: serde_json::Value = serde_json::from_str(&without).unwrap();
+        assert_eq!(without["paragraphs"][0]["status"], "unrecorded");
+
+        let brief = serde_json::json!({
+            "angle": null,
+            "emphasis": ["my side project ChessCoach, a chess training app"],
+            "tone": null,
+            "motivation": null,
+            "constraints": []
+        })
+        .to_string();
+        let with =
+            check_cover_provenance_impl(&letter, &resume, &jd, &brief).expect("well-formed input");
+        let with: serde_json::Value = serde_json::from_str(&with).unwrap();
+        assert_eq!(with["paragraphs"][0]["status"], "grounded");
+    }
+
+    #[test]
+    fn check_cover_provenance_rejects_malformed_letter_json_without_panicking() {
+        let err = check_cover_provenance_impl(
+            "{ not json",
+            &canonical_json_with_summary("s"),
+            &jd_json_with_phrase("x"),
+            "null",
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid cover letter"), "got {err:?}");
+    }
+
+    #[test]
+    fn check_cover_provenance_rejects_malformed_resume_json_without_panicking() {
+        let err = check_cover_provenance_impl(
+            &cover_letter_json(&["x"]),
+            "{ not json",
+            &jd_json_with_phrase("x"),
+            "null",
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid canonical draft"), "got {err:?}");
+    }
+
+    #[test]
+    fn check_cover_provenance_rejects_malformed_jd_json_without_panicking() {
+        let err = check_cover_provenance_impl(
+            &cover_letter_json(&["x"]),
+            &canonical_json_with_summary("s"),
+            "{ not json",
+            "null",
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid job requirements"), "got {err:?}");
+    }
+
+    #[test]
+    fn check_cover_provenance_rejects_malformed_brief_json_without_panicking() {
+        let err = check_cover_provenance_impl(
+            &cover_letter_json(&["x"]),
+            &canonical_json_with_summary("s"),
+            &jd_json_with_phrase("x"),
+            "{ not json",
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid cover brief"), "got {err:?}");
     }
 
     // `tune_interactive` itself is wasm32-only (it's a `#[wasm_bindgen]` export
