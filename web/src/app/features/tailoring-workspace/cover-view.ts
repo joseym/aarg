@@ -14,8 +14,10 @@ import { DomSanitizer, type SafeResourceUrl } from '@angular/platform-browser';
 import { HttpErrorResponse } from '@angular/common/http';
 
 import { ApiService } from '../../services/api.service';
+import { WasmService } from '../../services/wasm.service';
+import { CopilotHost } from '../../shared/copilot-host';
 import { triggerDownload } from '../../shared/download';
-import type { CoverLetter } from '../../models';
+import type { CoverBrief, CoverLetter, JobRequirements, TailoredResume } from '../../models';
 
 /** The filename the cover render is persisted under, both in the build's `pdfs`
  *  list and at `GET /api/builds/:id/files/cover_letter.pdf`. */
@@ -26,6 +28,23 @@ export const COVER_PDF = 'cover_letter.pdf';
  *  PDF preview. */
 export function coverExists(pdfs: readonly string[] | undefined): boolean {
   return (pdfs ?? []).includes(COVER_PDF);
+}
+
+/** Whether a `CoverBrief` carries nothing at all — every scalar blank, both
+ *  lists empty. An interview the user cancelled before answering anything (or
+ *  a completed one where every slot was skipped/declined) yields exactly this
+ *  shape; a brief with even one answer does not. Drives whether "Draft with
+ *  copilot" bothers generating at all once the interview resolves: nothing
+ *  gathered reads as "the person backed out", not "draft with an empty brief". */
+export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
+  if (!brief) return true;
+  return (
+    !brief.angle?.trim() &&
+    brief.emphasis.length === 0 &&
+    !brief.tone?.trim() &&
+    !brief.motivation?.trim() &&
+    brief.constraints.length === 0
+  );
 }
 
 /** The Cover Letter view: the third workspace pill. A build with no cover shows
@@ -53,8 +72,11 @@ export function coverExists(pdfs: readonly string[] | undefined): boolean {
       <div class="cover-head">
         <div class="cover-actions">
           <button class="btn" type="button" (click)="download()" [disabled]="!url()">Download PDF</button>
-          <button class="btn" type="button" (click)="generate()" [disabled]="generating()">
+          <button class="btn" type="button" (click)="generate()" [disabled]="actionsDisabled()">
             {{ generating() ? 'Regenerating…' : 'Regenerate' }}
+          </button>
+          <button class="btn" type="button" (click)="draftWithCopilot()" [disabled]="actionsDisabled()">
+            Draft with copilot
           </button>
         </div>
       </div>
@@ -96,9 +118,14 @@ export function coverExists(pdfs: readonly string[] | undefined): boolean {
         @if (errorMsg(); as e) {
           <div class="cover-error" role="alert">{{ e }}</div>
         }
-        <button class="btn btn-primary" type="button" (click)="generate()" [disabled]="generating()">
-          {{ generating() ? 'Generating…' : 'Generate cover letter' }}
-        </button>
+        <div class="cover-actions">
+          <button class="btn btn-primary" type="button" (click)="generate()" [disabled]="actionsDisabled()">
+            {{ generating() ? 'Generating…' : 'Generate cover letter' }}
+          </button>
+          <button class="btn" type="button" (click)="draftWithCopilot()" [disabled]="actionsDisabled()">
+            Draft with copilot
+          </button>
+        </div>
         @if (generating()) {
           <span class="gen-note">This is a live model call and takes a few seconds.</span>
         }
@@ -144,6 +171,8 @@ export class CoverView {
   private readonly api = inject(ApiService);
   private readonly sanitizer = inject(DomSanitizer);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly wasm = inject(WasmService);
+  protected readonly copilot = inject(CopilotHost);
 
   readonly buildId = input.required<string>();
   /** Whether the build's `pdfs` already lists `cover_letter.pdf` (drives the
@@ -153,6 +182,13 @@ export class CoverView {
    *  one, so an absent canonical shows an explanatory empty state, never a POST
    *  that would 404. */
   readonly canonicalPresent = input.required<boolean>();
+  /** The build's JD, for the "Draft with copilot" interview to ground its
+   *  questions in. Null until the workspace's bundle has loaded one. */
+  readonly jd = input<JobRequirements | null>(null);
+  /** The build's canonical tailored résumé, for the same interview. Null until
+   *  loaded (mirrors {@link canonicalPresent}, which gates the whole view on
+   *  this being non-null in practice). */
+  readonly canonical = input<TailoredResume | null>(null);
   /** Ask the workspace to reload the build bundle after a (re)generate, so the
    *  new cover joins the build's `pdfs` list and the chat context. */
   readonly generated = output<void>();
@@ -170,6 +206,11 @@ export class CoverView {
 
   /** Show the PDF area once there's a cover to show (on disk or just drafted). */
   protected readonly hasContent = computed(() => this.hasCover() || this.url() !== null);
+
+  /** Every button on this view is disabled while a generate is in flight OR
+   *  while the copilot interview (which runs through the same shared modal
+   *  every other copilot uses) is running — the two must never overlap. */
+  protected readonly actionsDisabled = computed(() => this.generating() || this.copilot.running() !== null);
 
   private blobUrl: string | null = null;
   private loadedFor: string | null = null;
@@ -206,12 +247,51 @@ export class CoverView {
   /** Draft (or redraft) the cover letter for the open build, then refresh the
    *  preview and ask the workspace to reload its bundle. */
   protected generate(): void {
+    this.runGenerate(undefined);
+  }
+
+  /** Run the cover-letter interview (`cover_interview_interactive`) through the
+   *  shared copilot modal, then draft with whatever it gathered.
+   *
+   *  Cancellation design: the interview degrades to a partial (or entirely
+   *  empty) brief rather than erroring on a declined suggestion menu or a
+   *  skipped question — see `cover_interview_interactive`'s doc comment. So
+   *  there is no separate "aborted" signal to branch on here: if the brief
+   *  that comes back is completely empty (the person backed out before
+   *  answering anything), this does nothing — the same as never having
+   *  clicked the button. If it carries even one answer, the letter is drafted
+   *  from exactly that — never all-or-nothing, and never generating from an
+   *  interview the person visibly abandoned before saying anything. */
+  protected async draftWithCopilot(): Promise<void> {
+    if (this.actionsDisabled()) return;
+    const jd = this.jd();
+    const canonical = this.canonical();
+    if (!jd || !canonical) return; // same guard `canonicalPresent` already implies
+    this.errorMsg.set(null);
+    try {
+      const brief = await this.copilot.runWithUi('cover letter copilot', () =>
+        this.wasm.coverInterview(canonical, jd),
+      );
+      if (isEmptyBrief(brief)) return; // nothing gathered — treat as a clean cancel
+      this.runGenerate(brief);
+    } catch (err) {
+      const msg = coverErrorMessage(err);
+      this.errorMsg.set(msg);
+      this.notify.emit(msg);
+    }
+  }
+
+  /** Shared by {@link generate} and {@link draftWithCopilot}: draft (or
+   *  redraft) the cover letter, optionally grounded in an interview's
+   *  `CoverBrief`, then refresh the preview and ask the workspace to reload
+   *  its bundle. */
+  private runGenerate(brief: CoverBrief | undefined): void {
     if (this.generating() || !this.canonicalPresent()) return;
     const id = this.buildId();
     this.generating.set(true);
     this.errorMsg.set(null);
     this.api
-      .generateCover(id)
+      .generateCover(id, brief)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (res) => {

@@ -311,6 +311,8 @@ type ClaimState = 'ok' | 'checking' | 'flag';
               [buildId]="id()"
               [hasCover]="hasCover()"
               [canonicalPresent]="canonicalPresent()"
+              [jd]="jd()"
+              [canonical]="bundle()?.canonical ?? null"
               (generated)="onCoverGenerated()"
               (notify)="onCoverNotify($event)"
             />

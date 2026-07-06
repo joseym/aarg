@@ -10,6 +10,7 @@ import type {
   WeightedCoverage,
   Objection,
   Models,
+  CoverBrief,
 } from '../models';
 
 /** A JS callback the core hands one JSON string and awaits a JSON string from.
@@ -238,6 +239,13 @@ interface WasmExports {
     datasetJson: string,
     jdJson: string,
     keyword: string,
+    modelsJson: string,
+    llm: StringCallback,
+    user: StringCallback,
+  ): Promise<string>;
+  cover_interview_interactive(
+    canonicalJson: string,
+    jdJson: string,
     modelsJson: string,
     llm: StringCallback,
     user: StringCallback,
@@ -834,6 +842,26 @@ export class WasmService {
         JSON.stringify(dataset),
         JSON.stringify(jd),
         keyword,
+        this.modelsJson(),
+        this.llm,
+        (json) => this.userHandler(json),
+      ),
+    );
+  }
+
+  /** The cover-letter interview (the Cover Letter view's "Draft with copilot"):
+   *  a short, adaptive Q&A over the letter's angle, emphasis, tone, motivation,
+   *  and constraints, each offering a guarded suggestion first. Unlike the
+   *  other interactive copilots this neither reads nor mutates the dataset, so
+   *  it returns the bare `CoverBrief` — no `{dataset, ..., aborted}` envelope
+   *  (see `cover_interview_interactive`'s doc comment: an empty brief already
+   *  reads as "no grounding", so the caller never needs a separate abort flag). */
+  async coverInterview(canonical: unknown, jd: JobRequirements): Promise<CoverBrief> {
+    const m = await this.load();
+    return JSON.parse(
+      await m.cover_interview_interactive(
+        JSON.stringify(canonical),
+        JSON.stringify(jd),
         this.modelsJson(),
         this.llm,
         (json) => this.userHandler(json),
