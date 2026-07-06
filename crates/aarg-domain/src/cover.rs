@@ -314,7 +314,10 @@ fn assemble(
 /// candidate typed into an interview `brief` (a real figure they recalled in
 /// their own words is not an invented one, so it must not be reverted as
 /// unsupported). A letter may only use figures from this combined set.
-fn allowed_digits(resume: &TailoredResume, brief: Option<&CoverBrief>) -> HashSet<String> {
+pub(crate) fn allowed_digits(
+    resume: &TailoredResume,
+    brief: Option<&CoverBrief>,
+) -> HashSet<String> {
     let mut text = String::new();
     text.push_str(&resume.summary);
     if let Some(title) = &resume.target_title {

@@ -9,15 +9,21 @@
 //! résumé bullet is: it paraphrases many facts at once and stitches them
 //! together with ordinary connective language ("I'd welcome the chance
 //! to..."). So the résumé module's single-best-source match doesn't carry
-//! over. Instead a paragraph is checked against the *whole* evidence
-//! corpus at once: the candidate's tailored résumé, the job posting, and
-//! the cover-letter [`CoverBrief`](crate::cover_interview::CoverBrief) if
-//! one was gathered. Two things are checked, both drawn from that one
-//! corpus:
-//! - every number the paragraph states must be a number the corpus states,
-//!   and
-//! - every claim-bearing word the paragraph states must appear in the
-//!   corpus's word bag.
+//! over. Instead a paragraph is checked against the evidence corpus as a
+//! whole. Two things are checked, each against its own corpus because the
+//! two draw the line at a different place:
+//! - every claim-bearing word the paragraph states must appear in the word
+//!   bag built from the candidate's tailored résumé, the job posting, and
+//!   the cover-letter [`CoverBrief`](crate::cover_interview::CoverBrief) if
+//!   one was gathered. The posting belongs here: echoing a role or company
+//!   descriptor ("platform reliability at scale") or a required skill name
+//!   is legitimate, since it describes the role, not a personal claim.
+//! - every number the paragraph states must be a number the *résumé or
+//!   brief* states — the posting's numbers are excluded. A number in the
+//!   posting states what the role requires ("5+ years"), never what the
+//!   candidate has done, so it must never ground a personal-history claim.
+//!   This digit set is [`cover`](crate::cover)'s shipped `allowed_digits`
+//!   guard reused verbatim, so the two can never drift.
 //!
 //! Each paragraph lands in one of three buckets
 //! ([`CoverParagraphStatus`]):
@@ -67,7 +73,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cover::CoverLetter;
+use crate::cover::{CoverLetter, allowed_digits};
 use crate::cover_interview::CoverBrief;
 use crate::jd::JobRequirements;
 use crate::keywords::keyword_key;
@@ -123,19 +129,29 @@ pub struct CoverProvenanceReport {
 /// the (deliberate) absence of any hard failure here — this never returns
 /// an `Err`, because it reports rather than gates.
 ///
-/// The corpus is the résumé plus the posting plus the brief, the same
-/// material the generation step draws on. It deliberately does *not*
-/// include the candidate's voice samples (they are not even a parameter
-/// here) — see the module doc.
+/// The word bag is the résumé plus the posting plus the brief, the same
+/// material the generation step draws on; the number set is the résumé and
+/// brief only, because a posting's numbers describe the role, not the
+/// candidate (see [`token_corpus_texts`] and the module doc). Neither
+/// corpus includes the candidate's voice samples — they are not even a
+/// parameter here.
 pub fn check_cover_provenance(
     letter: &CoverLetter,
     resume: &TailoredResume,
     jd: &JobRequirements,
     brief: Option<&CoverBrief>,
 ) -> CoverProvenanceReport {
-    let corpus = corpus_texts(resume, jd, brief);
-    let corpus_digits: HashSet<String> = corpus.iter().flat_map(|t| digit_runs(t)).collect();
-    let corpus_tokens: HashSet<String> = corpus.iter().flat_map(|t| keyword_key(t)).collect();
+    // Tokens may come from the whole corpus — the résumé, the posting, and
+    // the brief — because echoing the posting's language (a skill name, a
+    // role or company descriptor) is legitimate. Digits may not: a number
+    // in the posting states what the *role* requires ("5+ years"), never
+    // what the *candidate* has done, so the digit set is the résumé and
+    // brief only, taken straight from `cover.rs`'s shipped guard.
+    let corpus_tokens: HashSet<String> = token_corpus_texts(resume, jd, brief)
+        .iter()
+        .flat_map(|t| keyword_key(t))
+        .collect();
+    let corpus_digits: HashSet<String> = allowed_digits(resume, brief);
 
     let paragraphs = letter
         .paragraphs
@@ -146,22 +162,32 @@ pub fn check_cover_provenance(
     CoverProvenanceReport { paragraphs }
 }
 
-/// Every stretch of text the corpus is built from, gathered once. This is
-/// the résumé (summary, target title, each role's company and title and
-/// bullet text, and the skills), the posting (title, company, required and
-/// preferred skill names, responsibilities), and the interview brief
+/// Every stretch of text the *token* corpus is built from, gathered once.
+/// This is the résumé (summary, target title, each role's company and title
+/// and bullet text, and the skills), the posting (title, company, required
+/// and preferred skill names, responsibilities), and the interview brief
 /// (angle, emphasis, tone, motivation, constraints) when one is present.
-/// One definition, used for both the number set and the word bag, so the
-/// two can never disagree about what the corpus is.
 ///
-/// The résumé-and-brief part matches [`cover`](crate::cover)'s
-/// `allowed_digits` (the shipped digit guard); this adds the posting on
-/// top, because a cover letter legitimately echoes the posting's own
-/// language, and flagging that as unrecorded would be the common false
-/// alarm. On a letter that already passed the shipped guard every number
-/// is a résumé-or-brief number anyway, so the added posting text only ever
-/// grounds a paragraph, never demotes one.
-fn corpus_texts(
+/// The posting belongs in the *word* bag: a cover letter legitimately
+/// echoes the posting's own language — a required skill name, a phrase
+/// describing the role or company ("platform reliability at scale") — and
+/// flagging that as unrecorded would be the common false alarm. Those
+/// tokens describe the role, not a claim about what the candidate has
+/// personally done.
+///
+/// The posting deliberately does **not** feed the *digit* corpus, which is
+/// built separately by [`cover`](crate::cover)'s `allowed_digits` from the
+/// résumé and brief only. A number in the posting states what the role
+/// *requires* ("5+ years of platform experience", "a team of 10+"), never
+/// what the candidate has done. If a paragraph says "I have 5 years of
+/// experience with X" and the only "5" in sight is the posting's stated
+/// requirement, calling that grounded would vouch for a personal-history
+/// claim nothing the candidate recorded actually backs. So JD requirement
+/// numbers can never be evidence of candidate experience, regardless of who
+/// calls this — a freshly generated letter that already passed
+/// `assemble`'s digit gate or a candidate's hand-edited paragraph that
+/// never did.
+fn token_corpus_texts(
     resume: &TailoredResume,
     jd: &JobRequirements,
     brief: Option<&CoverBrief>,
@@ -619,6 +645,15 @@ const PROSE_FILLER: &[&str] = &[
     "group",
     "background",
     "further",
+    "soon",
+    "attach",
+    "attached",
+    "review",
+    "convenience",
+    "qualification",
+    "qualifications",
+    "grow",
+    "growing",
     "contribute",
     "contribution",
     "help",
@@ -994,5 +1029,77 @@ mod tests {
         assert!(json.contains("\"unrecorded\""));
         let back: CoverProvenanceReport = serde_json::from_str(&json).unwrap();
         assert_eq!(back, report);
+    }
+
+    #[test]
+    fn a_jd_requirement_number_does_not_ground_a_personal_history_claim() {
+        // Regression for the digit-corpus split. The posting states "5+
+        // years" as a role requirement, but nothing the candidate recorded
+        // (résumé or brief) contains a "5". A paragraph that asserts "5
+        // years of experience" as personal history must be flagged, not
+        // grounded off the posting's stated requirement — a JD's numbers
+        // describe the role, never what the candidate has done.
+        let mut jd = jd();
+        jd.responsibilities = vec!["Bring 5+ years of platform engineering experience".into()];
+        let letter = letter(&["I have 5 years of experience with Kubernetes."]);
+        let report = check_cover_provenance(&letter, &resume(), &jd, None);
+        let p = &report.paragraphs[0];
+        assert_eq!(
+            p.status,
+            CoverParagraphStatus::Unrecorded,
+            "unbacked tokens {:?}, digits {:?}",
+            p.unbacked_tokens,
+            p.unbacked_digits
+        );
+        assert_eq!(p.unbacked_digits, vec!["5".to_string()]);
+        // The role language the paragraph echoes ("years", "Kubernetes") is
+        // still legitimate as tokens — only the posting's number is withheld
+        // from the evidence set.
+        assert!(
+            p.unbacked_tokens.is_empty(),
+            "only the digit should be unbacked, got tokens {:?}",
+            p.unbacked_tokens
+        );
+    }
+
+    #[test]
+    fn ordinary_signoff_language_is_not_flagged() {
+        // Regression for the over-narrow filler list. Routine
+        // connective/politeness sentences carry no fabrication and must not
+        // read as unrecorded, or a real invention would be buried in noise
+        // from sign-off boilerplate.
+        let benign = [
+            "I look forward to hearing from you soon.",
+            "Please find my resume attached for your review.",
+            "I would be glad to discuss my qualifications further at your convenience.",
+        ];
+        for sentence in benign {
+            let letter = letter(&[sentence]);
+            let report = check_cover_provenance(&letter, &resume(), &jd(), None);
+            let p = &report.paragraphs[0];
+            assert_ne!(
+                p.status,
+                CoverParagraphStatus::Unrecorded,
+                "{sentence:?} wrongly flagged; tokens {:?}",
+                p.unbacked_tokens
+            );
+        }
+
+        // But "leadership" is deliberately kept off the filler list: a
+        // candidate asserting leadership experience is a real claim, so if
+        // nothing backs it the sentence still (correctly) flags. This locks
+        // in that the filler additions didn't get greedy and start hiding
+        // claim words.
+        let letter = letter(&[
+            "I would love to bring my background in engineering leadership to your growing team.",
+        ]);
+        let report = check_cover_provenance(&letter, &resume(), &jd(), None);
+        let p = &report.paragraphs[0];
+        assert_eq!(p.status, CoverParagraphStatus::Unrecorded);
+        assert!(
+            p.unbacked_tokens.contains(&token("leadership")),
+            "expected leadership flagged, got {:?}",
+            p.unbacked_tokens
+        );
     }
 }
