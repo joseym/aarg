@@ -60,6 +60,9 @@ pub enum CoverInterviewError {
 /// later drafts the letter's text. Every field is optional or
 /// empty-defaultable, so a partial or entirely skipped interview still
 /// yields a usable (if empty) brief rather than blocking generation.
+/// `#[serde(default)]` on the struct is what makes that true even for
+/// hand-written or older JSON that omits fields entirely, not just for
+/// values this module itself produced.
 ///
 /// Every field is populated ONLY from the candidate's own typed answers.
 /// [`CoverInterviewAgent`]'s `Output` is a question (or the empty-string
@@ -67,6 +70,7 @@ pub enum CoverInterviewError {
 /// that asks the questions to write into this struct. [`run_cover_interview`]
 /// is the only code that ever constructs a populated one.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CoverBrief {
     /// The overall narrative the letter should take, in the candidate's
     /// own words (e.g. "position me as a builder who scales teams, not
@@ -672,5 +676,11 @@ mod tests {
         let back: CoverBrief = serde_json::from_str(&json).unwrap();
         assert_eq!(back.angle, None);
         assert!(back.emphasis.is_empty());
+    }
+
+    #[test]
+    fn an_empty_json_object_deserializes_to_the_default_brief() {
+        let brief: CoverBrief = serde_json::from_str("{}").unwrap();
+        assert_eq!(brief, CoverBrief::default());
     }
 }
