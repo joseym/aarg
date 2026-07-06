@@ -8,6 +8,7 @@ import {
   input,
   output,
   signal,
+  untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DomSanitizer, type SafeResourceUrl } from '@angular/platform-browser';
@@ -17,7 +18,15 @@ import { ApiService } from '../../services/api.service';
 import { WasmService } from '../../services/wasm.service';
 import { CopilotHost } from '../../shared/copilot-host';
 import { triggerDownload } from '../../shared/download';
-import type { CoverBrief, CoverLetter, JobRequirements, TailoredResume } from '../../models';
+import type {
+  CoverBrief,
+  CoverLetter,
+  CoverProvenanceReport,
+  JobRequirements,
+  TailoredResume,
+} from '../../models';
+import { CoverPreview } from './cover-preview';
+import { coverBadgeText } from './cover-preview.model';
 
 /** The filename the cover render is persisted under, both in the build's `pdfs`
  *  list and at `GET /api/builds/:id/files/cover_letter.pdf`. */
@@ -62,6 +71,7 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
 @Component({
   selector: 'app-cover-view',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [CoverPreview],
   template: `
     @if (!canonicalPresent()) {
       <div class="panel muted">
@@ -70,6 +80,48 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
       </div>
     } @else if (hasContent()) {
       <div class="cover-head">
+        <div class="cover-modes">
+          <div class="segmented" role="tablist" aria-label="Cover letter fidelity">
+            <button
+              type="button" role="tab"
+              [class.on]="previewMode() === 'editing'"
+              [attr.aria-selected]="previewMode() === 'editing'"
+              (click)="previewMode.set('editing')"
+            >Editing</button>
+            <button
+              type="button" role="tab"
+              [class.on]="previewMode() === 'pixel'"
+              [attr.aria-selected]="previewMode() === 'pixel'"
+              (click)="previewMode.set('pixel')"
+            >Pixel-perfect</button>
+          </div>
+          @if (coverReport()) {
+            <div class="cc-wrap">
+              <span class="claimcheck" [attr.data-state]="coverClaimState()">
+                <span class="cc-dot" aria-hidden="true"></span>
+                <span>{{ coverClaimText() }}</span>
+              </span>
+              <button
+                class="cc-info"
+                type="button"
+                aria-label="What the paragraph check verifies"
+                (mouseenter)="infoOpen.set(true)"
+                (focus)="infoOpen.set(true)"
+                (mouseleave)="infoOpen.set(false)"
+                (blur)="infoOpen.set(false)"
+              >i</button>
+              @if (infoOpen()) {
+                <div class="cc-tip" role="tooltip">
+                  Each paragraph is checked against your evidence:
+                  <b>traced</b> means every fact comes from your resume, the posting, or your interview answers;
+                  <b>needs a look</b> means it mentions something none of those carry;
+                  <b>connecting language</b> makes no specific claim to check.
+                  This is informational, and these edits stay local until you Regenerate.
+                </div>
+              }
+            </div>
+          }
+        </div>
         <div class="cover-actions">
           <button class="btn" type="button" (click)="download()" [disabled]="!url()">Download PDF</button>
           <button class="btn" type="button" (click)="generate()" [disabled]="actionsDisabled()">
@@ -92,24 +144,44 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
         </div>
       }
 
-      <div class="pdfwrap">
-        @if (url(); as u) {
-          <iframe class="pdf" [src]="u" title="Rendered cover letter PDF"></iframe>
-        }
-        @if (loadingPdf()) {
-          <div class="pv-status" role="status"><span class="spin" aria-hidden="true"></span> Loading…</div>
-        } @else if (!url()) {
-          <div class="pv-status muted">Couldn't load the cover letter PDF.</div>
-        }
-      </div>
-
-      @if (letter()?.paragraphs?.length) {
-        <details class="cover-text">
-          <summary>Letter text</summary>
-          @for (p of letter()!.paragraphs; track $index) {
-            <p>{{ p }}</p>
+      @if (previewMode() === 'pixel') {
+        <div class="pdfwrap">
+          @if (url(); as u) {
+            <iframe class="pdf" [src]="u" title="Rendered cover letter PDF"></iframe>
           }
-        </details>
+          @if (loadingPdf()) {
+            <div class="pv-status" role="status"><span class="spin" aria-hidden="true"></span> Loading…</div>
+          } @else if (!url()) {
+            <div class="pv-status muted">Couldn't load the cover letter PDF.</div>
+          }
+        </div>
+
+        @if (letter()?.paragraphs?.length) {
+          <details class="cover-text">
+            <summary>Letter text</summary>
+            @for (p of letter()!.paragraphs; track $index) {
+              <p>{{ p }}</p>
+            }
+          </details>
+        }
+      } @else {
+        @if (coverPayload(); as cp) {
+          @if (coverReport(); as rep) {
+            <app-cover-preview
+              [report]="rep"
+              [greeting]="cp.greeting"
+              [signoff]="cp.signoff"
+              (edit)="onParaEdit($event)"
+            />
+          } @else {
+            <div class="panel muted">Checking the letter's paragraphs…</div>
+          }
+        } @else {
+          <div class="panel muted">
+            <b>No paragraph data for this letter yet.</b>
+            <p>This build's cover letter was drafted before per-paragraph editing existed. Regenerate it, or switch to Pixel-perfect to view the rendered PDF.</p>
+          </div>
+        }
       }
     } @else {
       <div class="panel">
@@ -138,8 +210,27 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
     .panel p { margin: 0; line-height: 1.55; }
     .muted { color: var(--muted); }
 
-    .cover-head { display: flex; align-items: center; justify-content: flex-end; margin: 4px 0 14px; }
+    .cover-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 4px 0 14px; }
     .cover-actions { display: inline-flex; gap: 10px; }
+    .cover-modes { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+    .segmented { display: inline-flex; padding: 3px; gap: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; }
+    .segmented button { display: inline-flex; align-items: center; padding: 6px 14px; border: 0; border-radius: 999px; background: transparent; font: inherit; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; transition: background 0.15s, color 0.15s, box-shadow 0.15s; }
+    .segmented button.on { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px color-mix(in oklch, var(--fg) 12%, transparent); }
+    .segmented button:not(.on):hover { color: var(--fg); }
+    .segmented button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    .cc-wrap { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+    .claimcheck { display: inline-flex; align-items: center; gap: 9px; padding: 7px 13px; border-radius: 999px; font-family: var(--font-mono); font-size: 12px; border: 1px solid; background: var(--surface-2); color: var(--muted); }
+    .claimcheck .cc-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+    .claimcheck[data-state='ok'] { color: var(--success); border-color: color-mix(in oklch, var(--success) 38%, var(--border)); background: var(--success-bg); }
+    .claimcheck[data-state='ok'] .cc-dot { background: var(--success); }
+    .claimcheck[data-state='flag'] { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 45%, var(--border)); background: var(--warn-bg); }
+    .claimcheck[data-state='flag'] .cc-dot { background: var(--warn); }
+    .cc-info { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-family: var(--font-mono); font-size: 11px; line-height: 1; cursor: help; }
+    .cc-info:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .cc-tip { position: absolute; top: 30px; left: 0; z-index: 20; width: 320px; background: var(--fg); color: oklch(96% 0.01 80); padding: 12px 14px; border-radius: 9px; font-size: 12.5px; line-height: 1.5; box-shadow: 0 12px 30px -12px color-mix(in oklch, var(--fg) 60%, transparent); }
+    .cc-tip b { color: oklch(99% 0.01 80); }
 
     .btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); font: inherit; font-size: 14px; font-weight: 500; color: inherit; cursor: pointer; }
     .btn:hover:not(:disabled) { border-color: var(--fg); }
@@ -189,6 +280,12 @@ export class CoverView {
    *  loaded (mirrors {@link canonicalPresent}, which gates the whole view on
    *  this being non-null in practice). */
   readonly canonical = input<TailoredResume | null>(null);
+  /** The build's drafted cover letter's parsed fields (`cover_payload.json`),
+   *  when the bundle carries them — the source for the editing pane's
+   *  per-paragraph provenance view. Null for a build with only a rendered PDF
+   *  (a cover drafted before this field existed), in which case the editing
+   *  pane shows an explanatory empty state and Pixel-perfect still works. */
+  readonly coverPayload = input<CoverLetter | null>(null);
   /** Ask the workspace to reload the build bundle after a (re)generate, so the
    *  new cover joins the build's `pdfs` list and the chat context. */
   readonly generated = output<void>();
@@ -198,6 +295,38 @@ export class CoverView {
   protected readonly generating = signal(false);
   protected readonly errorMsg = signal<string | null>(null);
   protected readonly warnings = signal<string[]>([]);
+
+  /** The fidelity sub-toggle, mirroring the résumé preview: the provenance-aware
+   *  editing pane (`editing`, the default, to surface where each paragraph
+   *  traces) or the real Typst-rendered PDF (`pixel`). Reset per build. */
+  protected readonly previewMode = signal<'editing' | 'pixel'>('editing');
+  /** The letter's body paragraphs as a local, in-memory working copy — seeded
+   *  from {@link coverPayload}, spliced on each edit. Never persisted; a fresh
+   *  build reseeds it, a reload discards it. */
+  private readonly paragraphs = signal<string[]>([]);
+  /** The deterministic per-paragraph provenance verdict for the working copy —
+   *  recomputed locally on every edit via `checkCoverProvenance`. Both the
+   *  editing pane and the claim badge read it, so the badge count always matches
+   *  what the paragraphs show. */
+  protected readonly coverReport = signal<CoverProvenanceReport | null>(null);
+  /** Whether the badge's explanatory tooltip is open. */
+  protected readonly infoOpen = signal(false);
+
+  /** How many body paragraphs still read as unrecorded — the badge's count and
+   *  its flag/ok state. Informational only, never a gate. */
+  protected readonly unrecordedCount = computed(
+    () => (this.coverReport()?.paragraphs ?? []).filter((p) => p.status === 'unrecorded').length,
+  );
+  private readonly paraTotal = computed(() => this.coverReport()?.paragraphs.length ?? 0);
+  protected readonly coverClaimText = computed(() =>
+    coverBadgeText(this.unrecordedCount(), this.paraTotal()),
+  );
+  protected readonly coverClaimState = computed<'ok' | 'flag'>(() =>
+    this.unrecordedCount() > 0 ? 'flag' : 'ok',
+  );
+  /** Monotonic id so a slow provenance check can't clobber a newer one (an edit
+   *  landing while a prior recheck is still resolving). */
+  private recheckSeq = 0;
   /** The most recently generated letter, so its paragraphs can be shown under
    *  the PDF. Null after a fresh open (a reload from disk carries only the PDF). */
   protected readonly letter = signal<CoverLetter | null>(null);
@@ -235,13 +364,72 @@ export class CoverView {
       this.fetchPdf(id);
     });
     // A build switch resets the transient letter/warnings/error so they never
-    // bleed across builds.
+    // bleed across builds, and returns the fidelity toggle to its default.
     effect(() => {
       this.buildId();
       this.letter.set(null);
       this.warnings.set([]);
       this.errorMsg.set(null);
+      this.previewMode.set('editing');
+      this.infoOpen.set(false);
     });
+
+    // Seed the editable paragraph copy from the build's cover payload and run
+    // the initial provenance check. Re-runs when the payload (or the résumé/JD
+    // it's checked against) changes — a fresh build, or those inputs arriving
+    // after the payload. Local edits go through onParaEdit, not this effect, so
+    // a mid-session edit is never clobbered here (the inputs are fixed per
+    // build). No brief is threaded in yet (see onParaEdit): the bundle doesn't
+    // carry one, so the check runs against the résumé and JD only.
+    effect(() => {
+      const letter = this.coverPayload();
+      const resume = this.canonical();
+      const jd = this.jd();
+      const paras = letter?.paragraphs ? [...letter.paragraphs] : [];
+      untracked(() => {
+        this.paragraphs.set(paras);
+        this.coverReport.set(null);
+      });
+      if (letter && resume && jd) void this.recheck(letter, resume, jd, paras);
+    });
+  }
+
+  /** Re-run the deterministic per-paragraph classifier for `paras` and publish
+   *  the result — the one place the report is produced, shared by the editing
+   *  pane and the badge. Classification is independent per paragraph, so
+   *  re-checking the whole (short) letter on each edit is both simplest and
+   *  correct. A stale result (an older check resolving after a newer edit) is
+   *  dropped via {@link recheckSeq}. */
+  private async recheck(
+    letter: CoverLetter,
+    resume: TailoredResume,
+    jd: JobRequirements,
+    paras: string[],
+  ): Promise<void> {
+    const seq = ++this.recheckSeq;
+    const draft: CoverLetter = { ...letter, paragraphs: paras };
+    try {
+      const report = await this.wasm.checkCoverProvenance(draft, resume, jd, undefined);
+      if (seq === this.recheckSeq) this.coverReport.set(report);
+    } catch {
+      if (seq === this.recheckSeq) this.coverReport.set(null);
+    }
+  }
+
+  /** A paragraph was edited in the editing pane: splice it into the local
+   *  working copy and re-run the classifier so its status (and the badge count)
+   *  updates live. Purely in-memory — nothing is saved; Regenerate is the
+   *  durable path. */
+  protected onParaEdit(e: { index: number; text: string }): void {
+    const letter = this.coverPayload();
+    const resume = this.canonical();
+    const jd = this.jd();
+    if (!letter || !resume || !jd) return;
+    const paras = [...this.paragraphs()];
+    if (e.index < 0 || e.index >= paras.length || paras[e.index] === e.text) return;
+    paras[e.index] = e.text;
+    this.paragraphs.set(paras);
+    void this.recheck(letter, resume, jd, paras);
   }
 
   /** Draft (or redraft) the cover letter for the open build, then refresh the

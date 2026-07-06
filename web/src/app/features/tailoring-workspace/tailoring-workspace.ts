@@ -315,6 +315,7 @@ type ClaimState = 'ok' | 'checking' | 'flag';
               [canonicalPresent]="canonicalPresent()"
               [jd]="jd()"
               [canonical]="bundle()?.canonical ?? null"
+              [coverPayload]="bundle()?.cover_payload ?? null"
               (generated)="onCoverGenerated()"
               (notify)="onCoverNotify($event)"
             />
