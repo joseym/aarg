@@ -225,22 +225,23 @@ const NO_COMPANY = 'No company';
 
     </aside>
 
-    <!-- Desktop chat open/close control, fixed to the viewport and docked
-         horizontally to the sidebar's right edge (300px expanded, 48px
-         collapsed — the sidebar-to-chat boundary when the chat is open). It
-         sits outside <aside> deliberately: that element's overflow:hidden
-         (needed for the collapse-fade clip above) would otherwise confine a
-         sticky/absolute descendant to the sidebar's own box, which can run
-         well past one screen once the build list is long — position: fixed
-         is anchored to the viewport regardless, so the caret stays centered
-         on screen and in reach as the page scrolls, rather than drifting to
-         wherever the midpoint of a tall list happens to fall. Points right
-         (open) or is rotated to point left (close, via .open). The chat
-         panel's own resize handle lives on its far edge, so the two never
-         meet. Hidden on the mobile drawer (the header button above takes
-         over) and when no build is open — the chat talks about a build, so
-         an idle control would only open an empty panel. Kept visible while
-         the chat is open so it can always be closed. -->
+    <!-- Desktop chat open/close grabber: a full-viewport-height bar docked to
+         the sidebar's right edge (300px expanded, 48px collapsed — the
+         sidebar-to-chat boundary when the chat is open), with a single caret
+         centered inside it. It sits outside <aside> and is position: fixed
+         with its own height: 100vh, rather than living inside the sidebar at
+         height: 100% — the sidebar's own box grows with the build list and
+         can run well past one screen, which is what previously left the
+         caret stranded at the midpoint of a very tall list. Fixed at exactly
+         one viewport tall, the bar (and the caret centered in it) can never
+         be taller than the screen, so it stays put as the page scrolls,
+         mirroring how the chat panel's own resize handle is a fixed,
+         viewport-height strip on its far edge (the two never meet). Points
+         right (open) or is rotated to point left (close, via .open). Hidden
+         on the mobile drawer (the header button above takes over) and when
+         no build is open — the chat talks about a build, so an idle grabber
+         would only open an empty panel. Kept visible while the chat is open
+         so it can always be closed. -->
     @if (chatOpen() || chatAvailable()) {
       <button
         class="chat-grip"
@@ -345,40 +346,41 @@ const NO_COMPANY = 'No company';
     .chat-toggle.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     .chat-toggle svg { width: 15px; height: 15px; }
 
-    /* The chat open/close caret. Fixed to the viewport (not absolute inside
-     * the sidebar) so it stays centered on screen through a build list far
-     * taller than one screen, rather than settling at the midpoint of
-     * whatever the sidebar's full content height happens to be. left
-     * tracks the sidebar's own width (300px / 48px collapsed, set inline from
-     * the component) so it always sits flush against the sidebar-to-chat
-     * boundary; translate(-100%, -50%) docks its right edge to that left
-     * line and centers it vertically in the viewport. */
+    /* The chat open/close grabber: a full-height bar docked to the sidebar's
+     * right edge, fixed to exactly one viewport tall (position: fixed with
+     * height: 100vh) rather than sized to the sidebar's own box, which grows
+     * with the build list and can run well past one screen — that mismatch
+     * is what previously left the caret centered on a box far taller than
+     * the visible page. Fixed at 100vh, the bar (and the caret flex-centered
+     * inside it) can never exceed the screen, so it stays put as the page
+     * scrolls. left tracks the sidebar's own width (300px / 48px collapsed,
+     * set inline from the component) so it always sits flush against the
+     * sidebar-to-chat boundary; translateX(-100%) docks its right edge to
+     * that line, matching how the chat panel's own resize handle sits on its
+     * far edge (the two never meet). */
     .chat-grip {
-      position: fixed; top: 50vh; z-index: 40;
-      transform: translate(-100%, -50%);
-      width: 26px; height: 26px; padding: 0;
+      position: fixed; top: 0; left: 0; z-index: 40;
+      height: 100vh; width: 26px; padding: 0;
+      transform: translateX(-100%);
       display: flex; align-items: center; justify-content: center;
-      border-radius: 50%;
-      border: 1px solid var(--border); background: var(--surface);
+      border: 0; border-left: 1px solid var(--border);
+      background: color-mix(in oklch, var(--surface) 55%, transparent);
       color: var(--muted); cursor: pointer;
-      box-shadow: 0 1px 3px -1px color-mix(in oklch, var(--fg) 22%, transparent);
       transition: left 0.25s cubic-bezier(0.2, 0.7, 0.2, 1),
-        border-color 0.15s, background 0.15s, color 0.15s;
+        background 0.15s, color 0.15s;
     }
-    .chat-grip:hover { border-color: var(--fg); color: var(--fg); }
-    .chat-grip.open {
-      border-color: color-mix(in oklch, var(--accent) 45%, var(--border));
-      background: var(--accent-soft); color: var(--accent);
-    }
-    .chat-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .chat-grip:hover { background: var(--surface-2); color: var(--fg); }
+    .chat-grip.open { color: var(--accent); }
+    .chat-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
     .grip-chev {
-      width: 12px; height: 12px;
+      width: 13px; height: 13px; opacity: 0.7;
       transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1);
     }
+    .chat-grip:hover .grip-chev, .chat-grip.open .grip-chev { opacity: 1; }
     .chat-grip.open .grip-chev { transform: rotate(180deg); }
     @media (prefers-reduced-motion: reduce) {
       .grip-chev { transition: none; }
-      .chat-grip { transition: border-color 0.15s, background 0.15s, color 0.15s; }
+      .chat-grip { transition: background 0.15s, color 0.15s; }
     }
     /* Mobile: the sidebar is an overlay drawer, so the edge control doesn't
      * apply; the header chat button takes over. */
