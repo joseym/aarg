@@ -133,9 +133,6 @@ type ClaimState = 'ok' | 'checking' | 'flag';
       >
         Retailor ↻
       </button>
-      <button class="btn" type="button" (click)="downloadPdf()" [disabled]="downloading()">
-        {{ downloading() ? 'Rendering…' : 'Download PDF' }}
-      </button>
       <a class="btn btn-primary" routerLink="/new">New Build</a>
     </div>
 
@@ -242,6 +239,11 @@ type ClaimState = 'ok' | 'checking' | 'flag';
               @if (previewMode() === 'pixel' && pixelPayload()) {
                 <button class="btn btn-sm" type="button" (click)="downloadPixelPdf()" [disabled]="pixelDownloading()">
                   {{ pixelDownloading() ? 'Rendering…' : 'Download PDF' }}
+                </button>
+              }
+              @if (previewMode() === 'editing') {
+                <button class="btn btn-sm" type="button" (click)="downloadPdf()" [disabled]="downloading()">
+                  {{ downloading() ? 'Rendering…' : 'Download PDF' }}
                 </button>
               }
             </div>
@@ -1900,10 +1902,10 @@ export class TailoringWorkspace implements OnDestroy {
 
   /** Download exactly what the pixel-perfect preview is currently showing —
    *  the selected variant (Human or ATS) at its selected template. Independent
-   *  of {@link downloadPdf} (the header's own button), which keeps its
-   *  existing human-default behavior untouched. Filenames are
-   *  `resume.human.pdf` / `resume.ats.pdf` so the two variants never collide
-   *  on disk. */
+   *  of {@link downloadPdf} (the editing-mode download in the same toolbar
+   *  row), which keeps its existing human-default behavior untouched.
+   *  Filenames are `resume.human.pdf` / `resume.ats.pdf` so the two variants
+   *  never collide on disk. */
   protected downloadPixelPdf(): void {
     const payload = this.pixelPayload();
     if (!payload) return;
