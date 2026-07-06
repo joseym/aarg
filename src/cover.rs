@@ -237,7 +237,7 @@ fn brief_block(brief: Option<&CoverBrief>) -> Option<String> {
     }
     if !brief.emphasis.is_empty() {
         block.push_str("Emphasize:\n");
-        for item in &brief.emphasis {
+        for item in brief.emphasis.iter().take(8) {
             block.push_str(&format!("  - {item}\n"));
         }
     }
@@ -249,7 +249,7 @@ fn brief_block(brief: Option<&CoverBrief>) -> Option<String> {
     }
     if !brief.constraints.is_empty() {
         block.push_str("Constraints:\n");
-        for item in &brief.constraints {
+        for item in brief.constraints.iter().take(8) {
             block.push_str(&format!("  - {item}\n"));
         }
     }
@@ -340,7 +340,7 @@ fn allowed_digits(resume: &TailoredResume, brief: Option<&CoverBrief>) -> HashSe
             text.push(' ');
             text.push_str(angle);
         }
-        for item in &brief.emphasis {
+        for item in brief.emphasis.iter().take(8) {
             text.push(' ');
             text.push_str(item);
         }
@@ -352,7 +352,7 @@ fn allowed_digits(resume: &TailoredResume, brief: Option<&CoverBrief>) -> HashSe
             text.push(' ');
             text.push_str(motivation);
         }
-        for item in &brief.constraints {
+        for item in brief.constraints.iter().take(8) {
             text.push(' ');
             text.push_str(item);
         }
@@ -582,6 +582,56 @@ mod tests {
         let message = build_user_message(&input);
 
         assert!(!message.contains("WHAT THE CANDIDATE WANTS THIS LETTER TO DO"));
+    }
+
+    #[test]
+    fn a_long_brief_list_is_capped_the_same_way_jd_responsibilities_are() {
+        // A hand-edited or reused cover_brief.json isn't bounded by the live
+        // interview's MAX_QUESTIONS the way a fresh session is, so emphasis
+        // and constraints get the same take(8) cap this file already applies
+        // to JD responsibilities and voice samples.
+        let brief = CoverBrief {
+            emphasis: (1..=12).map(|n| format!("item {n}")).collect(),
+            constraints: (1..=12).map(|n| format!("rule {n}")).collect(),
+            ..CoverBrief::default()
+        };
+        let input = CoverLetterInput {
+            resume: resume(),
+            jd: jd(),
+            voice_samples: Vec::new(),
+            brief: Some(brief.clone()),
+        };
+        let message = build_user_message(&input);
+        assert!(message.contains("item 8"));
+        assert!(!message.contains("item 9"));
+        assert!(message.contains("rule 8"));
+        assert!(!message.contains("rule 9"));
+
+        // The guard mirrors the same cap: a number that only appears in a
+        // truncated (never-shown-to-the-model) item is not allowed either.
+        let capped = CoverBrief {
+            emphasis: vec!["item 8".to_string()],
+            ..CoverBrief::default()
+        };
+        let uncapped_extra = CoverBrief {
+            emphasis: (1..=12)
+                .map(|n| {
+                    if n == 9 {
+                        "figure 4001".to_string()
+                    } else {
+                        format!("item {n}")
+                    }
+                })
+                .collect(),
+            ..CoverBrief::default()
+        };
+        let allowed_capped = allowed_digits(&resume(), Some(&capped));
+        let allowed_uncapped = allowed_digits(&resume(), Some(&uncapped_extra));
+        assert!(!allowed_capped.contains("4001"));
+        assert!(
+            !allowed_uncapped.contains("4001"),
+            "the 9th item is past the cap and must not widen the allowed set"
+        );
     }
 
     #[tokio::test]
