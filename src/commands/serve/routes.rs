@@ -1569,7 +1569,7 @@ pub(super) async fn generate_build_cover(id: &str, state: &AppState) -> Resp {
         sink: None,
     };
     let (letter, warnings, usage) =
-        match crate::cover::write_cover_letter(&ctx, &resume, &jd, &samples).await {
+        match crate::cover::write_cover_letter(&ctx, &resume, &jd, &samples, None).await {
             Ok(triple) => triple,
             Err(error) => return cover_error_response(error, base_url.as_deref()),
         };
