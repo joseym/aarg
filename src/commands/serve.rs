@@ -388,6 +388,7 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::DeleteBuild(id) => routes::delete_build(&id, &state).await,
             ApiRoute::SaveBuildEdits(id) => routes::save_build_edits(req, &id, &state).await,
             ApiRoute::SaveBuildTriage(id) => routes::save_build_triage(req, &id, &state).await,
+            ApiRoute::GenerateBuildCover(id) => routes::generate_build_cover(&id, &state).await,
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
             ApiRoute::Cost => routes::cost(req).await,
@@ -472,6 +473,7 @@ fn requires_json_body(route: &ApiRoute) -> bool {
             | ApiRoute::CreateBuild
             | ApiRoute::SaveBuildEdits(_)
             | ApiRoute::SaveBuildTriage(_)
+            | ApiRoute::GenerateBuildCover(_)
             | ApiRoute::FetchJd
     )
 }
@@ -545,6 +547,7 @@ enum ApiRoute {
     DeleteBuild(String),
     SaveBuildEdits(String),
     SaveBuildTriage(String),
+    GenerateBuildCover(String),
     GetBuildFile(String, String),
     FetchJd,
     Cost,
@@ -584,6 +587,9 @@ fn match_route(method: &Method, path: &str) -> Match {
             ("POST", ["builds", id, "edits"]) => Some(ApiRoute::SaveBuildEdits((*id).to_string())),
             ("POST", ["builds", id, "triage"]) => {
                 Some(ApiRoute::SaveBuildTriage((*id).to_string()))
+            }
+            ("POST", ["builds", id, "cover"]) => {
+                Some(ApiRoute::GenerateBuildCover((*id).to_string()))
             }
             ("GET", ["builds", id, "files", name]) => Some(ApiRoute::GetBuildFile(
                 (*id).to_string(),
@@ -808,6 +814,10 @@ mod tests {
         assert_eq!(
             route("POST", "/api/builds/041/triage"),
             Match::Api(ApiRoute::SaveBuildTriage("041".into()))
+        );
+        assert_eq!(
+            route("POST", "/api/builds/041/cover"),
+            Match::Api(ApiRoute::GenerateBuildCover("041".into()))
         );
         assert_eq!(
             route("GET", "/api/builds/041/files/resume.ats.pdf"),

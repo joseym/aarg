@@ -388,6 +388,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_model_cannot_supply_the_contact_or_signoff() {
+        // Never-fabricate at the structure level: even when the model's prose
+        // names a different person and company, the contact block, sign-off, and
+        // greeting are filled by code from the resume and the JD — the model has
+        // no field to inject them into. This is the honesty the `aarg cover` CLI
+        // and the `POST /api/builds/:id/cover` route both inherit unchanged.
+        let (letter, _warnings, _usage) = run(r#"{"paragraphs": [
+                "Warm regards, Charles Babbage of Difference Engines Inc."
+            ]}"#)
+        .await
+        .unwrap();
+
+        assert_eq!(letter.contact.full_name, "Ada Lovelace");
+        assert_eq!(letter.signoff, "Ada Lovelace");
+        assert_eq!(letter.greeting, "Dear Acme hiring team,");
+        assert_eq!(letter.contact.email, "ada@example.com");
+    }
+
+    #[tokio::test]
     async fn a_paragraph_that_invents_a_number_is_dropped() {
         let (letter, warnings, _usage) = run(r#"{"paragraphs": [
                 "I cut costs by 40% in my last role.",

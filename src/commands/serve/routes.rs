@@ -30,6 +30,7 @@ use crate::builds::{self, BuildError, BuildMeta};
 use crate::commands::configured_client;
 use crate::commands::tailor::{resolve_ats_template, resolve_human_template};
 use crate::config::Config;
+use crate::cover::CoverLetter;
 use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
 use crate::dataset::validate;
@@ -1465,6 +1466,166 @@ pub(super) async fn save_build_triage(req: Request<Incoming>, id: &str, state: &
 }
 
 // ---------------------------------------------------------------------
+// POST /api/builds/:id/cover — draft (or redraft) a cover letter server-side
+// ---------------------------------------------------------------------
+
+/// The `POST /api/builds/:id/cover` success body: the drafted letter (so the
+/// browser can show it at once), any never-fabricate warnings the draft raised,
+/// the persisted PDF filename the pixel preview fetches, and the model + token
+/// usage for a cost line. The letter's `contact` block and `signoff` are the
+/// resume's, filled by code inside the agent — never the model's — so the same
+/// honesty posture `aarg cover` has carries over unchanged.
+#[derive(Serialize)]
+struct GenerateCoverResponse {
+    letter: CoverLetter,
+    warnings: Vec<String>,
+    pdf: String,
+    model: String,
+    usage: TokenUsage,
+}
+
+/// `POST /api/builds/:id/cover` — draft a cover letter for an existing build and
+/// render it into the build directory: the browser's way into the same
+/// [`CoverLetterAgent`](crate::cover::CoverLetterAgent) the CLI's `aarg cover`
+/// runs. Loads the build's canonical resume and JD (the evidence-traced facts
+/// the letter is grounded in) plus the dataset's voice samples for tone, spends
+/// the key through [`configured_client`] (like `/api/llm` — this is the one
+/// build route that does), runs the agent, then renders `cover_letter.pdf` on a
+/// blocking thread (the `typst` subprocess + file writes). Regenerating simply
+/// overwrites the build's prior cover in place.
+///
+/// Because it spends the key, this route sits behind the same content-type gate
+/// `/api/llm` does (see `serve::requires_json_body`), which is what keeps a
+/// drive-by cross-origin POST from triggering a paid draft. The request body is
+/// ignored — the build id is the whole input.
+pub(super) async fn generate_build_cover(id: &str, state: &AppState) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    // Fail fast with the install message if typst is absent, before spending the
+    // key on a draft that could never render — the same gate create_build uses.
+    if let Err(error) = render::ensure_available() {
+        return render_error_response(error);
+    }
+
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    // The resume and JD the letter is grounded in come straight off the build; a
+    // build missing either cannot have a letter drawn honestly from it, so an
+    // absent artifact is a 404 that names it (via `read_artifact`'s message).
+    let resume: TailoredResume = match crate::history::read_artifact(id, "canonical.json") {
+        Ok(resume) => resume,
+        Err(error) => return error_response(404, "not_found", error.to_string()),
+    };
+    let jd: JobRequirements = match crate::history::read_artifact(id, "jd.json") {
+        Ok(jd) => jd,
+        Err(error) => return error_response(404, "not_found", error.to_string()),
+    };
+    // Voice samples only anchor tone, so they're optional: a workspace with no
+    // dataset yet drafts plainly rather than failing. A dataset that exists but
+    // won't read is a real 500.
+    let samples: Vec<String> = match store::load() {
+        Ok(dataset) => dataset
+            .voice_samples
+            .iter()
+            .map(|sample| sample.text.clone())
+            .collect(),
+        Err(store::DatasetError::NotFound { .. }) => Vec::new(),
+        Err(error) => return error_response(500, "dataset_error", error.to_string()),
+    };
+
+    // Spend the key through the same credential resolution the CLI and /api/llm
+    // use; a credential problem is a 503 the browser can't fix, never a leak of
+    // what the key is. A local provider with no model named is a distinct 503.
+    let (client, config) = match configured_client().await {
+        Ok(pair) => pair,
+        Err(error) => {
+            let kind = match &error {
+                crate::commands::CliError::MissingLocalModel { .. } => "no_model",
+                _ => "no_credentials",
+            };
+            return error_response(503, kind, error_chain(&error));
+        }
+    };
+    let base_url = config.active_base_url().map(str::to_string);
+    let model = config
+        .active_resolver()
+        .resolve("cover_letter_v1", crate::agent::ModelTier::Mid)
+        .to_string();
+
+    // Trace to the workspace like the CLI does; a workspace with no data dir just
+    // means no trace, never a failed request.
+    let tracer = crate::commands::default_tracer().unwrap_or(crate::trace::Tracer::DISABLED);
+    let ctx = crate::agent::AgentContext {
+        llm: &*client,
+        model: config.active_resolver(),
+        tracer: &tracer,
+        sink: None,
+    };
+    let (letter, warnings, usage) =
+        match crate::cover::write_cover_letter(&ctx, &resume, &jd, &samples).await {
+            Ok(triple) => triple,
+            Err(error) => return cover_error_response(error, base_url.as_deref()),
+        };
+
+    // Render + persist off the async worker (the `typst` subprocess and file
+    // writes are blocking), serialized through the build-write mutex so it can't
+    // race a delete of the same build. `render_cover` writes `cover_letter.pdf`
+    // and `cover_payload.json` into the build dir, overwriting any prior cover.
+    // The LLM call above already finished, so the lock is held only for the brief
+    // render, not across the network round-trip.
+    let letter_for_render = letter.clone();
+    let _guard = state.build_write.lock().await;
+    let rendered = tokio::task::spawn_blocking(move || {
+        render::render_cover(&dir, &letter_for_render, &render::Template::cover())
+    })
+    .await;
+    match rendered {
+        Ok(Ok(pdf)) => {
+            let pdf = pdf
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("cover_letter.pdf")
+                .to_string();
+            json_response(
+                200,
+                &GenerateCoverResponse {
+                    letter,
+                    warnings,
+                    pdf,
+                    model,
+                    usage,
+                },
+            )
+        }
+        Ok(Err(error)) => render_error_response(error),
+        Err(join) => error_response(
+            500,
+            "internal",
+            format!("the cover render task did not complete: {join}"),
+        ),
+    }
+}
+
+/// Map a [`crate::cover::CoverLetterError`] to a response. An LLM failure gets
+/// the exact shape `/api/llm` produces (via [`llm_error_response`]), so the
+/// browser's existing non-2xx handling covers it unchanged; a malformed or empty
+/// model reply is the upstream model's fault, not the client's, so it's a 502.
+/// No message carries key material.
+fn cover_error_response(error: crate::cover::CoverLetterError, base_url: Option<&str>) -> Resp {
+    match error {
+        crate::cover::CoverLetterError::Llm(error) => llm_error_response(error, base_url),
+        other => error_response(502, "cover_failed", other.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------
 // POST /api/fetch-jd — fetch a cross-origin posting server-side
 // ---------------------------------------------------------------------
 
@@ -2037,6 +2198,44 @@ mod tests {
     async fn get_build_file_rejects_a_bad_filename_before_touching_disk() {
         let resp = get_build_file("041", "../../secret").await;
         assert_eq!(resp.status(), 400);
+    }
+
+    /// A throwaway `AppState` for a handler test that never touches the static
+    /// source or a real socket — only the write mutexes and the bound port are
+    /// ever read on these paths.
+    fn test_state() -> AppState {
+        use std::sync::Arc;
+        AppState {
+            source: super::super::StaticSource::None,
+            dataset_write: Arc::new(tokio::sync::Mutex::new(())),
+            build_write: Arc::new(tokio::sync::Mutex::new(())),
+            bound_port: 0,
+            allowed_hosts: Arc::new(Vec::new()),
+        }
+    }
+
+    /// The cover route guards its id exactly like the other build routes: a
+    /// traversal-shaped id is a 404 raised before any disk read, any keychain
+    /// touch, or any key spend — the same gate that protects `get_build`.
+    #[tokio::test]
+    async fn generate_build_cover_rejects_a_non_numeric_id() {
+        let resp = generate_build_cover("../etc", &test_state()).await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    /// An LLM failure from the cover agent is mapped to the same status the
+    /// `/api/llm` route would give it (a missing key is a 503), so the browser's
+    /// existing error handling covers this route too; a malformed or empty model
+    /// reply is a 502 upstream error, never a leak of key material.
+    #[test]
+    fn cover_error_response_mirrors_the_llm_route_and_502s_a_bad_reply() {
+        let missing = crate::cover::CoverLetterError::Llm(LlmError::MissingApiKey {
+            provider: "anthropic".into(),
+        });
+        assert_eq!(cover_error_response(missing, None).status(), 503);
+
+        let empty = crate::cover::CoverLetterError::Empty;
+        assert_eq!(cover_error_response(empty, None).status(), 502);
     }
 
     #[test]
