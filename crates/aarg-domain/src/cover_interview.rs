@@ -70,12 +70,14 @@ pub enum CoverInterviewError {
 pub struct CoverBrief {
     /// The overall narrative the letter should take, in the candidate's
     /// own words (e.g. "position me as a builder who scales teams, not
-    /// just an IC").
+    /// just an IC"). A follow-up answer is appended to, never overwrites,
+    /// whatever the candidate already said for this topic.
     pub angle: Option<String>,
     /// Specific things from their background the candidate wants the
     /// letter to lead with. Empty if they had nothing to add.
     pub emphasis: Vec<String>,
     /// How the letter should sound (e.g. "direct, a little informal").
+    /// Appended to, not overwritten, on a follow-up answer.
     pub tone: Option<String>,
     /// Why this role, at this company — the one thing genuinely not on a
     /// résumé, and the reason this interview exists rather than letting a
@@ -147,12 +149,27 @@ impl Slot {
     /// place a `CoverBrief` field is ever written.
     fn record(self, brief: &mut CoverBrief, answer: String) {
         match self {
-            Slot::Angle => brief.angle = Some(answer),
+            Slot::Angle => append_scalar(&mut brief.angle, answer),
             Slot::Emphasis => brief.emphasis.push(answer),
-            Slot::Tone => brief.tone = Some(answer),
-            Slot::Motivation => brief.motivation = Some(answer),
+            Slot::Tone => append_scalar(&mut brief.tone, answer),
+            Slot::Motivation => append_scalar(&mut brief.motivation, answer),
             Slot::Constraints => brief.constraints.push(answer),
         }
+    }
+}
+
+/// Merge a second answer for the same scalar slot instead of discarding
+/// the first. A follow-up turn produces a second, genuinely additional
+/// answer about the same topic - not a correction of the first - so both
+/// must survive verbatim in the final brief; joined on their own line so
+/// they stay readable and distinguishable downstream.
+fn append_scalar(field: &mut Option<String>, answer: String) {
+    match field {
+        Some(existing) => {
+            existing.push('\n');
+            existing.push_str(&answer);
+        }
+        None => *field = Some(answer),
     }
 }
 
@@ -451,6 +468,17 @@ mod tests {
         assert!(QUESTION_PROMPT.contains("NEVER propose, supply, or imply the answer"));
     }
 
+    #[test]
+    fn record_merges_a_second_answer_into_a_scalar_slot_instead_of_overwriting() {
+        let mut brief = CoverBrief::default();
+        Slot::Angle.record(&mut brief, "lead with reliability".into());
+        Slot::Angle.record(&mut brief, "also mention the regulatory background".into());
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("lead with reliability\nalso mention the regulatory background")
+        );
+    }
+
     #[tokio::test]
     async fn a_full_interview_records_only_the_users_answers() {
         let mock = MockLlmClient::default();
@@ -498,6 +526,34 @@ mod tests {
         // Nothing from the mock's own question text ever lands in the brief.
         assert!(!brief.angle.as_deref().unwrap().contains("Lead with scale"));
         assert!(!brief.emphasis[0].contains("should this letter highlight"));
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_answer_on_a_scalar_slot_is_preserved_alongside_the_first() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#); // opening
+        mock.enqueue(r#"{"question": "Anything else about the angle?"}"#); // thin answer -> follow-up
+        mock.enqueue(r#"{"question": ""}"#); // now satisfied
+        // The other four topics resolve immediately with nothing more to say.
+        for _ in 0..4 {
+            mock.enqueue(r#"{"question": ""}"#);
+        }
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("lead with the reliability angle".into()));
+        user.answer(Answer::Text(
+            "also mention the regulatory build-out work".into(),
+        ));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // Both answers survive - the second doesn't silently discard the first.
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("lead with the reliability angle\nalso mention the regulatory build-out work")
+        );
     }
 
     #[tokio::test]
