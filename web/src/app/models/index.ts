@@ -11,3 +11,4 @@ export * from './dataset';
 export * from './llm';
 export * from './build';
 export * from './cost';
+export * from './cover';
