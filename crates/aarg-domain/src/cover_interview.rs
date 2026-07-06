@@ -691,13 +691,22 @@ pub async fn run_cover_interview(
         // skipping, or getting no honest suggestion falls through to (or
         // past) the interview below, which is otherwise unchanged.
         if slot.suggestible() {
-            match cover_suggest_flow(ctx, slot, jd, resume, user, &mut asked).await? {
-                Some(CoverSuggestOutcome::Accepted(text)) => {
+            // Matched rather than `?`-propagated: a decline on the suggestion
+            // menu itself (the "End session" bail-out, or an equivalent
+            // dismissal over the browser bridge) is an `AskError` from
+            // `cover_suggest_flow`'s own `user.ask` calls, and this function's
+            // contract (see its doc comment) is to degrade to the partial
+            // brief on ANY ask failure partway through — not just one in the
+            // plain question loop below. Propagating here would drop
+            // whatever earlier slots already recorded.
+            match cover_suggest_flow(ctx, slot, jd, resume, user, &mut asked).await {
+                Ok(Some(CoverSuggestOutcome::Accepted(text))) => {
                     slot.record(&mut brief, text);
                     continue;
                 }
-                Some(CoverSuggestOutcome::Skip) => continue,
-                Some(CoverSuggestOutcome::OwnWords) | None => {}
+                Ok(Some(CoverSuggestOutcome::Skip)) => continue,
+                Ok(Some(CoverSuggestOutcome::OwnWords)) | Ok(None) => {}
+                Err(_) => return Ok(brief), // abandoned interview: keep what's gathered
             }
             if asked >= MAX_QUESTIONS {
                 break;
@@ -1111,6 +1120,39 @@ mod tests {
         assert_eq!(
             brief.angle.as_deref(),
             Some("lead with the reliability angle")
+        );
+        assert!(brief.emphasis.is_empty());
+    }
+
+    #[tokio::test]
+    async fn abandoning_a_suggestion_menu_keeps_the_earlier_slots_answers() {
+        // Angle is answered in full (a declined suggestion, then a plain
+        // interview answer). Emphasis then gets a real suggestion, but the
+        // user abandons it - the browser bridge maps a dismissed suggestion
+        // menu to an `ask` failure (see `bridge::ask_over_js`'s `abort`
+        // handling), not a declined-with-a-menu-shown outcome. That failure
+        // happens INSIDE `cover_suggest_flow`, one slot after angle already
+        // recorded something - proving the fix keeps angle's answer instead
+        // of losing it to a propagated error.
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
+        mock.enqueue(r#"{"question": ""}"#);
+        mock.enqueue(r#"{"suggestion": "you might lead with your incident response work"}"#);
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("lead with the reliability angle".into()));
+        // No Choice queued for emphasis's suggestion menu: `ScriptedUser::ask`
+        // fails `NotInteractive`, the same shape a dismissed browser modal
+        // produces.
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("lead with the reliability angle"),
+            "angle's answer must survive a later slot's abandoned suggestion menu"
         );
         assert!(brief.emphasis.is_empty());
     }
