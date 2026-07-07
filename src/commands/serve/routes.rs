@@ -1528,6 +1528,50 @@ fn cover_brief_is_empty(brief: &CoverBrief) -> bool {
         && brief.constraints.is_empty()
 }
 
+/// Merge a freshly-drafted interview brief into whatever brief is already on
+/// disk, rather than letting one replace the other outright — the fix for a
+/// silent-erasure bug: the browser's "Draft with copilot" runs a fresh
+/// interview every time (unlike the CLI's `interview_brief`, which offers to
+/// reuse a saved brief first), so an unconditional overwrite discarded any
+/// entry a prior "confirm as evidence" action had appended.
+///
+/// `emphasis`/`constraints` are unioned: every existing entry survives, then
+/// any `new` entry not already present (compared with [`normalize_for_dedup`],
+/// the same near-duplicate-safe comparison [`confirm_cover_evidence_in`]
+/// uses) is appended after it. `angle`/`tone`/`motivation` prefer `new`'s
+/// value when the new interview actually answered that question (a non-blank
+/// string); otherwise the existing value survives — so a fresh interview run
+/// that skipped a topic can never silently blank out what an earlier session
+/// recorded for it.
+fn merge_cover_briefs(existing: CoverBrief, new: CoverBrief) -> CoverBrief {
+    fn merge_scalar(existing: Option<String>, new: Option<String>) -> Option<String> {
+        match new {
+            Some(value) if !value.trim().is_empty() => Some(value),
+            _ => existing,
+        }
+    }
+    fn merge_list(existing: Vec<String>, new: Vec<String>) -> Vec<String> {
+        let mut merged = existing;
+        for text in new {
+            let normalized = normalize_for_dedup(&text);
+            if !merged
+                .iter()
+                .any(|entry| normalize_for_dedup(entry) == normalized)
+            {
+                merged.push(text);
+            }
+        }
+        merged
+    }
+    CoverBrief {
+        angle: merge_scalar(existing.angle, new.angle),
+        emphasis: merge_list(existing.emphasis, new.emphasis),
+        tone: merge_scalar(existing.tone, new.tone),
+        motivation: merge_scalar(existing.motivation, new.motivation),
+        constraints: merge_list(existing.constraints, new.constraints),
+    }
+}
+
 /// Persist a non-empty interview brief to `cover_brief.json` in `dir`, the
 /// piece `generate_build_cover` was missing: it drafted from a request-body
 /// `brief` but never saved it, so a browser-drafted letter had no saved brief
@@ -1537,13 +1581,21 @@ fn cover_brief_is_empty(brief: &CoverBrief) -> bool {
 /// which writes `cover_brief.json` next to a build's other artifacts) so a
 /// build carries the same recoverable brief regardless of which surface drafted
 /// it. An absent or empty brief is left unwritten — nothing to recover.
+///
+/// Merges with whatever brief is already on disk ([`merge_cover_briefs`])
+/// rather than overwriting it, so a paragraph confirmed as evidence earlier
+/// (via `confirm_cover_evidence`) survives a later "Draft with copilot" run.
 fn persist_cover_brief_if_present(
     dir: &std::path::Path,
     brief: Option<&CoverBrief>,
 ) -> Result<(), BuildError> {
     match brief {
         Some(brief) if !cover_brief_is_empty(brief) => {
-            builds::write_json(dir, "cover_brief.json", brief)
+            let existing: CoverBrief = read_json_artifact(&dir.join("cover_brief.json"))
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default();
+            let merged = merge_cover_briefs(existing, brief.clone());
+            builds::write_json(dir, "cover_brief.json", &merged)
         }
         _ => Ok(()),
     }
@@ -2503,6 +2555,57 @@ mod tests {
         let stored: CoverBrief =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(stored, brief);
+    }
+
+    /// The silent-erasure bug: a paragraph confirmed as evidence (simulating
+    /// `confirm_cover_evidence`'s append) must survive a later "Draft with
+    /// copilot" run, whose fresh interview brief is persisted through the same
+    /// `persist_cover_brief_if_present` path. Confirms the merge, not an
+    /// overwrite: the first interview's `emphasis` entry is still present
+    /// alongside the second interview's own answers, and the second
+    /// interview's `angle` updates the field the first left blank.
+    #[test]
+    fn persist_cover_brief_if_present_merges_with_a_previously_confirmed_brief() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Simulates the "confirm as evidence" flow: an entry already on disk
+        // before any copilot interview runs.
+        let confirmed = CoverBrief {
+            emphasis: vec!["shipped ChessCoach, a chess training app".into()],
+            ..CoverBrief::default()
+        };
+        builds::write_json(&dir, "cover_brief.json", &confirmed).unwrap();
+
+        // A second, distinct copilot interview drafts and persists its own
+        // brief, unaware of the confirmed entry.
+        let second_interview = CoverBrief {
+            angle: Some("lead with reliability work".into()),
+            emphasis: vec!["led the incident response program".into()],
+            ..CoverBrief::default()
+        };
+        persist_cover_brief_if_present(&dir, Some(&second_interview)).unwrap();
+
+        let stored: CoverBrief =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("cover_brief.json")).unwrap())
+                .unwrap();
+        // The first entry survives...
+        assert!(
+            stored
+                .emphasis
+                .contains(&"shipped ChessCoach, a chess training app".to_string())
+        );
+        // ...alongside the second interview's own emphasis entry...
+        assert!(
+            stored
+                .emphasis
+                .contains(&"led the incident response program".to_string())
+        );
+        assert_eq!(stored.emphasis.len(), 2);
+        // ...and a singular field the first interview never answered is
+        // updated by the second.
+        assert_eq!(stored.angle.as_deref(), Some("lead with reliability work"));
     }
 
     /// `cover_brief` follows the same best-effort convention `cover_payload`
