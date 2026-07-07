@@ -261,6 +261,65 @@ fn brief_block(brief: Option<&CoverBrief>) -> Option<String> {
     ))
 }
 
+/// The structural half of the cover-letter never-fabricate guard, as one
+/// predicate: a paragraph may stand only when every number it states is in
+/// `allowed` (the figures the resume and brief carry). Both the generation
+/// path ([`assemble`]) and the hand-edit save path
+/// ([`guard_edited_paragraphs`]) call this one function, so the rule the two
+/// enforce can never drift apart.
+fn paragraph_digits_are_backed(para: &str, allowed: &HashSet<String>) -> bool {
+    digit_runs(para).is_subset(allowed)
+}
+
+/// Re-run [`assemble`]'s digit guard over a set of hand-edited `paragraphs` —
+/// the same structural never-fabricate check a fresh draft passes, applied to
+/// a candidate's own edit. A paragraph that introduces a number neither
+/// `resume` nor `brief` states is dropped (not rewritten), exactly as
+/// generation drops one; an empty paragraph is skipped; every survivor is
+/// trimmed and em-dash-normalized the way [`write_cover_letter`] normalizes a
+/// generated letter. Returns the surviving paragraphs and a warning naming
+/// each one dropped.
+///
+/// This is the hard gate the browser's "save edited paragraphs" route (and any
+/// future CLI edit) shares with generation, so a hand-edit can never smuggle in
+/// a fabricated figure the generator itself would have refused. Unlike the
+/// informational per-paragraph provenance status (see [`crate::cover_provenance`]),
+/// this one rejects.
+pub fn guard_edited_paragraphs(
+    resume: &TailoredResume,
+    brief: Option<&CoverBrief>,
+    paragraphs: &[String],
+) -> GuardedParagraphs {
+    let allowed = allowed_digits(resume, brief);
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for para in paragraphs {
+        let para = crate::tailor::normalize_dashes(para.trim());
+        if para.is_empty() {
+            continue;
+        }
+        if paragraph_digits_are_backed(&para, &allowed) {
+            kept.push(para);
+        } else {
+            dropped.push(format!(
+                "dropped a paragraph that introduced a figure your evidence doesn't state: {:?}",
+                snippet(&para)
+            ));
+        }
+    }
+    GuardedParagraphs { kept, dropped }
+}
+
+/// The result of re-applying the digit guard to hand-edited paragraphs: the
+/// ones that passed (trimmed, em-dash-normalized, in order) and a human
+/// warning for each one dropped because it stated a figure the evidence
+/// doesn't back.
+#[derive(Debug, Clone)]
+pub struct GuardedParagraphs {
+    pub kept: Vec<String>,
+    pub dropped: Vec<String>,
+}
+
 /// Assemble the model's paragraphs into a finished letter, enforcing
 /// never-fabricate structurally: a paragraph that introduces a number
 /// neither the resume nor the interview brief states is dropped (there is
@@ -279,7 +338,7 @@ fn assemble(
         if para.is_empty() {
             continue;
         }
-        if digit_runs(&para).is_subset(&allowed) {
+        if paragraph_digits_are_backed(&para, &allowed) {
             paragraphs.push(para);
         } else {
             warnings.push(format!(
@@ -635,6 +694,56 @@ mod tests {
             !allowed_uncapped.contains("4001"),
             "the 9th item is past the cap and must not widen the allowed set"
         );
+    }
+
+    #[test]
+    fn guard_edited_paragraphs_drops_an_invented_number_and_keeps_a_backed_one() {
+        // The hand-edit save path enforces the exact same digit guard generation
+        // does: a paragraph stating a figure the résumé and brief don't carry is
+        // dropped; one whose only figure ("12") is a résumé number survives.
+        let paras = vec![
+            "I led a team of 12 engineers at Analytical Engines.".to_string(),
+            "I cut costs by 40% in a role nobody recorded.".to_string(),
+        ];
+        let guarded = guard_edited_paragraphs(&resume(), None, &paras);
+        assert_eq!(guarded.kept.len(), 1);
+        assert!(guarded.kept[0].contains("12 engineers"));
+        assert_eq!(guarded.dropped.len(), 1);
+        assert!(
+            guarded.dropped[0].contains("introduced a figure"),
+            "got: {:?}",
+            guarded.dropped
+        );
+    }
+
+    #[test]
+    fn guard_edited_paragraphs_skips_blanks_and_normalizes_dashes() {
+        // Empty paragraphs are dropped silently (no warning), and a survivor's
+        // em-dash is normalized the way a generated letter's is — so a hand-edit
+        // can't reintroduce the AI-writing tell generation strips.
+        let paras = vec![
+            "   ".to_string(),
+            "I led the reliability work — and shipped it.".to_string(),
+        ];
+        let guarded = guard_edited_paragraphs(&resume(), None, &paras);
+        assert_eq!(guarded.kept.len(), 1);
+        assert!(!guarded.kept[0].contains('—'), "got: {:?}", guarded.kept);
+        assert!(guarded.dropped.is_empty());
+    }
+
+    #[test]
+    fn guard_edited_paragraphs_allows_a_brief_number() {
+        // A figure the candidate recorded in the interview brief is not invented,
+        // so an edited paragraph using it stands — the same widening `assemble`
+        // and the provenance check give the brief.
+        let brief = CoverBrief {
+            emphasis: vec!["a 25% cut in incident response time".into()],
+            ..CoverBrief::default()
+        };
+        let paras = vec!["I drove a 25% cut in incident response time.".to_string()];
+        let guarded = guard_edited_paragraphs(&resume(), Some(&brief), &paras);
+        assert_eq!(guarded.kept.len(), 1);
+        assert!(guarded.dropped.is_empty());
     }
 
     #[tokio::test]
