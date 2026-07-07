@@ -394,6 +394,9 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::ConfirmCoverEvidence(id) => {
                 routes::confirm_cover_evidence(req, &id, &state).await
             }
+            ApiRoute::SaveBuildCoverPayload(id) => {
+                routes::save_build_cover_payload(req, &id, &state).await
+            }
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
             ApiRoute::Cost => routes::cost(req).await,
@@ -480,6 +483,7 @@ fn requires_json_body(route: &ApiRoute) -> bool {
             | ApiRoute::SaveBuildTriage(_)
             | ApiRoute::GenerateBuildCover(_)
             | ApiRoute::ConfirmCoverEvidence(_)
+            | ApiRoute::SaveBuildCoverPayload(_)
             | ApiRoute::FetchJd
     )
 }
@@ -555,6 +559,7 @@ enum ApiRoute {
     SaveBuildTriage(String),
     GenerateBuildCover(String),
     ConfirmCoverEvidence(String),
+    SaveBuildCoverPayload(String),
     GetBuildFile(String, String),
     FetchJd,
     Cost,
@@ -600,6 +605,9 @@ fn match_route(method: &Method, path: &str) -> Match {
             }
             ("POST", ["builds", id, "cover-brief"]) => {
                 Some(ApiRoute::ConfirmCoverEvidence((*id).to_string()))
+            }
+            ("PUT", ["builds", id, "cover-payload"]) => {
+                Some(ApiRoute::SaveBuildCoverPayload((*id).to_string()))
             }
             ("GET", ["builds", id, "files", name]) => Some(ApiRoute::GetBuildFile(
                 (*id).to_string(),
@@ -832,6 +840,10 @@ mod tests {
         assert_eq!(
             route("POST", "/api/builds/041/cover-brief"),
             Match::Api(ApiRoute::ConfirmCoverEvidence("041".into()))
+        );
+        assert_eq!(
+            route("PUT", "/api/builds/041/cover-payload"),
+            Match::Api(ApiRoute::SaveBuildCoverPayload("041".into()))
         );
         assert_eq!(
             route("GET", "/api/builds/041/files/resume.ats.pdf"),
