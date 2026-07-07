@@ -1,0 +1,15 @@
+#!/bin/sh
+# Blocks a commit that stages anything under docs/demo/ containing a
+# denylisted term (docs/demo/denylist.txt) -- real name, contact info, or
+# former employer that has no business in the committed demo fixture.
+# Fast local feedback; CI (.github/workflows/ci.yml) runs the same scan as
+# the actual enforcement, since this hook only protects a clone where it
+# was installed. Install once per clone:
+#   cp scripts/hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+
+root=$(git rev-parse --show-toplevel)
+staged=$(git diff --cached --name-only --diff-filter=ACM -- docs/demo/ | tr '\n' '\0')
+[ -z "$staged" ] && exit 0
+
+printf '%s' "$staged" | xargs -0 python3 "$root/scripts/pii-scan.py"
