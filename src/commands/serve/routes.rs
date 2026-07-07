@@ -686,6 +686,12 @@ fn get_build_in(root: &Path, id: &str) -> Resp {
         // a résumé alone — so a later editing view has the structured data to
         // feed the provenance checker without re-parsing the PDF.
         ("cover_payload", "cover_payload.json"),
+        // The persisted cover-letter interview brief, when either surface saved
+        // one for this build (the CLI's `aarg cover --interactive`, the
+        // browser's "Draft with copilot", or a paragraph confirmed as evidence
+        // via `POST .../cover-brief`). Feeds the Editing view's local
+        // provenance re-check as grounding, the same way it grounds a draft.
+        ("cover_brief", "cover_brief.json"),
     ] {
         if let Some(value) = read_json_artifact(&dir.join(file)) {
             obj.insert(key.into(), value);
@@ -1507,6 +1513,42 @@ struct GenerateCoverRequest {
     brief: Option<CoverBrief>,
 }
 
+/// Whether a `CoverBrief` carries nothing at all — every scalar blank, both
+/// lists empty. Mirrors the browser's own `isEmptyBrief` exactly (see
+/// `cover-view.ts`), so an interview the person backed out of before answering
+/// anything is never written to disk as a brief with nothing in it.
+fn cover_brief_is_empty(brief: &CoverBrief) -> bool {
+    fn blank(value: &Option<String>) -> bool {
+        value.as_deref().map(str::trim).unwrap_or("").is_empty()
+    }
+    blank(&brief.angle)
+        && brief.emphasis.is_empty()
+        && blank(&brief.tone)
+        && blank(&brief.motivation)
+        && brief.constraints.is_empty()
+}
+
+/// Persist a non-empty interview brief to `cover_brief.json` in `dir`, the
+/// piece `generate_build_cover` was missing: it drafted from a request-body
+/// `brief` but never saved it, so a browser-drafted letter had no saved brief
+/// to recover later, and a fact recorded only in the "Draft with copilot"
+/// interview could never ground a later provenance re-check (it had nothing to
+/// read). Mirrors the CLI's own save (`commands::cover::interview_brief`,
+/// which writes `cover_brief.json` next to a build's other artifacts) so a
+/// build carries the same recoverable brief regardless of which surface drafted
+/// it. An absent or empty brief is left unwritten — nothing to recover.
+fn persist_cover_brief_if_present(
+    dir: &std::path::Path,
+    brief: Option<&CoverBrief>,
+) -> Result<(), BuildError> {
+    match brief {
+        Some(brief) if !cover_brief_is_empty(brief) => {
+            builds::write_json(dir, "cover_brief.json", brief)
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `POST /api/builds/:id/cover` — draft a cover letter for an existing build and
 /// render it into the build directory: the browser's way into the same
 /// [`CoverLetterAgent`](crate::cover::CoverLetterAgent) the CLI's `aarg cover`
@@ -1526,7 +1568,10 @@ struct GenerateCoverRequest {
 /// `cover_interview_interactive` session (the browser's cover-letter copilot)
 /// and is handed straight to `write_cover_letter` as grounding; every string it
 /// carries already passed that interview's own never-fabricate guard (see
-/// `cover_interview`'s module doc), so this route adds no new claim path.
+/// `cover_interview`'s module doc), so this route adds no new claim path. A
+/// non-empty `brief` is also persisted to the build's `cover_brief.json`
+/// ([`persist_cover_brief_if_present`]) before the draft is spent, so the
+/// interview survives the request regardless of how the draft itself turns out.
 pub(super) async fn generate_build_cover(
     req: Request<Incoming>,
     id: &str,
@@ -1567,6 +1612,12 @@ pub(super) async fn generate_build_cover(
     let dir = root.join(id);
     if !dir.is_dir() {
         return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    // Save a non-empty brief before spending the key: the interview it came
+    // from is worth recovering even if the draft below fails.
+    if let Err(error) = persist_cover_brief_if_present(&dir, brief.as_ref()) {
+        return error_response(500, "build_error", error.to_string());
     }
 
     // The resume and JD the letter is grounded in come straight off the build; a
@@ -2302,6 +2353,71 @@ mod tests {
         assert_eq!(
             body["cover_payload"]["paragraphs"][0],
             "I would love to build things."
+        );
+    }
+
+    /// A non-empty brief is written verbatim; an empty one (every field blank,
+    /// both lists empty — the shape an abandoned interview yields) and an
+    /// absent one are both left unwritten. This is the disk-touching core of
+    /// the brief-persistence fix `generate_build_cover` was missing.
+    #[test]
+    fn persist_cover_brief_if_present_writes_only_a_non_empty_brief() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover_brief.json");
+
+        // No brief at all: nothing written.
+        persist_cover_brief_if_present(&dir, None).unwrap();
+        assert!(!path.exists());
+
+        // An entirely empty brief (an abandoned interview): still nothing.
+        persist_cover_brief_if_present(&dir, Some(&CoverBrief::default())).unwrap();
+        assert!(!path.exists());
+
+        // A brief with even one answer is written verbatim.
+        let brief = CoverBrief {
+            angle: Some("position me as a builder, not just an IC".into()),
+            ..CoverBrief::default()
+        };
+        persist_cover_brief_if_present(&dir, Some(&brief)).unwrap();
+        let stored: CoverBrief =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored, brief);
+    }
+
+    /// `cover_brief` follows the same best-effort convention `cover_payload`
+    /// does: present when `cover_brief.json` is on disk (whether the CLI, the
+    /// copilot interview, or a "confirm as evidence" action wrote it), quietly
+    /// absent otherwise — so the Editing view's re-check can thread it in as
+    /// grounding the moment a build has one.
+    #[tokio::test]
+    async fn get_build_includes_cover_brief_when_present_and_omits_it_when_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        builds::write_json(&dir, "jd.json", &json!({})).unwrap();
+
+        let resp = get_build_in(root.path(), "001");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body.get("cover_brief").is_none(),
+            "unexpected cover_brief: {body:?}"
+        );
+
+        let brief = CoverBrief {
+            emphasis: vec!["shipped ChessCoach, a chess training app".into()],
+            ..CoverBrief::default()
+        };
+        builds::write_json(&dir, "cover_brief.json", &brief).unwrap();
+
+        let resp = get_build_in(root.path(), "001");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["cover_brief"]["emphasis"][0],
+            "shipped ChessCoach, a chess training app"
         );
     }
 

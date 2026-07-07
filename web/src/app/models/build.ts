@@ -8,7 +8,7 @@ import type { GapReport } from './gap';
 import type { AdversarialReport } from './review';
 import type { AtsReport } from './ats';
 import type { VariantPayload } from './variant';
-import type { CoverLetter } from './cover';
+import type { CoverBrief, CoverLetter } from './cover';
 
 /** `meta.json`: how a build was produced. */
 export interface BuildMeta {
@@ -66,6 +66,13 @@ export interface BuildDetail {
    *  its rendered PDF (`GET .../files/cover_letter.pdf`). Absent for a build
    *  that has a tailored résumé but no cover letter drafted yet. */
   cover_payload?: CoverLetter;
+  /** The persisted cover-letter interview brief (`cover_brief.json`), when
+   *  either surface saved one for this build — the CLI's
+   *  `aarg cover --interactive`, the browser's "Draft with copilot", or a
+   *  paragraph confirmed as evidence in the Editing view. Feeds the Editing
+   *  view's local `checkCoverProvenance` re-check as grounding, the same way
+   *  it grounds a fresh draft. Absent for a build with no saved brief. */
+  cover_brief?: CoverBrief;
   /** Per-build objection triage (`triage.json`): the objection ids left for now.
    *  Always present (empty when the build has no triage file yet), so the
    *  workspace seeds its "left" set without a missing-key branch. */
