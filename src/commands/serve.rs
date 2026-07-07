@@ -830,6 +830,10 @@ mod tests {
             Match::Api(ApiRoute::GenerateBuildCover("041".into()))
         );
         assert_eq!(
+            route("POST", "/api/builds/041/cover-brief"),
+            Match::Api(ApiRoute::ConfirmCoverEvidence("041".into()))
+        );
+        assert_eq!(
             route("GET", "/api/builds/041/files/resume.ats.pdf"),
             Match::Api(ApiRoute::GetBuildFile(
                 "041".into(),
