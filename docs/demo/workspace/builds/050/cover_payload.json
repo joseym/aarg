@@ -1,0 +1,23 @@
+{
+  "contact": {
+    "full_name": "Sam Rivera",
+    "email": "sam.rivera@example.com",
+    "phone": "(555) 010-1974",
+    "location": "Remote (US)",
+    "links": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/sam-rivera-dev"
+      }
+    ]
+  },
+  "company": "Northwind Labs",
+  "title": "Engineering Manager, Billing Platform",
+  "greeting": "Dear Northwind Labs hiring team,",
+  "paragraphs": [
+    "At Meridian Logistics, I built the engineering organization from one person to 20+ engineers, defining the technical foundation and processes for a regulated fintech platform. I designed the backend systems and processes, including the TypeScript microservice framework and PostgreSQL schemas, and established the CI/CD pipelines and code review standards that enabled scalable, compliant development.",
+    "I led release management across four engineering teams, implementing a bi-weekly release cadence and aligning with regulatory milestones like custody launch and clearing approval. I also managed cross-functional incident response, ensuring technical investigations and coordination resolved issues in a high-compliance environment where platform failures had direct regulatory risk.",
+    "In change management, I coordinated audit readiness by drafting responses, conducting least-privilege access reviews, and converting audit findings into remediation items. I emphasized operational rigor by embedding tech debt cleanup into every sprint and maintaining a stable codebase across a growing team in a regulated setting. These experiences align with the responsibilities of leading Northwind Labs’s billing platform, particularly in areas like data integrity, compliance, and cross-functional collaboration."
+  ],
+  "signoff": "Sam Rivera"
+}
