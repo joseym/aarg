@@ -1,0 +1,23 @@
+{
+  "contact": {
+    "full_name": "Sam Rivera",
+    "email": "sam.rivera@example.com",
+    "phone": "(555) 010-1974",
+    "location": "Remote (US)",
+    "links": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/sam-rivera-dev"
+      }
+    ]
+  },
+  "company": "Northwind Labs",
+  "title": "Engineering Manager, Billing Platform",
+  "greeting": "Dear Northwind Labs hiring team,",
+  "paragraphs": [
+    "Built the engineering organization from the ground up at Meridian Logistics, growing from sole backend engineer to a 20+ person team spanning backend, frontend, QA, DevOps, and release management, with full hiring authority and ownership of every career-level and cultural decision. Designed the TypeScript microservice backend framework and PostgreSQL database schemas that the platform is built on today, containerizing services with Docker and building GitHub Actions CI/CD pipelines to satisfy regulatory auditability and compliance requirements.",
+    "Took on scrum and release management across 4 engineering teams, standardizing sprint and epic planning and replacing ad hoc deployments with a bi-weekly release cadence, 3x faster than the prior process, that gave the business consistent, predictable delivery. Partnered with product and stakeholders to translate business priorities into delivery, shipping a run of regulated milestones including platform approval, custody launch, ETH custody, and clearing and settlement approval.",
+    "Coordinated change management and auditor communication across 3 concurrent audits covering backend platform, onboarding, mobile app, and blockchain, managing timelines, drafting responses, conducting the least-privilege access review, and converting audit findings into prioritized remediation items entered into the SDLC workflow. Served as engineering lead for incident response across backend, DevOps, and release teams, owning technical investigation and cross-functional coordination to drive issues to resolution in an environment where platform failures carried direct regulatory and compliance risk."
+  ],
+  "signoff": "Sam Rivera"
+}
