@@ -1,4 +1,10 @@
-import { coverBadgeText, coverStatusExplainer, coverStatusLabel } from './cover-preview.model';
+import {
+  coverBadgeText,
+  coverSaveMessage,
+  coverStatusExplainer,
+  coverStatusLabel,
+  coverUnrecordedFlag,
+} from './cover-preview.model';
 import type { ParagraphProvenance } from '../../models';
 
 describe('coverStatusLabel', () => {
@@ -57,5 +63,39 @@ describe('coverBadgeText', () => {
     expect(coverBadgeText(3, 5)).toBe('3 of 5 paragraphs need a look');
     expect(coverBadgeText(1, 5)).toBe('1 of 5 paragraphs needs a look');
     expect(coverBadgeText(1, 1)).toBe('1 of 1 paragraph needs a look');
+  });
+});
+
+describe('coverUnrecordedFlag', () => {
+  it('is null when nothing is unrecorded', () => {
+    expect(coverUnrecordedFlag(0)).toBeNull();
+    expect(coverUnrecordedFlag(-1)).toBeNull();
+  });
+
+  it('warns with agreeing grammar when paragraphs are unrecorded', () => {
+    expect(coverUnrecordedFlag(1)).toBe(
+      "1 paragraph isn't traced to your evidence yet. Saving keeps them as written.",
+    );
+    expect(coverUnrecordedFlag(2)).toBe(
+      "2 paragraphs aren't traced to your evidence yet. Saving keeps them as written.",
+    );
+  });
+});
+
+describe('coverSaveMessage', () => {
+  it('reports dropped paragraphs first, distinct from the unrecorded flag', () => {
+    expect(coverSaveMessage(1, 0)).toBe('Saved. 1 paragraph with an unverified number was dropped.');
+    expect(coverSaveMessage(2, 3)).toBe(
+      'Saved. 2 paragraphs with an unverified number were dropped.',
+    );
+  });
+
+  it('flags remaining unrecorded paragraphs when none were dropped', () => {
+    expect(coverSaveMessage(0, 1)).toBe("Saved, but 1 paragraph still isn't traced to your evidence.");
+    expect(coverSaveMessage(0, 2)).toBe("Saved, but 2 paragraphs still aren't traced to your evidence.");
+  });
+
+  it('is a plain confirmation when the save is clean', () => {
+    expect(coverSaveMessage(0, 0)).toBe('Saved your cover letter edits.');
   });
 });

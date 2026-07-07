@@ -26,7 +26,7 @@ import type {
   TailoredResume,
 } from '../../models';
 import { CoverPreview } from './cover-preview';
-import { coverBadgeText } from './cover-preview.model';
+import { coverBadgeText, coverSaveMessage, coverUnrecordedFlag } from './cover-preview.model';
 
 /** The filename the cover render is persisted under, both in the build's `pdfs`
  *  list and at `GET /api/builds/:id/files/cover_letter.pdf`. */
@@ -123,6 +123,11 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
           }
         </div>
         <div class="cover-actions">
+          @if (previewMode() === 'editing') {
+            <button class="btn btn-primary" type="button" (click)="save()" [disabled]="saveDisabled()">
+              {{ saving() ? 'Saving…' : 'Save edits' }}
+            </button>
+          }
           <button class="btn" type="button" (click)="download()" [disabled]="!url()">Download PDF</button>
           <button class="btn" type="button" (click)="generate()" [disabled]="actionsDisabled()">
             {{ generating() ? 'Regenerating…' : 'Regenerate' }}
@@ -132,6 +137,10 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
           </button>
         </div>
       </div>
+
+      @if (previewMode() === 'editing' && unrecordedFlag(); as flag) {
+        <div class="cover-flag" role="status">{{ flag }}</div>
+      }
 
       @if (errorMsg(); as e) {
         <div class="cover-error" role="alert">{{ e }}</div>
@@ -244,6 +253,8 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
 
     .cover-error { max-width: 62ch; border: 1px solid color-mix(in oklch, var(--danger) 45%, var(--border)); background: color-mix(in oklch, var(--danger) 8%, var(--surface)); color: var(--fg); border-radius: var(--radius); padding: 11px 14px; margin-bottom: 14px; font-size: 13.5px; line-height: 1.5; }
     .cover-warn { max-width: 62ch; border: 1px solid color-mix(in oklch, var(--warn) 45%, var(--border)); background: var(--warn-bg); color: var(--fg); border-radius: var(--radius); padding: 11px 14px; margin-bottom: 14px; font-size: 12.5px; line-height: 1.5; display: flex; flex-direction: column; gap: 4px; }
+    .cover-flag { max-width: 62ch; border: 1px solid color-mix(in oklch, var(--warn) 45%, var(--border)); background: var(--warn-bg); color: var(--fg); border-radius: var(--radius); padding: 9px 13px; margin: 0 0 14px; font-size: 12.5px; line-height: 1.5; display: flex; align-items: center; gap: 8px; }
+    .cover-flag::before { content: '!'; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 17px; height: 17px; border-radius: 50%; background: var(--warn); color: oklch(99% 0.01 80); font-family: var(--font-mono); font-size: 11px; font-weight: 700; }
 
     .pdfwrap { position: relative; }
     .pdf { display: block; width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
@@ -300,6 +311,9 @@ export class CoverView {
   readonly notify = output<string>();
 
   protected readonly generating = signal(false);
+  /** A save of the edited paragraphs is in flight. Disables every action so a
+   *  save and a generate can never overlap on the same build. */
+  protected readonly saving = signal(false);
   protected readonly errorMsg = signal<string | null>(null);
   protected readonly warnings = signal<string[]>([]);
 
@@ -338,6 +352,9 @@ export class CoverView {
   protected readonly coverClaimState = computed<'ok' | 'flag'>(() =>
     this.unrecordedCount() > 0 ? 'flag' : 'ok',
   );
+  /** The inline warning shown by the Save button while unrecorded paragraphs are
+   *  present — visible, never blocking. Null when nothing is unrecorded. */
+  protected readonly unrecordedFlag = computed(() => coverUnrecordedFlag(this.unrecordedCount()));
   /** Monotonic id so a slow provenance check can't clobber a newer one (an edit
    *  landing while a prior recheck is still resolving). */
   private recheckSeq = 0;
@@ -350,10 +367,18 @@ export class CoverView {
   /** Show the PDF area once there's a cover to show (on disk or just drafted). */
   protected readonly hasContent = computed(() => this.hasCover() || this.url() !== null);
 
-  /** Every button on this view is disabled while a generate is in flight OR
-   *  while the copilot interview (which runs through the same shared modal
-   *  every other copilot uses) is running — the two must never overlap. */
-  protected readonly actionsDisabled = computed(() => this.generating() || this.copilot.running() !== null);
+  /** Every button on this view is disabled while a generate or a save is in
+   *  flight OR while the copilot interview (which runs through the same shared
+   *  modal every other copilot uses) is running — they must never overlap. */
+  protected readonly actionsDisabled = computed(
+    () => this.generating() || this.saving() || this.copilot.running() !== null,
+  );
+  /** The Save button additionally needs a cover payload to save against — a
+   *  build with only a rendered PDF (no per-paragraph data) has nothing to
+   *  persist, so the editing pane shows its empty state and Save stays off. */
+  protected readonly saveDisabled = computed(
+    () => this.actionsDisabled() || this.coverPayload() === null,
+  );
 
   private blobUrl: string | null = null;
   private loadedFor: string | null = null;
@@ -551,6 +576,57 @@ export class CoverView {
         },
         error: (err: unknown) => {
           this.generating.set(false);
+          const msg = coverErrorMessage(err);
+          this.errorMsg.set(msg);
+          this.notify.emit(msg);
+        },
+      });
+  }
+
+  /** Persist the local edits to the stored build: send the current working
+   *  paragraphs to the save route, which re-runs the server-side digit guard
+   *  (dropping any paragraph that introduced an unbacked figure) and re-renders
+   *  the PDF. Saving is never blocked by provenance status — the inline flag
+   *  above only informs — so a person can save with unrecorded paragraphs still
+   *  present; the digit guard is the sole hard gate.
+   *
+   *  On success the local paragraphs are synced to exactly what persisted (so a
+   *  dropped paragraph disappears from the editing pane), the classifier reruns,
+   *  the pixel preview refetches the fresh PDF, and a toast reports the outcome:
+   *  a distinct "dropped" message when the guard rejected a paragraph, or the
+   *  "still unrecorded" flag otherwise. A failed request surfaces the error the
+   *  same way every other action does. */
+  protected save(): void {
+    if (this.saveDisabled()) return;
+    const id = this.buildId();
+    const paras = this.paragraphs();
+    this.saving.set(true);
+    this.errorMsg.set(null);
+    this.api
+      .saveCoverPayload(id, paras)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (res) => {
+          this.saving.set(false);
+          // Sync local state to what actually persisted — the server may have
+          // dropped a paragraph, so its survivors are the source of truth now.
+          this.paragraphs.set([...res.letter.paragraphs]);
+          this.letter.set(res.letter);
+          // The server's drop reasons render in the same warnings box a
+          // generation drop uses; a clean save clears any stale ones.
+          this.warnings.set(res.dropped ?? []);
+          const resume = this.canonical();
+          const jd = this.jd();
+          if (resume && jd) {
+            void this.recheck(res.letter, resume, jd, res.letter.paragraphs, this.effectiveBrief());
+          }
+          this.fetchPdf(id); // the render just changed on disk — pull it fresh
+          const dropped = res.dropped?.length ?? 0;
+          this.notify.emit(coverSaveMessage(dropped, this.unrecordedCount()));
+          this.generated.emit(); // keep the workspace bundle truthful
+        },
+        error: (err: unknown) => {
+          this.saving.set(false);
           const msg = coverErrorMessage(err);
           this.errorMsg.set(msg);
           this.notify.emit(msg);

@@ -47,3 +47,35 @@ export function coverBadgeText(unrecorded: number, total: number): string {
   const verb = unrecorded === 1 ? 'needs' : 'need';
   return `${unrecorded} of ${total} ${paras} ${verb} a look`;
 }
+
+/** The inline warning shown next to the Save button while unrecorded paragraphs
+ *  are present, so a person saving them can't miss that they aren't yet traced
+ *  to their evidence. Returns null when nothing is unrecorded (no warning to
+ *  show). Saving is never blocked by this — it only informs; the server's digit
+ *  guard is the sole hard gate. */
+export function coverUnrecordedFlag(unrecorded: number): string | null {
+  if (unrecorded <= 0) return null;
+  const paras = unrecorded === 1 ? 'paragraph' : 'paragraphs';
+  const verb = unrecorded === 1 ? "isn't" : "aren't";
+  return `${unrecorded} ${paras} ${verb} traced to your evidence yet. Saving keeps them as written.`;
+}
+
+/** The message shown after a save resolves. Three cases, most severe first:
+ *  the server dropped one or more paragraphs (a hand-edited figure the evidence
+ *  doesn't back — the hard gate, reported distinctly from the informational
+ *  flag below); the save landed but unrecorded paragraphs remain (informational,
+ *  never blocked); or a clean save. `dropped` and `unrecorded` are counts read
+ *  after the save, so the message reflects what actually persisted. */
+export function coverSaveMessage(dropped: number, unrecorded: number): string {
+  if (dropped > 0) {
+    const paras = dropped === 1 ? 'paragraph' : 'paragraphs';
+    const verb = dropped === 1 ? 'was' : 'were';
+    return `Saved. ${dropped} ${paras} with an unverified number ${verb} dropped.`;
+  }
+  if (unrecorded > 0) {
+    const paras = unrecorded === 1 ? 'paragraph' : 'paragraphs';
+    const verb = unrecorded === 1 ? "isn't" : "aren't";
+    return `Saved, but ${unrecorded} ${paras} still ${verb} traced to your evidence.`;
+  }
+  return 'Saved your cover letter edits.';
+}

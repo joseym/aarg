@@ -16,6 +16,7 @@ import type {
   AdversarialReport,
   TokenUsage,
   GenerateCoverResponse,
+  SaveCoverPayloadResponse,
   CoverBrief,
 } from '../models';
 
@@ -127,6 +128,24 @@ export class ApiService {
     return this.http.post<{ brief: CoverBrief }>(
       `${this.base}/builds/${encodeURIComponent(id)}/cover-brief`,
       { text },
+    );
+  }
+
+  /** `PUT /api/builds/:id/cover-payload` — persist the Cover Letter Editing
+   *  view's hand-edited paragraphs into the stored build and re-render the PDF.
+   *  The server re-runs the same digit guard generation does: a paragraph
+   *  introducing a figure the résumé and brief don't state is dropped (returned
+   *  in `dropped`), never silently saved. Returns the letter as saved (surviving
+   *  paragraphs only) so the caller can sync its local state, and the PDF
+   *  filename to refetch for the pixel preview. The greeting and sign-off are
+   *  code-filled and never sent — they carry over from the stored payload. The
+   *  JSON content-type header is mandatory (the route sits behind the same gate
+   *  the other body-taking build routes do). */
+  saveCoverPayload(id: string, paragraphs: string[]): Observable<SaveCoverPayloadResponse> {
+    return this.http.put<SaveCoverPayloadResponse>(
+      `${this.base}/builds/${encodeURIComponent(id)}/cover-payload`,
+      { paragraphs },
+      { headers: { 'Content-Type': 'application/json' } },
     );
   }
 
