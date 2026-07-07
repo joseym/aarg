@@ -1737,6 +1737,108 @@ fn cover_error_response(error: crate::cover::CoverLetterError, base_url: Option<
 }
 
 // ---------------------------------------------------------------------
+// POST /api/builds/:id/cover-brief — confirm a paragraph as evidence
+// ---------------------------------------------------------------------
+
+/// The `POST /api/builds/:id/cover-brief` body: the exact text the candidate is
+/// confirming as their own — a cover-letter paragraph's live text, verbatim,
+/// from the Editing view. Never anything a model authors at confirm time; see
+/// [`confirm_cover_evidence`]'s doc for why that boundary matters here.
+#[derive(Deserialize)]
+struct ConfirmCoverEvidenceRequest {
+    text: String,
+}
+
+/// The `POST /api/builds/:id/cover-brief` success body: the brief as saved, so
+/// the browser can re-run `check_cover_provenance` locally against it right
+/// away, without a second round trip to re-fetch the build.
+#[derive(Serialize)]
+struct ConfirmCoverEvidenceResponse {
+    brief: CoverBrief,
+}
+
+/// `POST /api/builds/:id/cover-brief` — the Cover Letter Editing view's
+/// "confirm as evidence" action: append one paragraph's own text to this
+/// build's `CoverBrief.emphasis` and persist `cover_brief.json`, the same file
+/// [`persist_cover_brief_if_present`] writes and [`get_build_in`] serves back as
+/// `cover_brief`. This does not regenerate the letter — it only widens the
+/// grounding a *later* draft (or the immediate local re-check) can trace to; see
+/// the module-level `cover_provenance` doc for why the flag it clears is
+/// informational, never an enforcement gate.
+///
+/// Honesty: this route never calls a model. It takes exactly the string the
+/// client sends and appends it verbatim — nothing here paraphrases, summarizes,
+/// or otherwise authors new text from it. What lands in `emphasis` is always
+/// the candidate's own words, already shown to and editable by them in the
+/// Editing view before this request was ever sent; the same posture the
+/// interview's own evidence-scoped suggestion flow (`within_evidence`) exists to
+/// guard, just with no model call here to guard *against*.
+///
+/// Idempotent by exact (trimmed) text: confirming the same paragraph twice
+/// appends it once, so a doubled click (or a retried request) never doubles the
+/// emphasis list — a resubmitted confirmation is a no-op past the first.
+pub(super) async fn confirm_cover_evidence(
+    req: Request<Incoming>,
+    id: &str,
+    state: &AppState,
+) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let request: ConfirmCoverEvidenceRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return error_response(
+                400,
+                "bad_request",
+                format!("invalid confirm request: {error}"),
+            );
+        }
+    };
+    let text = request.text.trim();
+    if text.is_empty() {
+        return error_response(400, "bad_request", "text must not be empty");
+    }
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    // Serialized like every other build write: a tiny JSON read+write with no
+    // render, so it runs inline under the guard (the same shape
+    // `save_build_triage` uses) rather than on a blocking thread.
+    let _guard = state.build_write.lock().await;
+    match confirm_cover_evidence_in(&dir, text) {
+        Ok(brief) => json_response(200, &ConfirmCoverEvidenceResponse { brief }),
+        Err(error) => error_response(500, "build_error", error.to_string()),
+    }
+}
+
+/// The disk-touching half of [`confirm_cover_evidence`], with the build
+/// directory injected so a test can drive it against a tempdir: read the
+/// build's stored brief (defaulting to empty, the same best-effort read
+/// [`read_triage`] uses for its own file), append `text` to `emphasis` unless
+/// an entry already matches it (trimmed, exact), then persist and return the
+/// updated brief.
+fn confirm_cover_evidence_in(dir: &std::path::Path, text: &str) -> Result<CoverBrief, BuildError> {
+    let mut brief: CoverBrief = read_json_artifact(&dir.join("cover_brief.json"))
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    if !brief.emphasis.iter().any(|entry| entry.trim() == text) {
+        brief.emphasis.push(text.to_string());
+    }
+    builds::write_json(dir, "cover_brief.json", &brief)?;
+    Ok(brief)
+}
+
+// ---------------------------------------------------------------------
 // POST /api/fetch-jd — fetch a cross-origin posting server-side
 // ---------------------------------------------------------------------
 
@@ -2419,6 +2521,41 @@ mod tests {
             body["cover_brief"]["emphasis"][0],
             "shipped ChessCoach, a chess training app"
         );
+    }
+
+    /// The confirm-evidence core: a fresh build gets an `emphasis` entry; the
+    /// same text confirmed a second time does not duplicate it (idempotent by
+    /// exact, trimmed text); a genuinely different confirmation still appends
+    /// as a second entry. Every call persists to disk.
+    #[test]
+    fn confirm_cover_evidence_appends_once_per_distinct_text() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let brief = confirm_cover_evidence_in(&dir, "I rebuilt the deployment pipeline.").unwrap();
+        assert_eq!(brief.emphasis, vec!["I rebuilt the deployment pipeline."]);
+
+        // The same confirmation again: no duplicate.
+        let brief = confirm_cover_evidence_in(&dir, "I rebuilt the deployment pipeline.").unwrap();
+        assert_eq!(brief.emphasis, vec!["I rebuilt the deployment pipeline."]);
+
+        // A different paragraph's text: a second, distinct entry.
+        let brief =
+            confirm_cover_evidence_in(&dir, "I led reliability work for 12 services.").unwrap();
+        assert_eq!(
+            brief.emphasis,
+            vec![
+                "I rebuilt the deployment pipeline.".to_string(),
+                "I led reliability work for 12 services.".to_string(),
+            ]
+        );
+
+        // It's actually on disk, not just returned.
+        let stored: CoverBrief =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("cover_brief.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored, brief);
     }
 
     #[tokio::test]

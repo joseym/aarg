@@ -172,6 +172,7 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
               [greeting]="cp.greeting"
               [signoff]="cp.signoff"
               (edit)="onParaEdit($event)"
+              (confirm)="onConfirmParagraph($event)"
             />
           } @else {
             <div class="panel muted">Checking the letter's paragraphs…</div>
@@ -286,10 +287,16 @@ export class CoverView {
    *  (a cover drafted before this field existed), in which case the editing
    *  pane shows an explanatory empty state and Pixel-perfect still works. */
   readonly coverPayload = input<CoverLetter | null>(null);
+  /** The build's persisted cover-letter interview brief (`cover_brief.json`),
+   *  when the bundle carries one — fed to `checkCoverProvenance` as grounding,
+   *  the same corpus a fresh draft would read. Null for a build with no saved
+   *  brief (never interviewed, or drafted before this field existed). */
+  readonly coverBrief = input<CoverBrief | null>(null);
   /** Ask the workspace to reload the build bundle after a (re)generate, so the
    *  new cover joins the build's `pdfs` list and the chat context. */
   readonly generated = output<void>();
-  /** Surface a message through the workspace toast (generation errors). */
+  /** Surface a message through the workspace toast (a generation error, or a
+   *  confirm-as-evidence result). */
   readonly notify = output<string>();
 
   protected readonly generating = signal(false);
@@ -311,6 +318,13 @@ export class CoverView {
   protected readonly coverReport = signal<CoverProvenanceReport | null>(null);
   /** Whether the badge's explanatory tooltip is open. */
   protected readonly infoOpen = signal(false);
+  /** A brief this session's own "confirm as evidence" action just persisted,
+   *  overriding {@link coverBrief} until a fresh bundle load supersedes it (a
+   *  build switch resets it). Kept separate from the {@link coverBrief} input
+   *  so applying it never re-triggers the seeding effect below and discards
+   *  an in-progress paragraph edit — only the explicit recheck calls below
+   *  read it. */
+  private readonly confirmedBrief = signal<CoverBrief | null>(null);
 
   /** How many body paragraphs still read as unrecorded — the badge's count and
    *  its flag/ok state. Informational only, never a gate. */
@@ -364,7 +378,9 @@ export class CoverView {
       this.fetchPdf(id);
     });
     // A build switch resets the transient letter/warnings/error so they never
-    // bleed across builds, and returns the fidelity toggle to its default.
+    // bleed across builds, and returns the fidelity toggle to its default. A
+    // switch also drops any confirm-as-evidence override from the PRIOR build —
+    // it must never leak its grounding into a different build's re-check.
     effect(() => {
       this.buildId();
       this.letter.set(null);
@@ -372,44 +388,58 @@ export class CoverView {
       this.errorMsg.set(null);
       this.previewMode.set('editing');
       this.infoOpen.set(false);
+      this.confirmedBrief.set(null);
     });
 
     // Seed the editable paragraph copy from the build's cover payload and run
-    // the initial provenance check. Re-runs when the payload (or the résumé/JD
-    // it's checked against) changes — a fresh build, or those inputs arriving
-    // after the payload. Local edits go through onParaEdit, not this effect, so
-    // a mid-session edit is never clobbered here (the inputs are fixed per
-    // build). No brief is threaded in yet (see onParaEdit): the bundle doesn't
-    // carry one, so the check runs against the résumé and JD only.
+    // the initial provenance check. Re-runs when the payload, the résumé/JD
+    // it's checked against, or the bundle's saved brief changes — a fresh
+    // build, or those inputs arriving after the payload. Local edits go
+    // through onParaEdit, not this effect, so a mid-session edit is never
+    // clobbered here (the inputs are fixed per build); a session-local confirm
+    // override is read only inside the recheck calls below, never here, so
+    // confirming a paragraph never re-seeds (and so never discards) the
+    // working paragraph copy.
     effect(() => {
       const letter = this.coverPayload();
       const resume = this.canonical();
       const jd = this.jd();
+      const brief = this.coverBrief();
       const paras = letter?.paragraphs ? [...letter.paragraphs] : [];
       untracked(() => {
         this.paragraphs.set(paras);
         this.coverReport.set(null);
+        this.confirmedBrief.set(null);
       });
-      if (letter && resume && jd) void this.recheck(letter, resume, jd, paras);
+      if (letter && resume && jd) void this.recheck(letter, resume, jd, paras, brief);
     });
   }
 
-  /** Re-run the deterministic per-paragraph classifier for `paras` and publish
-   *  the result — the one place the report is produced, shared by the editing
-   *  pane and the badge. Classification is independent per paragraph, so
-   *  re-checking the whole (short) letter on each edit is both simplest and
-   *  correct. A stale result (an older check resolving after a newer edit) is
-   *  dropped via {@link recheckSeq}. */
+  /** The brief to check paragraphs against right now: a session-local
+   *  "confirm as evidence" result if one has landed, else the bundle's own
+   *  {@link coverBrief}. Read directly (never inside the seeding effect above)
+   *  so applying a confirm never re-triggers that effect's paragraph reset. */
+  private effectiveBrief(): CoverBrief | null {
+    return this.confirmedBrief() ?? this.coverBrief();
+  }
+
+  /** Re-run the deterministic per-paragraph classifier for `paras` against
+   *  `brief` and publish the result — the one place the report is produced,
+   *  shared by the editing pane and the badge. Classification is independent
+   *  per paragraph, so re-checking the whole (short) letter on each edit is
+   *  both simplest and correct. A stale result (an older check resolving after
+   *  a newer edit) is dropped via {@link recheckSeq}. */
   private async recheck(
     letter: CoverLetter,
     resume: TailoredResume,
     jd: JobRequirements,
     paras: string[],
+    brief: CoverBrief | null,
   ): Promise<void> {
     const seq = ++this.recheckSeq;
     const draft: CoverLetter = { ...letter, paragraphs: paras };
     try {
-      const report = await this.wasm.checkCoverProvenance(draft, resume, jd, undefined);
+      const report = await this.wasm.checkCoverProvenance(draft, resume, jd, brief);
       if (seq === this.recheckSeq) this.coverReport.set(report);
     } catch {
       if (seq === this.recheckSeq) this.coverReport.set(null);
@@ -429,7 +459,37 @@ export class CoverView {
     if (e.index < 0 || e.index >= paras.length || paras[e.index] === e.text) return;
     paras[e.index] = e.text;
     this.paragraphs.set(paras);
-    void this.recheck(letter, resume, jd, paras);
+    void this.recheck(letter, resume, jd, paras, this.effectiveBrief());
+  }
+
+  /** "Confirm as evidence" on an `unrecorded` paragraph: persist its own text
+   *  (verbatim — no model call here, see {@link CoverPreview.confirm}'s doc)
+   *  as a new `CoverBrief.emphasis` entry, then re-check locally against the
+   *  brief the server just saved, so the paragraph's status updates live
+   *  without regenerating the letter. A failed request surfaces through the
+   *  workspace toast, matching {@link runGenerate}'s error handling. */
+  protected onConfirmParagraph(e: { index: number; text: string }): void {
+    const text = e.text.trim();
+    if (!text) return;
+    const id = this.buildId();
+    this.api
+      .confirmCoverEvidence(id, text)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (res) => {
+          this.confirmedBrief.set(res.brief);
+          const letter = this.coverPayload();
+          const resume = this.canonical();
+          const jd = this.jd();
+          if (letter && resume && jd) {
+            void this.recheck(letter, resume, jd, this.paragraphs(), res.brief);
+          }
+          this.notify.emit('Confirmed: added as evidence for future drafts.');
+        },
+        error: (err: unknown) => {
+          this.notify.emit(`Couldn’t confirm this paragraph: ${coverErrorMessage(err)}`);
+        },
+      });
   }
 
   /** Draft (or redraft) the cover letter for the open build, then refresh the

@@ -62,6 +62,16 @@ import { coverStatusExplainer, coverStatusLabel } from './cover-preview.model';
       <div class="pop on" role="status" [style.left.px]="p.x" [style.top.px]="p.y">
         <div class="pl" [attr.data-status]="p.status">{{ p.label }}</div>
         {{ p.text }}
+        @if (p.status === 'unrecorded') {
+          <button
+            class="pop-confirm"
+            type="button"
+            (mousedown)="$event.preventDefault()"
+            (click)="confirmParagraph()"
+          >
+            This is true: record it as evidence
+          </button>
+        }
       </div>
     }
   `,
@@ -108,6 +118,13 @@ import { coverStatusExplainer, coverStatusLabel } from './cover-preview.model';
     .pop .pl[data-status='grounded'] { color: oklch(82% 0.13 150); }
     .pop .pl[data-status='unrecorded'] { color: oklch(84% 0.13 70); }
     .pop .pl[data-status='exempt'] { color: oklch(80% 0.02 80); }
+    .pop-confirm {
+      display: block; margin-top: 9px; width: 100%; padding: 7px 10px; border-radius: 7px;
+      border: 1px solid transparent; background: var(--accent); color: oklch(97% 0.02 40);
+      font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left;
+    }
+    .pop-confirm:hover { background: var(--accent-2); }
+    .pop-confirm:focus-visible { outline: 2px solid oklch(96% 0.01 80); outline-offset: 2px; }
 
     @media (max-width: 720px) {
       .paper { padding: 28px 22px 32px; }
@@ -127,8 +144,16 @@ export class CoverPreview {
   /** A paragraph was edited (captured on blur): its index and the new text. The
    *  container splices it into the working copy and re-runs the classifier. */
   readonly edit = output<{ index: number; text: string }>();
+  /** The candidate confirmed an unrecorded paragraph as their own evidence:
+   *  its index and CURRENT text (which may include an un-blurred edit, read
+   *  live off the element — never a stale copy of the report's text). The
+   *  container persists it to the build's `CoverBrief.emphasis` and re-checks
+   *  locally. Nothing here calls a model: the emitted text is exactly what was
+   *  already on the page. */
+  readonly confirm = output<{ index: number; text: string }>();
 
   protected readonly pop = signal<{
+    index: number;
     status: string;
     label: string;
     text: string;
@@ -137,17 +162,23 @@ export class CoverPreview {
   } | null>(null);
 
   /** Whether a paragraph currently holds focus — keeps the popover open on
-   *  `mouseleave` so a focused paragraph's explanation persists. */
+   *  `mouseleave` so a focused paragraph's explanation (and, for an unrecorded
+   *  one, its confirm button) stays reachable. */
   private focused = false;
+  /** The element the popover is anchored to — read for the paragraph's live
+   *  text when confirming (it may hold an un-blurred edit). */
+  private popEl: HTMLElement | null = null;
 
   protected statusLabel(p: ParagraphProvenance): string {
     return coverStatusLabel(p.status);
   }
 
-  protected showPop(_index: number, p: ParagraphProvenance, ev: Event): void {
+  protected showPop(index: number, p: ParagraphProvenance, ev: Event): void {
     const el = ev.target as HTMLElement;
+    this.popEl = el;
     const r = el.getBoundingClientRect();
     this.pop.set({
+      index,
       status: p.status,
       label: coverStatusLabel(p.status),
       text: coverStatusExplainer(p),
@@ -167,6 +198,7 @@ export class CoverPreview {
 
   protected hidePop(): void {
     this.pop.set(null);
+    this.popEl = null;
   }
 
   protected blurEl(ev: Event): void {
@@ -181,5 +213,18 @@ export class CoverPreview {
     if (text && text !== p.text) {
       this.edit.emit({ index, text });
     }
+  }
+
+  /** Confirm the currently popover'd unrecorded paragraph as evidence. The
+   *  button's `mousedown` preventDefault keeps the paragraph focused (no blur
+   *  first), mirroring {@link ResumePreview}'s confirm action, so the live
+   *  (possibly just-edited) text is what's read and emitted here — never a
+   *  fresh model call, just the paragraph's own already-shown words. */
+  protected confirmParagraph(): void {
+    const p = this.pop();
+    if (!p || p.status !== 'unrecorded') return;
+    const text = ((this.popEl?.innerText ?? '') || '').trim();
+    if (text) this.confirm.emit({ index: p.index, text });
+    this.hidePop();
   }
 }

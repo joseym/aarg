@@ -116,6 +116,20 @@ export class ApiService {
     );
   }
 
+  /** `POST /api/builds/:id/cover-brief` — the Cover Letter Editing view's
+   *  "confirm as evidence" action: append one paragraph's own text to this
+   *  build's `CoverBrief.emphasis` and persist `cover_brief.json`. Returns the
+   *  brief as saved, so the caller can re-run `checkCoverProvenance` locally
+   *  against it immediately, without a second round trip to re-fetch the
+   *  build. Idempotent by exact text — confirming the same paragraph twice
+   *  appends it once. */
+  confirmCoverEvidence(id: string, text: string): Observable<{ brief: CoverBrief }> {
+    return this.http.post<{ brief: CoverBrief }>(
+      `${this.base}/builds/${encodeURIComponent(id)}/cover-brief`,
+      { text },
+    );
+  }
+
   /** `GET /api/builds/:id/files/:name` — a stored rendered PDF, as a blob. */
   getBuildFile(id: string, name: string): Observable<Blob> {
     return this.http.get(

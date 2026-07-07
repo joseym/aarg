@@ -391,6 +391,9 @@ async fn handle(req: Request<Incoming>, state: AppState) -> Resp {
             ApiRoute::GenerateBuildCover(id) => {
                 routes::generate_build_cover(req, &id, &state).await
             }
+            ApiRoute::ConfirmCoverEvidence(id) => {
+                routes::confirm_cover_evidence(req, &id, &state).await
+            }
             ApiRoute::GetBuildFile(id, name) => routes::get_build_file(&id, &name).await,
             ApiRoute::FetchJd => routes::fetch_jd(req).await,
             ApiRoute::Cost => routes::cost(req).await,
@@ -476,6 +479,7 @@ fn requires_json_body(route: &ApiRoute) -> bool {
             | ApiRoute::SaveBuildEdits(_)
             | ApiRoute::SaveBuildTriage(_)
             | ApiRoute::GenerateBuildCover(_)
+            | ApiRoute::ConfirmCoverEvidence(_)
             | ApiRoute::FetchJd
     )
 }
@@ -550,6 +554,7 @@ enum ApiRoute {
     SaveBuildEdits(String),
     SaveBuildTriage(String),
     GenerateBuildCover(String),
+    ConfirmCoverEvidence(String),
     GetBuildFile(String, String),
     FetchJd,
     Cost,
@@ -592,6 +597,9 @@ fn match_route(method: &Method, path: &str) -> Match {
             }
             ("POST", ["builds", id, "cover"]) => {
                 Some(ApiRoute::GenerateBuildCover((*id).to_string()))
+            }
+            ("POST", ["builds", id, "cover-brief"]) => {
+                Some(ApiRoute::ConfirmCoverEvidence((*id).to_string()))
             }
             ("GET", ["builds", id, "files", name]) => Some(ApiRoute::GetBuildFile(
                 (*id).to_string(),
