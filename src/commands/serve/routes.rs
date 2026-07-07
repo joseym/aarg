@@ -1802,8 +1802,9 @@ struct ConfirmCoverEvidenceRequest {
 }
 
 /// The `POST /api/builds/:id/cover-brief` success body: the brief as saved, so
-/// the browser can re-run `check_cover_provenance` locally against it right
-/// away, without a second round trip to re-fetch the build.
+/// the browser can re-run `check_cover_provenance` against it right away (the
+/// claim half of that check is a cheap-tier model call over `/api/llm`),
+/// without a second round trip to re-fetch the build.
 #[derive(Serialize)]
 struct ConfirmCoverEvidenceResponse {
     brief: CoverBrief,
