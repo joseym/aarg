@@ -1821,17 +1821,34 @@ pub(super) async fn confirm_cover_evidence(
     }
 }
 
+/// Collapse a string to its whitespace-normalized form for near-duplicate
+/// comparison only: trim the ends, then collapse every internal run of
+/// whitespace (extra spaces, tabs, doubled spaces from a sloppy paste) down
+/// to a single space. Two texts that read as the same sentence but differ
+/// only in incidental whitespace normalize to the same value, so dedup
+/// catches them even though outer-`trim`-only equality would not. Never used
+/// to decide what gets *stored* — only what counts as "already have this."
+fn normalize_for_dedup(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The disk-touching half of [`confirm_cover_evidence`], with the build
 /// directory injected so a test can drive it against a tempdir: read the
 /// build's stored brief (defaulting to empty, the same best-effort read
 /// [`read_triage`] uses for its own file), append `text` to `emphasis` unless
-/// an entry already matches it (trimmed, exact), then persist and return the
-/// updated brief.
+/// an entry already matches it under [`normalize_for_dedup`] (whitespace
+/// collapsed on both sides, so a doubled internal space doesn't slip past
+/// dedup as a "new" entry), then persist and return the updated brief.
 fn confirm_cover_evidence_in(dir: &std::path::Path, text: &str) -> Result<CoverBrief, BuildError> {
     let mut brief: CoverBrief = read_json_artifact(&dir.join("cover_brief.json"))
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
-    if !brief.emphasis.iter().any(|entry| entry.trim() == text) {
+    let normalized_text = normalize_for_dedup(text);
+    if !brief
+        .emphasis
+        .iter()
+        .any(|entry| normalize_for_dedup(entry) == normalized_text)
+    {
         brief.emphasis.push(text.to_string());
     }
     builds::write_json(dir, "cover_brief.json", &brief)?;
@@ -2556,6 +2573,24 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.join("cover_brief.json")).unwrap())
                 .unwrap();
         assert_eq!(stored, brief);
+    }
+
+    /// A near-duplicate that differs only by a doubled internal space (e.g.
+    /// pasted text with an extra space between two words) must still dedup —
+    /// outer-`trim`-only comparison missed this class of near-duplicate.
+    #[test]
+    fn confirm_cover_evidence_dedups_a_doubled_internal_space_near_duplicate() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let brief = confirm_cover_evidence_in(&dir, "I led the team").unwrap();
+        assert_eq!(brief.emphasis, vec!["I led the team"]);
+
+        // Same sentence, one doubled internal space: still counts as the same
+        // entry, so it must not be appended again.
+        let brief = confirm_cover_evidence_in(&dir, "I  led the team").unwrap();
+        assert_eq!(brief.emphasis, vec!["I led the team"]);
     }
 
     #[tokio::test]
