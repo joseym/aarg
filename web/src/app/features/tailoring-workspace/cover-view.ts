@@ -113,8 +113,8 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
               @if (infoOpen()) {
                 <div class="cc-tip" role="tooltip">
                   Each paragraph is checked against your evidence:
-                  <b>traced</b> means every fact comes from your resume, the posting, or your interview answers;
-                  <b>needs a look</b> means it mentions something none of those carry;
+                  <b>traced</b> means every fact comes from your resume or the posting;
+                  <b>needs a look</b> means it mentions something neither carries;
                   <b>connecting language</b> makes no specific claim to check.
                   This is informational, and these edits stay local until you Regenerate.
                 </div>

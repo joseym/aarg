@@ -40,7 +40,7 @@ describe('coverStatusExplainer', () => {
 
   it('omits the list when an unrecorded paragraph names nothing specific', () => {
     const text = coverStatusExplainer(base('unrecorded'));
-    expect(text.endsWith('answers.')).toBe(true);
+    expect(text.endsWith('the posting.')).toBe(true);
   });
 });
 

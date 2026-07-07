@@ -26,13 +26,12 @@ export function coverStatusLabel(status: CoverParagraphStatus): string {
 export function coverStatusExplainer(p: ParagraphProvenance): string {
   switch (p.status) {
     case 'grounded':
-      return "This paragraph's facts all trace to your resume, the posting, or what you told the interview.";
+      return "This paragraph's facts all trace to your resume or the posting.";
     case 'exempt':
       return 'This is connecting language with no specific claim to check.';
     case 'unrecorded': {
       const items = [...p.unbacked_tokens, ...p.unbacked_digits];
-      const base =
-        'This paragraph mentions something not found in your resume, the posting, or your interview answers';
+      const base = 'This paragraph mentions something not found in your resume or the posting';
       return items.length === 0 ? `${base}.` : `${base}: ${items.join(', ')}.`;
     }
   }
