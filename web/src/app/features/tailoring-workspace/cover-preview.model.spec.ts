@@ -19,7 +19,7 @@ describe('coverStatusExplainer', () => {
   const base = (status: ParagraphProvenance['status']): ParagraphProvenance => ({
     text: 'x',
     status,
-    unbacked_tokens: [],
+    unbacked_claim: null,
     unbacked_digits: [],
   });
 
@@ -31,17 +31,39 @@ describe('coverStatusExplainer', () => {
     expect(coverStatusExplainer(base('exempt'))).toContain('no specific claim to check');
   });
 
-  it('lists the specific unbacked tokens and digits for an unrecorded paragraph', () => {
+  it("leads with the model's claim reason for an unrecorded paragraph", () => {
     const p: ParagraphProvenance = {
-      text: 'I used Rust for 5 years.',
+      text: 'I built the settlement system at Globex.',
       status: 'unrecorded',
-      unbacked_tokens: ['rust'],
+      unbacked_claim: 'claims settlement-systems work at Globex your evidence never mentions',
+      unbacked_digits: [],
+    };
+    const text = coverStatusExplainer(p);
+    expect(text).toContain('claims settlement-systems work at Globex');
+  });
+
+  it('names the unbacked numbers alongside the claim reason', () => {
+    const p: ParagraphProvenance = {
+      text: 'I have 5 years with Rust.',
+      status: 'unrecorded',
+      unbacked_claim: 'claims Rust experience your evidence never mentions',
       unbacked_digits: ['5'],
     };
     const text = coverStatusExplainer(p);
-    expect(text).toContain('not found in your resume');
-    expect(text).toContain('rust');
+    expect(text).toContain('claims Rust experience');
     expect(text).toContain('5');
+  });
+
+  it('reports a number-only flag when there is no claim reason', () => {
+    const p: ParagraphProvenance = {
+      text: 'I cut incidents by 63 percent.',
+      status: 'unrecorded',
+      unbacked_claim: null,
+      unbacked_digits: ['63'],
+    };
+    const text = coverStatusExplainer(p);
+    expect(text).toContain("a number your evidence doesn't carry");
+    expect(text).toContain('63');
   });
 
   it('omits the list when an unrecorded paragraph names nothing specific', () => {

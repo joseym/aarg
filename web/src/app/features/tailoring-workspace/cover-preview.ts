@@ -26,7 +26,10 @@ import { coverStatusExplainer, coverStatusLabel } from './cover-preview.model';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @let r = report();
-    <div class="paper" role="document" aria-label="Cover letter preview">
+    <div class="paper" role="document" aria-label="Cover letter preview" [class.checking]="checking()">
+      @if (checking()) {
+        <p class="cl-checking" role="status"><span class="spin" aria-hidden="true"></span> Rechecking paragraphs…</p>
+      }
       @if (greeting()) {
         <p class="cl-greeting">{{ greeting() }}</p>
       }
@@ -82,7 +85,19 @@ import { coverStatusExplainer, coverStatusLabel } from './cover-preview.model';
       padding: 40px 48px 44px; margin: 18px auto 0; max-width: 760px;
       font-family: var(--font-body); font-size: 14px; line-height: 1.62; color: var(--fg);
       box-shadow: 0 1px 0 var(--border), 0 20px 44px -30px color-mix(in oklch, var(--fg) 42%, transparent);
+      position: relative;
     }
+    /* While a recheck is in flight the paragraph statuses may be stale, so dim
+       the sheet slightly — the change is visible in-progress, never frozen. */
+    .paper.checking .para { opacity: 0.72; transition: opacity 0.15s; }
+    .cl-checking {
+      display: inline-flex; align-items: center; gap: 7px; position: absolute; top: 12px; right: 14px;
+      margin: 0; font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+      background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px;
+    }
+    .spin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: cp-spin 0.7s linear infinite; }
+    @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+    @keyframes cp-spin { to { transform: rotate(360deg); } }
     .cl-greeting { margin: 0 0 16px; }
     .cl-signoff { margin: 20px 0 0; white-space: pre-line; }
 
@@ -141,6 +156,10 @@ export class CoverPreview {
   readonly greeting = input<string>('');
   /** The code-filled sign-off block, shown static and never classified. */
   readonly signoff = input<string>('');
+  /** Whether a provenance recheck is in flight. The claim half is a real model
+   *  call now, so an edit's new status isn't instant; this shows a pending cue
+   *  and dims the sheet so the pane reads as working, not frozen or stale. */
+  readonly checking = input<boolean>(false);
   /** A paragraph was edited (captured on blur): its index and the new text. The
    *  container splices it into the working copy and re-runs the classifier. */
   readonly edit = output<{ index: number; text: string }>();

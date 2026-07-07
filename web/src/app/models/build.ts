@@ -70,7 +70,7 @@ export interface BuildDetail {
    *  either surface saved one for this build — the CLI's
    *  `aarg cover --interactive`, the browser's "Draft with copilot", or a
    *  paragraph confirmed as evidence in the Editing view. Feeds the Editing
-   *  view's local `checkCoverProvenance` re-check as grounding, the same way
+   *  view's `checkCoverProvenance` re-check as grounding, the same way
    *  it grounds a fresh draft. Absent for a build with no saved brief. */
   cover_brief?: CoverBrief;
   /** Per-build objection triage (`triage.json`): the objection ids left for now.

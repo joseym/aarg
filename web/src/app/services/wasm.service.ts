@@ -123,12 +123,6 @@ interface WasmExports {
   project_ats(canonicalJson: string): string;
   check_claims(canonicalJson: string, payloadJson: string): string;
   check_provenance(canonicalJson: string, datasetJson: string): string;
-  check_cover_provenance(
-    letterJson: string,
-    resumeJson: string,
-    jdJson: string,
-    briefJson: string,
-  ): string;
   weighted_coverage(gapJson: string, jdJson: string): string;
   normalize_dashes(text: string): string;
   scrub_resume(canonicalJson: string): string;
@@ -154,6 +148,14 @@ interface WasmExports {
     canonicalJson: string,
     jdJson: string,
     datasetJson: string,
+    modelsJson: string,
+    llm: StringCallback,
+  ): Promise<string>;
+  check_cover_provenance(
+    letterJson: string,
+    resumeJson: string,
+    jdJson: string,
+    briefJson: string,
     modelsJson: string,
     llm: StringCallback,
   ): Promise<string>;
@@ -555,28 +557,6 @@ export class WasmService {
     return JSON.parse(m.check_provenance(JSON.stringify(canonical), JSON.stringify(dataset)));
   }
 
-  /** The cover-letter analog of {@link checkProvenance}: classify every body
-   *  paragraph of a drafted `letter` by whether it traces back to the `resume`,
-   *  the `jd`, and an optional prior cover-letter interview `brief` (omit or
-   *  pass `null` when there was none — `check_cover_provenance` treats an
-   *  absent brief exactly like `write_cover_letter` does). */
-  async checkCoverProvenance(
-    letter: CoverLetter,
-    resume: unknown,
-    jd: JobRequirements,
-    brief?: CoverBrief | null,
-  ): Promise<CoverProvenanceReport> {
-    const m = await this.load();
-    return JSON.parse(
-      m.check_cover_provenance(
-        JSON.stringify(letter),
-        JSON.stringify(resume),
-        JSON.stringify(jd),
-        JSON.stringify(brief ?? null),
-      ),
-    );
-  }
-
   async weightedCoverage(gap: GapReport, jd: JobRequirements): Promise<WeightedCoverage> {
     const m = await this.load();
     return JSON.parse(m.weighted_coverage(JSON.stringify(gap), JSON.stringify(jd)));
@@ -650,6 +630,33 @@ export class WasmService {
         JSON.stringify(canonical),
         JSON.stringify(jd),
         JSON.stringify(dataset),
+        this.modelsJson(),
+        this.llm,
+      ),
+    );
+  }
+
+  /** The cover-letter analog of {@link checkProvenance}: classify every body
+   *  paragraph of a drafted `letter` by whether its claims trace back to the
+   *  `resume`, the `jd`, and an optional prior cover-letter interview `brief`
+   *  (omit or pass `null` when there was none). Now a real model call — the
+   *  claim judgment runs a cheap-tier agent over the `/api/llm` proxy so it can
+   *  see paraphrase (a paragraph's "payments" grounds against a résumé's
+   *  "billing"); the number check stays deterministic inside the same export.
+   *  Real latency, so callers debounce it. */
+  async checkCoverProvenance(
+    letter: CoverLetter,
+    resume: unknown,
+    jd: JobRequirements,
+    brief?: CoverBrief | null,
+  ): Promise<CoverProvenanceReport> {
+    const m = await this.load();
+    return JSON.parse(
+      await m.check_cover_provenance(
+        JSON.stringify(letter),
+        JSON.stringify(resume),
+        JSON.stringify(jd),
+        JSON.stringify(brief ?? null),
         this.modelsJson(),
         this.llm,
       ),

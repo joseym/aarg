@@ -21,8 +21,9 @@ export function coverStatusLabel(status: CoverParagraphStatus): string {
 }
 
 /** The popover explanation for a paragraph's status. For an `unrecorded`
- *  paragraph it names the exact words and numbers the corpus does not carry,
- *  so the reader can see precisely what to confirm or reword. */
+ *  paragraph it leads with the model's plain-language account of the
+ *  unsupported claim (when there is one) and names any unbacked numbers, so the
+ *  reader can see precisely what to confirm or reword. */
 export function coverStatusExplainer(p: ParagraphProvenance): string {
   switch (p.status) {
     case 'grounded':
@@ -30,9 +31,14 @@ export function coverStatusExplainer(p: ParagraphProvenance): string {
     case 'exempt':
       return 'This is connecting language with no specific claim to check.';
     case 'unrecorded': {
-      const items = [...p.unbacked_tokens, ...p.unbacked_digits];
+      const parts: string[] = [];
+      if (p.unbacked_claim?.trim()) parts.push(p.unbacked_claim.trim());
+      if (p.unbacked_digits.length > 0) {
+        const label = p.unbacked_digits.length === 1 ? 'a number' : 'numbers';
+        parts.push(`states ${label} your evidence doesn't carry: ${p.unbacked_digits.join(', ')}`);
+      }
       const base = 'This paragraph mentions something not found in your resume or the posting';
-      return items.length === 0 ? `${base}.` : `${base}: ${items.join(', ')}.`;
+      return parts.length === 0 ? `${base}.` : `This paragraph ${parts.join('; and ')}.`;
     }
   }
 }

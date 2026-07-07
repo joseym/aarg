@@ -32,6 +32,13 @@ import { coverBadgeText, coverSaveMessage, coverUnrecordedFlag } from './cover-p
  *  list and at `GET /api/builds/:id/files/cover_letter.pdf`. */
 export const COVER_PDF = 'cover_letter.pdf';
 
+/** How long to wait after the last paragraph edit before running the (now
+ *  model-backed, real-latency) provenance recheck, so typing across a few
+ *  paragraphs coalesces into one call rather than firing a model round-trip per
+ *  blur. Discrete actions (build load, Save, "confirm as evidence") bypass this
+ *  and recheck immediately. */
+const RECHECK_DEBOUNCE_MS = 700;
+
 /** Whether a build's `pdfs` list already carries a rendered cover letter — the
  *  test that flips the Cover Letter view between its Generate landing and its
  *  PDF preview. */
@@ -180,6 +187,7 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
               [report]="rep"
               [greeting]="cp.greeting"
               [signoff]="cp.signoff"
+              [checking]="checking()"
               (edit)="onParaEdit($event)"
               (confirm)="onConfirmParagraph($event)"
             />
@@ -237,6 +245,10 @@ export function isEmptyBrief(brief: CoverBrief | null | undefined): boolean {
     .claimcheck[data-state='ok'] .cc-dot { background: var(--success); }
     .claimcheck[data-state='flag'] { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 45%, var(--border)); background: var(--warn-bg); }
     .claimcheck[data-state='flag'] .cc-dot { background: var(--warn); }
+    .claimcheck[data-state='checking'] { color: var(--muted); border-color: var(--border); background: var(--surface-2); }
+    .claimcheck[data-state='checking'] .cc-dot { background: var(--accent); animation: cc-pulse 0.9s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) { .claimcheck[data-state='checking'] .cc-dot { animation: none; } }
+    @keyframes cc-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
     .cc-info { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-family: var(--font-mono); font-size: 11px; line-height: 1; cursor: help; }
     .cc-info:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .cc-tip { position: absolute; top: 30px; left: 0; z-index: 20; width: 320px; background: var(--fg); color: oklch(96% 0.01 80); padding: 12px 14px; border-radius: 9px; font-size: 12.5px; line-height: 1.5; box-shadow: 0 12px 30px -12px color-mix(in oklch, var(--fg) 60%, transparent); }
@@ -330,6 +342,11 @@ export class CoverView {
    *  editing pane and the claim badge read it, so the badge count always matches
    *  what the paragraphs show. */
   protected readonly coverReport = signal<CoverProvenanceReport | null>(null);
+  /** Whether a provenance check is in flight (or debounce-pending). The claim
+   *  half is now a real model round-trip, so a check has visible latency; this
+   *  drives the badge's "Checking…" state and the editing pane's pending cue so
+   *  the UI never looks frozen or silently stale while a check runs. */
+  protected readonly checking = signal(false);
   /** Whether the badge's explanatory tooltip is open. */
   protected readonly infoOpen = signal(false);
   /** A brief this session's own "confirm as evidence" action just persisted,
@@ -347,10 +364,10 @@ export class CoverView {
   );
   private readonly paraTotal = computed(() => this.coverReport()?.paragraphs.length ?? 0);
   protected readonly coverClaimText = computed(() =>
-    coverBadgeText(this.unrecordedCount(), this.paraTotal()),
+    this.checking() ? 'Checking…' : coverBadgeText(this.unrecordedCount(), this.paraTotal()),
   );
-  protected readonly coverClaimState = computed<'ok' | 'flag'>(() =>
-    this.unrecordedCount() > 0 ? 'flag' : 'ok',
+  protected readonly coverClaimState = computed<'ok' | 'flag' | 'checking'>(() =>
+    this.checking() ? 'checking' : this.unrecordedCount() > 0 ? 'flag' : 'ok',
   );
   /** The inline warning shown by the Save button while unrecorded paragraphs are
    *  present — visible, never blocking. Null when nothing is unrecorded. */
@@ -358,6 +375,10 @@ export class CoverView {
   /** Monotonic id so a slow provenance check can't clobber a newer one (an edit
    *  landing while a prior recheck is still resolving). */
   private recheckSeq = 0;
+  /** The pending debounce timer for an edit-driven recheck, so a burst of edits
+   *  coalesces into one model call after the user pauses. Cleared and reset on
+   *  each new edit, and torn down on destroy. */
+  private recheckTimer: ReturnType<typeof setTimeout> | null = null;
   /** The most recently generated letter, so its paragraphs can be shown under
    *  the PDF. Null after a fresh open (a reload from disk carries only the PDF). */
   protected readonly letter = signal<CoverLetter | null>(null);
@@ -386,7 +407,10 @@ export class CoverView {
   private pdfReqId = 0;
 
   constructor() {
-    this.destroyRef.onDestroy(() => this.revoke());
+    this.destroyRef.onDestroy(() => {
+      this.revoke();
+      if (this.recheckTimer !== null) clearTimeout(this.recheckTimer);
+    });
     // Auto-load the stored cover PDF for a build that already has one. Re-fetch
     // on a build switch; drop it when the build has no cover.
     effect(() => {
@@ -436,7 +460,10 @@ export class CoverView {
         this.coverReport.set(null);
         this.confirmedBrief.set(null);
       });
-      if (letter && resume && jd) void this.recheck(letter, resume, jd, paras, brief);
+      // A build load is a discrete event, not typing, so recheck immediately —
+      // the "Checking the letter's paragraphs…" panel already shows while it
+      // runs (coverReport is null until the first result lands).
+      if (letter && resume && jd) this.scheduleRecheck(letter, resume, jd, paras, brief, true);
     });
   }
 
@@ -448,12 +475,42 @@ export class CoverView {
     return this.confirmedBrief() ?? this.coverBrief();
   }
 
-  /** Re-run the deterministic per-paragraph classifier for `paras` against
-   *  `brief` and publish the result — the one place the report is produced,
-   *  shared by the editing pane and the badge. Classification is independent
-   *  per paragraph, so re-checking the whole (short) letter on each edit is
-   *  both simplest and correct. A stale result (an older check resolving after
-   *  a newer edit) is dropped via {@link recheckSeq}. */
+  /** Schedule a provenance recheck for `paras` against `brief`. The claim half
+   *  is a real model call now, so an edit-driven recheck is debounced
+   *  ({@link RECHECK_DEBOUNCE_MS}) — a burst of edits across paragraphs settles
+   *  into one call after the user pauses, rather than one round-trip per blur.
+   *  `immediate` bypasses the debounce for discrete actions (build load, Save,
+   *  confirm). Either way {@link checking} flips true right away, so the badge
+   *  shows "Checking…" through the whole wait, not just once the fetch starts. */
+  private scheduleRecheck(
+    letter: CoverLetter,
+    resume: TailoredResume,
+    jd: JobRequirements,
+    paras: string[],
+    brief: CoverBrief | null,
+    immediate = false,
+  ): void {
+    if (this.recheckTimer !== null) {
+      clearTimeout(this.recheckTimer);
+      this.recheckTimer = null;
+    }
+    this.checking.set(true);
+    const fire = (): void => {
+      this.recheckTimer = null;
+      void this.recheck(letter, resume, jd, paras, brief);
+    };
+    if (immediate) fire();
+    else this.recheckTimer = setTimeout(fire, RECHECK_DEBOUNCE_MS);
+  }
+
+  /** Re-run the per-paragraph classifier for `paras` against `brief` and publish
+   *  the result — the one place the report is produced, shared by the editing
+   *  pane and the badge. Classification is independent per paragraph, so
+   *  re-checking the whole (short) letter is both simplest and correct. A stale
+   *  result (an older check resolving after a newer edit) is dropped via
+   *  {@link recheckSeq}, which also gates clearing the {@link checking} flag so
+   *  a superseded call never turns the pending state off early. Reached only
+   *  through {@link scheduleRecheck}. */
   private async recheck(
     letter: CoverLetter,
     resume: TailoredResume,
@@ -465,9 +522,15 @@ export class CoverView {
     const draft: CoverLetter = { ...letter, paragraphs: paras };
     try {
       const report = await this.wasm.checkCoverProvenance(draft, resume, jd, brief);
-      if (seq === this.recheckSeq) this.coverReport.set(report);
+      if (seq === this.recheckSeq) {
+        this.coverReport.set(report);
+        this.checking.set(false);
+      }
     } catch {
-      if (seq === this.recheckSeq) this.coverReport.set(null);
+      if (seq === this.recheckSeq) {
+        this.coverReport.set(null);
+        this.checking.set(false);
+      }
     }
   }
 
@@ -484,7 +547,9 @@ export class CoverView {
     if (e.index < 0 || e.index >= paras.length || paras[e.index] === e.text) return;
     paras[e.index] = e.text;
     this.paragraphs.set(paras);
-    void this.recheck(letter, resume, jd, paras, this.effectiveBrief());
+    // Typing: debounce so editing several paragraphs is one model call, not one
+    // per blur.
+    this.scheduleRecheck(letter, resume, jd, paras, this.effectiveBrief());
   }
 
   /** "Confirm as evidence" on an `unrecorded` paragraph: persist its own text
@@ -507,7 +572,7 @@ export class CoverView {
           const resume = this.canonical();
           const jd = this.jd();
           if (letter && resume && jd) {
-            void this.recheck(letter, resume, jd, this.paragraphs(), res.brief);
+            this.scheduleRecheck(letter, resume, jd, this.paragraphs(), res.brief, true);
           }
           this.notify.emit('Confirmed: added as evidence for future drafts.');
         },
@@ -618,7 +683,14 @@ export class CoverView {
           const resume = this.canonical();
           const jd = this.jd();
           if (resume && jd) {
-            void this.recheck(res.letter, resume, jd, res.letter.paragraphs, this.effectiveBrief());
+            this.scheduleRecheck(
+              res.letter,
+              resume,
+              jd,
+              res.letter.paragraphs,
+              this.effectiveBrief(),
+              true,
+            );
           }
           this.fetchPdf(id); // the render just changed on disk — pull it fresh
           const dropped = res.dropped?.length ?? 0;
