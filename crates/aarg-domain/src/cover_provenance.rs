@@ -325,18 +325,55 @@ fn filler_stems() -> HashSet<String> {
 /// Ordinary English filler and cover-letter framing language — the words a
 /// paragraph is stitched together with, as opposed to the specific claims
 /// it makes. Removing these is what lets a purely connective paragraph
-/// come out `exempt` instead of looking like a wall of unrecorded words.
+/// come out `exempt`, and a rephrased-but-recorded one come out `grounded`,
+/// instead of looking like a wall of unrecorded words.
 ///
-/// Every entry is a closed-class function word (pronoun, article,
-/// preposition, conjunction, auxiliary, modal) or a generic framing word
-/// that carries no specific claim on its own (a politeness, a stock
-/// evaluative adjective, a generic verb, a generic collective noun).
-/// Nothing here is a skill, an employer, a technology, or a domain term —
-/// that boundary is load-bearing. A fabricated fact is always a specific
-/// word, so it is never on this list and never filtered away; only benign
-/// connective tissue is.
+/// **Why this is a broad list, not a short hand-picked one.** An earlier
+/// version held a dozen or so words tuned against a handful of synthetic
+/// test sentences. On real senior-level prose it failed badly: every
+/// paragraph of a genuine generated letter came back `unrecorded`, flagged
+/// on ordinary connective and evaluative vocabulary ("rigor", "clarity",
+/// "traceable", "auditable", "crisis", "partnership", even the bare
+/// function word "when"). None of those are fabricated facts; the letter
+/// had simply rephrased recorded facts in words the résumé's own bullets
+/// don't use. A manually-curated denylist can't keep up with natural
+/// language — there are too many ways to say the same non-claim — so the
+/// classifier drowned its real signal in false alarms and trained the
+/// reader to ignore every flag. The fix is to stop hand-picking and instead
+/// build the filler from two principled tiers.
+///
+/// **Tier 1 — a standard English stopword base.** Closed-class function
+/// words: articles, determiners, quantifiers, prepositions, conjunctions,
+/// pronouns and possessives, auxiliary and copula verb forms, and the
+/// common adverbs — the classic SMART/NLTK-style list. These are
+/// structurally incapable of being a specific claim, so no judgment call is
+/// needed for this tier; the point is only to be *complete* (the old list's
+/// gaps here are why a bare "when" survived as a supposed claim word).
+///
+/// **Tier 2 — a curated professional/evaluative supplement.** Generic
+/// words that describe the *manner*, *quality*, or *approach* of work
+/// rather than a concrete, checkable fact — plus the cover-letter framing
+/// vocabulary a letter is scaffolded with (politeness, sentiment, the
+/// generic nouns and verbs of applying for a job). "rigor", "clarity",
+/// "foundational", "systematically", "meaningfully", "partnership" belong
+/// here; a specific skill, employer, technology, metric, or domain term
+/// never does.
+///
+/// That tier-2 boundary is load-bearing and is the module's stated
+/// invariant: a fabricated fact is always a *specific* word (a skill name,
+/// an employer, a technology, a number, a domain term), so it is never on
+/// this list and never filtered away — only generic connective and
+/// evaluative tissue is. In particular the payments/billing family is
+/// deliberately absent: "pay"/"payments" is a genuine business-domain term,
+/// so an unbacked claim about handling payments must stay flagged. (It also
+/// needs no special-casing here: [`keyword_key`] already stems "payments",
+/// "payment", and "pay" to the same root, so when the résumé or posting
+/// really does name payments, a paragraph echoing it grounds through the
+/// corpus on its own.)
 const PROSE_FILLER: &[&str] = &[
-    // Pronouns and possessives.
+    // === Tier 1: standard English stopwords (function words) ===
+    //
+    // Pronouns, possessives, and reflexives.
     "i",
     "me",
     "my",
@@ -351,26 +388,35 @@ const PROSE_FILLER: &[&str] = &[
     "your",
     "yours",
     "yourself",
+    "yourselves",
     "they",
     "them",
     "their",
     "theirs",
+    "themselves",
     "it",
     "its",
+    "itself",
     "he",
     "him",
     "his",
+    "himself",
     "she",
     "her",
     "hers",
+    "herself",
     "one",
     "ones",
     "oneself",
+    // Interrogatives and relatives.
     "who",
     "whom",
     "whose",
     "which",
     "what",
+    "when",
+    "where",
+    "why",
     "how",
     "whatever",
     "whenever",
@@ -392,6 +438,8 @@ const PROSE_FILLER: &[&str] = &[
     "re",
     "s",
     "t",
+    "o",
+    "y",
     // Articles, determiners, quantifiers.
     "the",
     "a",
@@ -406,9 +454,12 @@ const PROSE_FILLER: &[&str] = &[
     "neither",
     "no",
     "not",
+    "nothing",
+    "none",
     "many",
     "much",
     "few",
+    "fewer",
     "several",
     "most",
     "more",
@@ -457,6 +508,8 @@ const PROSE_FILLER: &[&str] = &[
     "whether",
     "over",
     "under",
+    "above",
+    "below",
     "across",
     "through",
     "throughout",
@@ -480,6 +533,8 @@ const PROSE_FILLER: &[&str] = &[
     "against",
     "beyond",
     "behind",
+    "once",
+    "onwards",
     // Auxiliaries, modals, and the most generic verbs of being and doing.
     "be",
     "am",
@@ -588,8 +643,62 @@ const PROSE_FILLER: &[&str] = &[
     "deeply",
     "closely",
     "directly",
-    "here",
-    "there",
+    "exactly",
+    "meaningfully",
+    "systematically",
+    // === Tier 2: curated professional / evaluative / framing supplement ===
+    //
+    // Generic manner, quality, and approach words — they describe *how*
+    // work was done, never a specific, checkable fact. A fabricated skill,
+    // employer, technology, metric, or domain term is always a more
+    // specific word than any of these, so it survives the filter and is
+    // still flagged.
+    "ability",
+    "able",
+    "alone",
+    "challenge",
+    "challenging",
+    "clarity",
+    "clear",
+    "compromise",
+    "deliver",
+    "delivering",
+    "delivered",
+    "delivery",
+    "foundational",
+    "foundation",
+    "rigor",
+    "rigorous",
+    "traceable",
+    "auditable",
+    "crisis",
+    "retrofit",
+    "peripheral",
+    "multifaceted",
+    "critical",
+    "parallel",
+    "partnership",
+    "meaningful",
+    "last",
+    "force",
+    "ignore",
+    "lay",
+    "start",
+    "run",
+    "ran",
+    "grew",
+    "grow",
+    "growing",
+    "manner",
+    "approach",
+    "thorough",
+    "careful",
+    "deliberate",
+    "intentional",
+    "practical",
+    "pragmatic",
+    "disciplined",
+    "discipline",
     // Cover-letter framing: politeness, sentiment, and the generic nouns
     // and verbs a letter is scaffolded with. None of these is a specific
     // claim about the candidate's experience.
@@ -652,8 +761,6 @@ const PROSE_FILLER: &[&str] = &[
     "convenience",
     "qualification",
     "qualifications",
-    "grow",
-    "growing",
     "contribute",
     "contribution",
     "help",
@@ -701,7 +808,6 @@ const PROSE_FILLER: &[&str] = &[
     "anyone",
     "everyone",
     "lot",
-    "able",
     "good",
     "great",
     "strong",
@@ -1100,6 +1206,203 @@ mod tests {
             p.unbacked_tokens.contains(&token("leadership")),
             "expected leadership flagged, got {:?}",
             p.unbacked_tokens
+        );
+    }
+
+    // --- founding-engineer fixture for the real-prose regression ----------
+
+    /// A résumé for the scenario the real failure came from: a founding
+    /// engineer who scaled a team on a FINRA-regulated platform, working in
+    /// TypeScript and PostgreSQL with CI/CD and AI-assisted development. The
+    /// corpus this produces carries the *facts* the reconstructed paragraphs
+    /// below are built from, so anything that still flags is genuinely
+    /// unrecorded, not a rewording of a recorded fact.
+    fn founding_resume() -> TailoredResume {
+        TailoredResume {
+            build_id: BuildId("b2".into()),
+            jd_id: JdId("jd2".into()),
+            generated_at: Utc::now(),
+            contact: contact(),
+            target_title: Some("Founding Engineer".into()),
+            summary: "Founding engineer who scaled the engineering team on a FINRA regulated \
+                      platform."
+                .into(),
+            roles: vec![TailoredRole {
+                id: crate::dataset::types::RoleId("role-1".into()),
+                company: "Northwind".into(),
+                title: "Founding Engineer".into(),
+                start: crate::dataset::types::YearMonth {
+                    year: 2019,
+                    month: 1,
+                },
+                end: None,
+                location: None,
+                bullets: vec![
+                    TailoredBullet {
+                        source_id: crate::dataset::types::BulletId("bullet-1".into()),
+                        text: "Built code review and CI/CD releases across regulated systems."
+                            .into(),
+                    },
+                    TailoredBullet {
+                        source_id: crate::dataset::types::BulletId("bullet-2".into()),
+                        text: "Introduced AI assisted development with TypeScript and PostgreSQL \
+                               for a team of 20 engineers."
+                            .into(),
+                    },
+                ],
+            }],
+            education: Vec::new(),
+            skills_section: SkillsSection {
+                skills: vec![
+                    "Distributed systems".into(),
+                    "TypeScript".into(),
+                    "PostgreSQL".into(),
+                ],
+            },
+            projects: Vec::new(),
+            achievements: Vec::new(),
+            certifications: Vec::new(),
+        }
+    }
+
+    /// The posting for that scenario. `responsibilities` name the platform
+    /// but no payments language, so the payments family is absent from the
+    /// corpus unless a test adds it deliberately.
+    fn founding_jd() -> JobRequirements {
+        JobRequirements {
+            company: "Northwind".into(),
+            title: "Founding Engineer".into(),
+            seniority: Seniority::Senior,
+            location: None,
+            remote: RemotePolicy::Remote,
+            domain_keywords: Vec::new(),
+            required_skills: vec![
+                JdSkill {
+                    name: "TypeScript".into(),
+                    category: SkillCategory::Hard,
+                    importance: Importance::Critical,
+                    context_phrases: Vec::new(),
+                },
+                JdSkill {
+                    name: "PostgreSQL".into(),
+                    category: SkillCategory::Hard,
+                    importance: Importance::Required,
+                    context_phrases: Vec::new(),
+                },
+            ],
+            preferred_skills: Vec::new(),
+            responsibilities: vec!["Own the reliability of the core platform".into()],
+            ats_phrases: Vec::new(),
+            raw_text: String::new(),
+            source_url: None,
+        }
+    }
+
+    #[test]
+    fn real_generated_prose_is_not_wholesale_flagged() {
+        // The regression that motivated widening the filler. These four
+        // paragraphs rebuild a real generated letter's vocabulary — the same
+        // connective and evaluative words that came back flagged before
+        // ("rigor", "clarity", "traceable", "auditable", "crisis",
+        // "foundational", "systematically", "partnership", "when", ...) —
+        // over the facts the founding-engineer corpus records. Every one
+        // must now land Grounded (they each state backed facts); none may be
+        // Unrecorded. The old dozen-word filler flagged all four at 100%.
+        let paragraphs = [
+            "As a founding engineer I ran the engineering team through many challenges, \
+             delivering foundational work with clarity and without compromising the platform. \
+             That ability to deliver alone was the rigor the team ran on.",
+            "The FINRA regulated platform forced rigor into every release from the start. Code \
+             review had to be traceable and releases auditable, so nothing could be ignored. We \
+             systematically built that in rather than retrofit it, because a regulated platform \
+             could not ignore a crisis.",
+            "Across the last several roles I grew that engineering team meaningfully. When the \
+             platform needed it, nothing was peripheral.",
+            "AI assisted development was exactly the critical, multifaceted partnership the \
+             platform needed, so the team could run in parallel.",
+        ];
+        let letter = letter(&paragraphs);
+        let report = check_cover_provenance(&letter, &founding_resume(), &founding_jd(), None);
+        for (i, p) in report.paragraphs.iter().enumerate() {
+            assert_eq!(
+                p.status,
+                CoverParagraphStatus::Grounded,
+                "paragraph {i} wrongly flagged; unbacked tokens {:?}, digits {:?}",
+                p.unbacked_tokens,
+                p.unbacked_digits,
+            );
+        }
+    }
+
+    #[test]
+    fn a_genuinely_fabricated_claim_is_still_caught_after_widening() {
+        // The single most important guard on this change: proving the
+        // broader filler did not swallow real fabrications. This paragraph
+        // invents an employer (Globex), a technology (Fortran), and a metric
+        // (87) that appear nowhere in the corpus. All three are specific
+        // words, so none is filler, and each must still be flagged.
+        let letter = letter(&[
+            "I built the settlement system at Globex with Fortran, cutting reconciliation latency \
+             by 87 percent.",
+        ]);
+        let report = check_cover_provenance(&letter, &founding_resume(), &founding_jd(), None);
+        let p = &report.paragraphs[0];
+        assert_eq!(p.status, CoverParagraphStatus::Unrecorded);
+        assert!(
+            p.unbacked_tokens.contains(&token("Globex")),
+            "invented employer must still flag; got {:?}",
+            p.unbacked_tokens
+        );
+        assert!(
+            p.unbacked_tokens.contains(&token("Fortran")),
+            "invented technology must still flag; got {:?}",
+            p.unbacked_tokens
+        );
+        assert!(
+            p.unbacked_digits.contains(&"87".to_string()),
+            "invented metric must still flag; got {:?}",
+            p.unbacked_digits
+        );
+    }
+
+    #[test]
+    fn payments_language_grounds_only_when_the_corpus_actually_carries_it() {
+        // The "pay" investigation from the real failure. keyword_key stems
+        // "payments", "payment", and "pay" all to the same root, so there is
+        // no tokenization mismatch to fix: when the posting actually names
+        // payments, a paragraph echoing it grounds through the corpus. The
+        // real letter's lone "pay" flag was therefore correct — that corpus
+        // simply carried no payments language — and "pay"/"payments" is a
+        // genuine business-domain term that must never be filtered as
+        // filler, so an unbacked payments claim stays flagged.
+        let paragraph = "I want to own the payments platform.";
+        assert_eq!(token("payments"), token("pay"), "the two must share a stem");
+
+        // Posting names the platform but no payments: the claim is unbacked.
+        let without = check_cover_provenance(
+            &letter(&[paragraph]),
+            &founding_resume(),
+            &founding_jd(),
+            None,
+        );
+        let p = &without.paragraphs[0];
+        assert_eq!(p.status, CoverParagraphStatus::Unrecorded);
+        assert!(
+            p.unbacked_tokens.contains(&token("payments")),
+            "an unbacked payments claim must flag; got {:?}",
+            p.unbacked_tokens
+        );
+
+        // Posting names payments: the same paragraph now grounds, with no
+        // special-casing — the shared stem matches through the corpus.
+        let mut jd_pay = founding_jd();
+        jd_pay.responsibilities = vec!["Scale the payments platform end to end".into()];
+        let with = check_cover_provenance(&letter(&[paragraph]), &founding_resume(), &jd_pay, None);
+        assert_eq!(
+            with.paragraphs[0].status,
+            CoverParagraphStatus::Grounded,
+            "payments language in the posting must ground the echo; got {:?}",
+            with.paragraphs[0].unbacked_tokens
         );
     }
 }
