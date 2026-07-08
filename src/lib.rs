@@ -35,6 +35,7 @@ pub mod pricing;
 pub mod readability;
 pub mod render;
 pub mod repl;
+pub mod repoimport;
 pub mod secrets;
 pub mod style;
 pub mod templates;
