@@ -141,6 +141,12 @@ pub enum SourceKind {
 /// with or without `www.`, and the `git@github.com:owner/repo.git` SSH form)
 /// resolve to a repo or a profile; everything else is a local path — including
 /// something that merely looks path-like, since that is exactly the folder case.
+///
+/// One rough edge this leaves: a URL-shaped source naming some other host
+/// (`https://gitlab.com/user/repo`) falls through to `SourceKind::Local` too,
+/// which reads as a bogus path and surfaces as a confusing "found nothing to
+/// analyze" rather than naming the host as unsupported.
+// EXERCISE(EX-020)
 pub fn detect_source(input: &str) -> SourceKind {
     let trimmed = input.trim();
     parse_github(trimmed).unwrap_or_else(|| SourceKind::Local(PathBuf::from(trimmed)))
@@ -678,7 +684,9 @@ const SYSTEM_PROMPT: &str = r#"You analyze one software project from the concret
 
 Rules, all of them binding:
 - Use only what the material actually shows. Never name a technology, framework, language, achievement, or scope that the README, a manifest, or the language breakdown does not evidence. If the material is thin, propose fewer skills, not invented ones.
+- Not all evidence carries the same weight. A dependency manifest entry and the language breakdown are primary evidence: structural facts about the codebase itself, hard to fake. The README is the project's own description of itself, which is secondary evidence: its prose can overstate ("production-grade", "enterprise-ready") or claim a technology the manifests and language breakdown never back.
 - Every proposed skill carries a short "reason" naming the concrete evidence for it: a specific dependency ("sqlx dependency", "reads as the Postgres driver"), the language breakdown ("42 .rs files"), or the README's own words. A skill you cannot ground in the material this way must not appear at all.
+- When a skill rests only on the README, with nothing in the manifests or language breakdown backing it, say so plainly in the reason instead of stating it with manifest-level confidence, e.g. "README states this; not found in dependencies". When a manifest or the language breakdown corroborates a README claim, cite that corroboration instead - it is now primary evidence.
 - Propose a skill for a real language or technology, not for a generic soft skill the material cannot show. "Rust" grounded in .rs files is good; "teamwork" is not something a repo evidences.
 - The summary states only what the README and manifests say the project does. Do not inflate its scale, its users, or its outcomes.
 - category is one of "hard", "soft", "domain", "tool", "language", or "framework".
@@ -1224,7 +1232,7 @@ mod tests {
             "engine",
             "../sibling",
             "github.com", // no owner segment: not a GitHub URL we can use
-            "https://gitlab.com/user/repo",
+            "https://gitlab.com/user/repo", // a non-github host: see EX-020
         ] {
             assert_eq!(
                 detect_source(path),
@@ -1232,6 +1240,13 @@ mod tests {
                 "{path:?} should be local"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "exercise: a URL-shaped source naming a host other than github.com (e.g. https://gitlab.com/user/repo) currently detects as SourceKind::Local, which reads as a bogus path and reports a confusing \"found nothing to analyze\"; add a way to recognize this shape and return a clear \"unsupported source\" error instead, then finish this test"]
+    fn ex_020_an_unsupported_host_is_a_clear_error_not_a_silent_local_path() {
+        let unsupported_hosts_get_a_clear_error = false;
+        assert!(unsupported_hosts_get_a_clear_error);
     }
 
     // ----- manifest parsing -----
@@ -1439,6 +1454,73 @@ mod tests {
         assert_eq!(analysis.name, "demo");
         assert_eq!(analysis.skills.len(), 1);
         assert_eq!(analysis.skills[0].name, "Rust");
+    }
+
+    #[tokio::test]
+    async fn the_prompt_tiers_manifest_and_readme_evidence() {
+        let material = RepoMaterial {
+            name: "demo".into(),
+            url: None,
+            readme: Some("readme".into()),
+            manifests: Vec::new(),
+            languages: Vec::new(),
+        };
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"name": "demo", "summary": "s", "skills": []}"#);
+        ProjectAnalysisAgent
+            .run(&ctx(&mock), material)
+            .await
+            .unwrap();
+
+        // A manifest entry and the language breakdown are structural facts;
+        // the README is the project's own, possibly-inflated self-description
+        // - the model is told to weigh them differently, not treat all three
+        // as equally solid grounds for a skill.
+        let requests = mock.requests();
+        let system = requests[0].system.as_deref().unwrap();
+        assert!(system.contains("primary evidence"));
+        assert!(system.contains("README is the project's own description of itself"));
+        assert!(system.contains("not found in dependencies"));
+    }
+
+    #[tokio::test]
+    async fn a_readme_only_skill_names_its_weaker_evidence_distinctly() {
+        let dir = fixture_repo();
+        let material = read_repo(dir.path(), "engine", None).unwrap().unwrap();
+
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"name": "Engine", "summary": "A task engine.",
+                "skills": [
+                    {"name": "PostgreSQL", "reason": "sqlx dependency", "category": "tool"},
+                    {"name": "Kubernetes", "reason": "README states this; not found in dependencies", "category": "tool"}
+                ]}"#,
+        );
+        let analysis = ProjectAnalysisAgent
+            .run(&ctx(&mock), material)
+            .await
+            .unwrap()
+            .output;
+
+        let manifest_backed = analysis
+            .skills
+            .iter()
+            .find(|s| s.name == "PostgreSQL")
+            .unwrap();
+        let readme_only = analysis
+            .skills
+            .iter()
+            .find(|s| s.name == "Kubernetes")
+            .unwrap();
+        // Same shape (both are just a `reason` string), but the wording
+        // carries a visibly different evidentiary weight: one names a
+        // concrete manifest fact, the other flags itself as unconfirmed.
+        assert_eq!(manifest_backed.reason, "sqlx dependency");
+        assert_eq!(
+            readme_only.reason,
+            "README states this; not found in dependencies"
+        );
+        assert_ne!(manifest_backed.reason, readme_only.reason);
     }
 
     // ----- the confirm step (ScriptedUser) -----
