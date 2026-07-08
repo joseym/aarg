@@ -838,6 +838,14 @@ pub enum CliError {
     #[error(transparent)]
     Import(#[from] crate::repoimport::ImportError),
 
+    #[error(
+        "all {attempted} project(s) in this import failed ({failed} error(s)); nothing was saved"
+    )]
+    #[diagnostic(help(
+        "see the per-project errors above; fix the source (a bad URL, a private repo, a rate limit) and re-run"
+    ))]
+    ImportBatchFailed { attempted: usize, failed: usize },
+
     #[error("no writing sample was provided")]
     #[diagnostic(help(
         "pipe a file (`aarg voice add < sample.txt`) or type the text and press Ctrl-D"

@@ -216,6 +216,11 @@ async fn import_profile(gh_user: String, user: &dyn UserHandle) -> Result<(), Cl
 /// Analyze each gathered project, run the confirm step, and save once. Loads
 /// the dataset a single time and mutates it in memory across every project, so
 /// a multi-repo import is one atomic save rather than a write per project.
+///
+/// A failure analyzing or recording one project (a bad clone, a rate-limited
+/// GitHub call, an LLM hiccup, a repo picked off a stale profile listing that
+/// no longer analyzes cleanly) does not sink the whole batch: `import_batch`
+/// reports it and moves on, so the projects that did succeed are still saved.
 async fn run_import(materials: Vec<RepoMaterial>, user: &dyn UserHandle) -> Result<(), CliError> {
     if materials.is_empty() {
         eprintln!("{}", style::info("nothing to import · nothing added"));
@@ -231,8 +236,84 @@ async fn run_import(materials: Vec<RepoMaterial>, user: &dyn UserHandle) -> Resu
         sink: None,
     };
 
+    let attempted = materials.len();
     let mut dataset = store::load()?;
+    let (summaries, failures) = import_batch(&mut dataset, materials, &ctx, user).await;
+
+    if summaries.is_empty() {
+        // Every project in the batch failed: there is nothing new to save, so
+        // this is a clean error rather than a quiet "0 changes" success — a
+        // script driving this needs its exit code to say the import produced
+        // nothing, not read it as an empty pick. (A single-item import that
+        // fails takes this same path with `attempted == 1`.)
+        return Err(CliError::ImportBatchFailed {
+            attempted,
+            failed: failures.len(),
+        });
+    }
+
+    dataset.metadata.updated_at = chrono::Utc::now();
+    store::save(&dataset)?;
+
+    let mut any_skipped = false;
+    for summary in &summaries {
+        any_skipped |= !summary.skipped_new.is_empty();
+        report_summary(summary);
+    }
+    if any_skipped && !user.is_interactive() {
+        eprintln!(
+            "{}",
+            style::suggest(
+                "new skills were not added because no terminal was available · re-run interactively to add them"
+            )
+        );
+    }
+    if !failures.is_empty() {
+        let names: Vec<&str> = failures.iter().map(|(name, _)| name.as_str()).collect();
+        eprintln!(
+            "{}",
+            style::warn(format!(
+                "{} project(s) failed and were not recorded: {}",
+                failures.len(),
+                names.join(", ")
+            ))
+        );
+    }
+    let tail = if failures.is_empty() {
+        String::new()
+    } else {
+        format!(", {} failed", failures.len())
+    };
+    eprintln!(
+        "{}",
+        style::success(format!(
+            "dataset saved (previous version backed up) · {} project(s) recorded{tail}",
+            summaries.len()
+        ))
+    );
+    Ok(())
+}
+
+/// Analyze and record each material against `dataset` in place, one project
+/// at a time. A project that fails analysis or the confirm/apply step is
+/// reported and skipped rather than aborting the rest of the batch, so an
+/// error in the middle of a multi-repo import can't erase the work already
+/// done for the ones before it (or the ones after it never get a chance to
+/// run). Returns the summaries for what succeeded and, separately, the name
+/// and error for what didn't — the caller decides what that means for saving.
+///
+/// Split out from `run_import` so this behavior is testable directly against
+/// an in-memory dataset and a `MockLlmClient`, without `configured_client`'s
+/// real credential lookup or the dataset store's real filesystem path.
+async fn import_batch(
+    dataset: &mut ResumeDataset,
+    materials: Vec<RepoMaterial>,
+    ctx: &AgentContext<'_>,
+    user: &dyn UserHandle,
+) -> (Vec<ImportSummary>, Vec<(String, CliError)>) {
     let mut summaries = Vec::new();
+    let mut failures = Vec::new();
+
     for material in materials {
         let name = material.name.clone();
         let url = material.url.clone();
@@ -243,10 +324,18 @@ async fn run_import(materials: Vec<RepoMaterial>, user: &dyn UserHandle) -> Resu
                 ctx.model.resolve("project_analysis_v1", ModelTier::Cheap)
             ))
         );
-        let analysis = repoimport::ProjectAnalysisAgent
-            .run(&ctx, material)
-            .await?
-            .output;
+        let analysis = match repoimport::ProjectAnalysisAgent.run(ctx, material).await {
+            Ok(reply) => reply.output,
+            Err(err) => {
+                let err: CliError = err.into();
+                eprintln!(
+                    "{}",
+                    style::fail(format!("{name}: analysis failed · {err}"))
+                );
+                failures.push((name, err));
+                continue;
+            }
+        };
 
         // Show what was found before anything is written.
         eprintln!(
@@ -272,34 +361,20 @@ async fn run_import(materials: Vec<RepoMaterial>, user: &dyn UserHandle) -> Resu
             }
         }
 
-        let summary = repoimport::apply_import(&mut dataset, analysis, url, user).await?;
-        summaries.push(summary);
+        match repoimport::apply_import(dataset, analysis, url, user).await {
+            Ok(summary) => summaries.push(summary),
+            Err(err) => {
+                let err: CliError = err.into();
+                eprintln!(
+                    "{}",
+                    style::fail(format!("{name}: could not record it · {err}"))
+                );
+                failures.push((name, err));
+            }
+        }
     }
 
-    dataset.metadata.updated_at = chrono::Utc::now();
-    store::save(&dataset)?;
-
-    let mut any_skipped = false;
-    for summary in &summaries {
-        any_skipped |= !summary.skipped_new.is_empty();
-        report_summary(summary);
-    }
-    if any_skipped && !user.is_interactive() {
-        eprintln!(
-            "{}",
-            style::suggest(
-                "new skills were not added because no terminal was available · re-run interactively to add them"
-            )
-        );
-    }
-    eprintln!(
-        "{}",
-        style::success(format!(
-            "dataset saved (previous version backed up) · {} project(s) recorded",
-            summaries.len()
-        ))
-    );
-    Ok(())
+    (summaries, failures)
 }
 
 /// One line summarizing what an import wrote for a project.
@@ -528,6 +603,9 @@ fn next_project_id(dataset: &ResumeDataset) -> ProjectId {
 mod tests {
     use super::*;
     use crate::dataset::types::{Contact, Proficiency, RoleId, Skill, SkillCategory, SkillId};
+    use crate::llm::MockLlmClient;
+    use crate::trace::Tracer;
+    use crate::user::ScriptedUser;
 
     fn skill(id: &str) -> Skill {
         Skill {
@@ -610,5 +688,132 @@ mod tests {
                 .evidence
                 .contains(&EvidenceRef::Role(RoleId("role-1".into())))
         );
+    }
+
+    // ----- batch import: one failure must not sink the others -----
+
+    fn agent_ctx(mock: &MockLlmClient) -> AgentContext<'_> {
+        AgentContext {
+            llm: mock,
+            model: &"m",
+            tracer: &Tracer::DISABLED,
+            sink: None,
+        }
+    }
+
+    fn material(name: &str) -> RepoMaterial {
+        RepoMaterial {
+            name: name.to_string(),
+            url: None,
+            readme: Some(format!("{name} readme")),
+            manifests: Vec::new(),
+            languages: Vec::new(),
+        }
+    }
+
+    /// A dataset that already records Rust and Typst (with their aliases, so
+    /// a proposed skill of either name *links* rather than mints), for a test
+    /// that shouldn't need to script skill-confirmation answers.
+    fn dataset_with_recorded_skills() -> ResumeDataset {
+        let mut d = dataset();
+        for name in ["Rust", "Typst"] {
+            d.skills
+                .aliases
+                .insert(name.to_lowercase(), SkillId(name.into()));
+        }
+        d
+    }
+
+    #[tokio::test]
+    async fn import_batch_saves_the_survivors_when_a_middle_project_fails() {
+        let mut d = dataset_with_recorded_skills();
+        let mock = MockLlmClient::default();
+        // alpha analyzes cleanly and links the already-recorded Rust skill.
+        mock.enqueue(
+            r#"{"name": "Alpha", "summary": "First project.",
+                "skills": [{"name": "Rust", "reason": "language breakdown", "category": "language"}]}"#,
+        );
+        // beta: both the first attempt and its one corrective retry are
+        // unparseable, so the agent gives up with a typed error - the LLM
+        // hiccup this test stands in for.
+        mock.enqueue("not json at all");
+        mock.enqueue("still not json");
+        // gamma analyzes cleanly and links the already-recorded Typst skill.
+        mock.enqueue(
+            r#"{"name": "Gamma", "summary": "Third project.",
+                "skills": [{"name": "Typst", "reason": "language breakdown", "category": "language"}]}"#,
+        );
+
+        let user = ScriptedUser::new();
+        let ctx = agent_ctx(&mock);
+        let (summaries, failures) = import_batch(
+            &mut d,
+            vec![material("alpha"), material("beta"), material("gamma")],
+            &ctx,
+            &user,
+        )
+        .await;
+
+        // alpha and gamma both made it through; beta is reported as failed,
+        // not silently dropped and not fatal to the other two.
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].project_name, "Alpha");
+        assert_eq!(summaries[1].project_name, "Gamma");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0, "beta");
+        assert!(matches!(failures[0].1, CliError::Import(_)));
+
+        // The dataset (which the caller would go on to save) carries both
+        // survivors and nothing from the failed middle project.
+        let names: Vec<&str> = d.projects.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Alpha", "Gamma"]);
+
+        let rust = d
+            .skills
+            .skills
+            .iter()
+            .find(|s| s.canonical_name == "Rust")
+            .unwrap();
+        assert!(
+            rust.evidence
+                .contains(&EvidenceRef::Project(ProjectId("project-1".into())))
+        );
+        let typst = d
+            .skills
+            .skills
+            .iter()
+            .find(|s| s.canonical_name == "Typst")
+            .unwrap();
+        assert!(
+            typst
+                .evidence
+                .contains(&EvidenceRef::Project(ProjectId("project-2".into())))
+        );
+    }
+
+    #[tokio::test]
+    async fn import_batch_reports_every_failure_when_all_projects_fail() {
+        let mut d = dataset_with_recorded_skills();
+        let mock = MockLlmClient::default();
+        for _ in 0..2 {
+            mock.enqueue("nope");
+            mock.enqueue("still nope");
+        }
+        let user = ScriptedUser::new();
+        let ctx = agent_ctx(&mock);
+        let (summaries, failures) = import_batch(
+            &mut d,
+            vec![material("alpha"), material("beta")],
+            &ctx,
+            &user,
+        )
+        .await;
+
+        assert!(summaries.is_empty(), "nothing succeeded");
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].0, "alpha");
+        assert_eq!(failures[1].0, "beta");
+        // Nothing was written to the dataset for either failed project.
+        assert!(d.projects.is_empty());
     }
 }
