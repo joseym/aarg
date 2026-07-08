@@ -1,4 +1,6 @@
-import { coverExists, isEmptyBrief } from './cover-view';
+import { HttpErrorResponse } from '@angular/common/http';
+
+import { coverExists, coverRecheckErrorMessage, isEmptyBrief } from './cover-view';
 import type { CoverBrief } from '../../models';
 
 describe('coverExists', () => {
@@ -39,5 +41,33 @@ describe('isEmptyBrief', () => {
     expect(isEmptyBrief({ ...blank, tone: 'direct' })).toBe(false);
     expect(isEmptyBrief({ ...blank, motivation: 'used their product for years' })).toBe(false);
     expect(isEmptyBrief({ ...blank, constraints: ['skip my current employer'] })).toBe(false);
+  });
+});
+
+describe('coverRecheckErrorMessage', () => {
+  it('names the check as what failed, not the letter or a paragraph', () => {
+    const msg = coverRecheckErrorMessage(new Error('network error'));
+    expect(msg).toContain("Couldn’t check this letter’s provenance right now");
+    expect(msg).not.toContain('unrecorded');
+  });
+
+  it('carries a plain Error message through', () => {
+    expect(coverRecheckErrorMessage(new Error('timed out'))).toContain('timed out');
+  });
+
+  it('carries a bare string reason through', () => {
+    expect(coverRecheckErrorMessage('bad key')).toContain('bad key');
+  });
+
+  it('unwraps an HttpErrorResponse envelope message', () => {
+    const err = new HttpErrorResponse({
+      error: { error: { message: 'the model proxy is unreachable' } },
+      status: 502,
+    });
+    expect(coverRecheckErrorMessage(err)).toContain('the model proxy is unreachable');
+  });
+
+  it('falls back to a generic reason for an unrecognized error shape', () => {
+    expect(coverRecheckErrorMessage({})).toContain('the request failed');
   });
 });

@@ -510,7 +510,15 @@ export class CoverView {
    *  result (an older check resolving after a newer edit) is dropped via
    *  {@link recheckSeq}, which also gates clearing the {@link checking} flag so
    *  a superseded call never turns the pending state off early. Reached only
-   *  through {@link scheduleRecheck}. */
+   *  through {@link scheduleRecheck}.
+   *
+   *  The classifier is a real model call now, so this can fail (a network
+   *  error, a bad key, an unparseable reply) — a failure clears {@link
+   *  coverReport}, which hides the claim badge and drops the editing pane back
+   *  to its "Checking…" placeholder, so it surfaces the same way every other
+   *  action in this file does: an inline {@link errorMsg} plus the workspace
+   *  toast, worded so it reads as the check failing, never as the letter or a
+   *  paragraph being unrecorded. */
   private async recheck(
     letter: CoverLetter,
     resume: TailoredResume,
@@ -525,11 +533,15 @@ export class CoverView {
       if (seq === this.recheckSeq) {
         this.coverReport.set(report);
         this.checking.set(false);
+        this.errorMsg.set(null);
       }
-    } catch {
+    } catch (err) {
       if (seq === this.recheckSeq) {
         this.coverReport.set(null);
         this.checking.set(false);
+        const msg = coverRecheckErrorMessage(err);
+        this.errorMsg.set(msg);
+        this.notify.emit(msg);
       }
     }
   }
@@ -763,4 +775,12 @@ function coverErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   return 'the request failed';
+}
+
+/** The message surfaced when a provenance {@link CoverView.recheck} itself
+ *  fails, as opposed to the classifier running and finding a paragraph
+ *  unrecorded. Named around "check" throughout so it can never be misread as
+ *  a verdict on the letter — this is the model call not completing at all. */
+export function coverRecheckErrorMessage(err: unknown): string {
+  return `Couldn’t check this letter’s provenance right now: ${coverErrorMessage(err)}`;
 }
