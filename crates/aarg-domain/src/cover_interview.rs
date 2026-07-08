@@ -9,13 +9,16 @@
 //! reads as generic enthusiasm dressed up in facts. None of that traces
 //! to the candidate.
 //!
-//! So this module only ever asks. [`run_cover_interview`] runs draft-first:
-//! it generates a naive preliminary letter from the résumé and JD alone
-//! (reusing [`write_cover_letter`](crate::cover::write_cover_letter) with no
-//! brief), then reads its own honesty check
+//! So this module only ever asks. [`run_cover_interview`] runs draft-first,
+//! silently, before anything is put in front of the candidate: it generates a
+//! naive preliminary letter from the résumé and JD alone (reusing
+//! [`write_cover_letter`](crate::cover::write_cover_letter) with no brief).
+//! Only once the candidate has answered the interview's leading open
+//! question does it read the draft's own honesty check
 //! ([`check_cover_provenance`](crate::cover_provenance)) to see which
-//! paragraphs make a claim the candidate's evidence doesn't back. Those
-//! flagged paragraphs are the interview: for each one,
+//! paragraphs make a claim the candidate's evidence doesn't back — run at
+//! that point, not sooner, so a claim the leading answer already grounded
+//! doesn't get flagged as a gap. Those flagged paragraphs are the interview: for each one,
 //! [`CoverGapQuestionAgent`] phrases a single, specific question that puts the
 //! claim back to the candidate to confirm, expand, or drop — a better use of
 //! their attention than a fixed list of generic questions asked before anyone
@@ -50,7 +53,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{Agent, AgentContext};
-use crate::cover::write_cover_letter;
+use crate::cover::{CoverLetter, write_cover_letter};
 use crate::cover_provenance::{CoverParagraphStatus, check_cover_provenance};
 use crate::jd::JobRequirements;
 use crate::llm::LlmError;
@@ -801,28 +804,46 @@ fn gap_snippet(text: &str) -> String {
     }
 }
 
-/// Draft-first gap discovery: generate a naive preliminary letter from the
-/// résumé and JD alone (no brief), then run the provenance check over it —
-/// giving that check the `brief` gathered so far, so a claim the candidate
-/// already grounded with the leading open question doesn't read as a gap.
-/// Returns the flagged paragraphs in draft order.
+/// Draft-first, step one: draft a naive preliminary letter from the résumé
+/// and JD alone (no brief). Called before the candidate is shown anything —
+/// see [`run_cover_interview`] — so the tailoring work is already done, and
+/// silent, by the time the leading question appears.
 ///
-/// Every failure mode collapses to "no gaps": a model error drafting the
-/// scratch letter, a draft that assembles to nothing, or a failed provenance
-/// call all return an empty list, and the caller falls back to the fixed-topic
-/// walk-through. The preliminary letter is never returned or persisted — only
+/// `None` on any model failure or a draft that assembles to nothing; the
+/// caller then has no scratch draft to check and [`gather_gaps`] reports no
+/// gaps, so the session falls back to the fixed-topic walk-through.
+async fn draft_scratch_letter(
+    ctx: &AgentContext<'_>,
+    resume: &TailoredResume,
+    jd: &JobRequirements,
+) -> Option<CoverLetter> {
+    let (letter, _warnings, _usage) = write_cover_letter(ctx, resume, jd, &[], None).await.ok()?;
+    Some(letter)
+}
+
+/// Draft-first, step two: run the already-drafted scratch letter's
+/// provenance check, and collect the paragraphs it flagged as unsupported,
+/// in draft order. Called after the leading question — see
+/// [`run_cover_interview`] — so the check gets `brief` with whatever that
+/// answer already contributed, and a claim the candidate just grounded
+/// doesn't read as a gap.
+///
+/// Every failure mode collapses to "no gaps": no scratch draft to check
+/// (`letter` is `None`) or a failed provenance call both return an empty
+/// list, and the caller falls back to the fixed-topic walk-through. The
+/// scratch letter itself is never returned or persisted from here — only
 /// the list of gaps it revealed leaves this function.
 async fn gather_gaps(
     ctx: &AgentContext<'_>,
+    letter: Option<&CoverLetter>,
     resume: &TailoredResume,
     jd: &JobRequirements,
     brief: &CoverBrief,
 ) -> Vec<GapParagraph> {
-    let Ok((letter, _warnings, _usage)) = write_cover_letter(ctx, resume, jd, &[], None).await
-    else {
+    let Some(letter) = letter else {
         return Vec::new();
     };
-    let Ok(report) = check_cover_provenance(ctx, &letter, resume, jd, Some(brief)).await else {
+    let Ok(report) = check_cover_provenance(ctx, letter, resume, jd, Some(brief)).await else {
         return Vec::new();
     };
     report
@@ -843,20 +864,26 @@ async fn gather_gaps(
 // ---------------------------------------------------------------------
 
 /// Interview the candidate about the cover letter and return what they said
-/// as a [`CoverBrief`]. Opens with one free-form question — anything they
-/// already know they want said — which costs no model call and lands in
-/// `emphasis`. Then it runs draft-first (see the module doc): a naive
-/// preliminary letter is drafted from the résumé and JD alone, its honesty
-/// check ([`check_cover_provenance`](crate::cover_provenance)) finds the
-/// paragraphs that claim something the evidence doesn't back, and each such gap
-/// becomes one targeted question ([`CoverGapQuestionAgent`]) whose answer lands
-/// in `emphasis` verbatim. When the preliminary draft has no gaps — or can't be
-/// drafted or checked — the session falls back to the original fixed
-/// walk-through over the letter's angle, emphasis, tone, motivation, and
-/// constraints, each with an optional guarded suggestion first. Every field
-/// comes from the user's own typed answers either way, whether typed directly
-/// or accepted from a suggestion — the agents only ever ask or propose (see
-/// [`CoverBrief`]'s doc comment for how that's enforced structurally).
+/// as a [`CoverBrief`]. Runs draft-first (see the module doc), split across
+/// two points in the flow: a naive preliminary letter is drafted from the
+/// résumé and JD alone *before the candidate sees anything at all* — the
+/// tailoring work is already done, silently, by the time the first prompt
+/// appears. That first prompt is one free-form question — anything the
+/// candidate already knows they want said — which costs no model call and
+/// lands in `emphasis`. Only after that question is answered does the
+/// preliminary draft's honesty check
+/// ([`check_cover_provenance`](crate::cover_provenance)) run, now with
+/// whatever the leading answer contributed already folded into the brief, so
+/// a claim it just grounded doesn't read as a gap. Each paragraph the check
+/// still flags becomes one targeted question ([`CoverGapQuestionAgent`])
+/// whose answer lands in `emphasis` verbatim. When the preliminary draft has
+/// no gaps — or can't be drafted or checked — the session falls back to the
+/// original fixed walk-through over the letter's angle, emphasis, tone,
+/// motivation, and constraints, each with an optional guarded suggestion
+/// first. Every field comes from the user's own typed answers either way,
+/// whether typed directly or accepted from a suggestion — the agents only
+/// ever ask or propose (see [`CoverBrief`]'s doc comment for how that's
+/// enforced structurally).
 ///
 /// The preliminary draft is scratch: it is neither returned nor persisted, and
 /// only the list of gaps it revealed shapes the questions. The caller always
@@ -877,6 +904,14 @@ pub async fn run_cover_interview(
     if !user.is_interactive() {
         return Ok(brief);
     }
+
+    // Draft-first, step one, before anything is shown to the candidate: draft
+    // a naive scratch letter from the résumé and JD alone. Its own honesty
+    // check runs later (step two, below), once the leading question has had
+    // its chance to ground a claim in the brief - checking now, with an
+    // always-empty brief, would flag paragraphs that answer was about to
+    // cover.
+    let scratch_letter = draft_scratch_letter(ctx, resume, jd).await;
 
     // A single open door before the guided walk-through: some candidates
     // already know exactly what they want said and would rather say it once
@@ -905,11 +940,10 @@ pub async fn run_cover_interview(
 
     let mut asked = 0usize;
 
-    // Draft-first: draft a naive scratch letter, then let its own honesty
-    // check tell us which paragraphs need the candidate's word. Passing the
-    // brief-so-far means the leading answer can already have grounded a claim
-    // that would otherwise read as a gap.
-    let gaps = gather_gaps(ctx, resume, jd, &brief).await;
+    // Draft-first, step two: the scratch letter is already drafted, so let
+    // its own honesty check tell us which paragraphs need the candidate's
+    // word, now that the leading answer (if any) is folded into `brief`.
+    let gaps = gather_gaps(ctx, scratch_letter.as_ref(), resume, jd, &brief).await;
 
     // The gap-driven interview: one targeted question per flagged paragraph,
     // up to the shared MAX_QUESTIONS budget (the free leading question doesn't
@@ -1125,12 +1159,14 @@ mod tests {
 
     /// Enqueue the two model replies the draft-first flow makes before it can
     /// ever reach the fixed-topic fallback: a one-paragraph preliminary letter
-    /// (no digits, so it survives the digit guard against the sample résumé)
-    /// and a `grounded` verdict for it. With no gap found, `gather_gaps`
-    /// returns empty and the session falls back to the fixed walk-through the
-    /// rest of a script exercises. Prepend this to any test that drives the
-    /// fixed topics, since the leading question is asked first (no model call)
-    /// and these two calls come next.
+    /// (no digits, so it survives the digit guard against the sample résumé),
+    /// drafted first, and a `grounded` verdict for it, checked after the
+    /// leading question (itself no model call). With no gap found,
+    /// `gather_gaps` returns empty and the session falls back to the fixed
+    /// walk-through the rest of a script exercises. Prepend this to any test
+    /// that drives the fixed topics — the request queue is FIFO regardless of
+    /// where the leading question's `ask` falls in between, so these two
+    /// replies are still consumed first, in order.
     fn enqueue_grounded_preliminary(mock: &MockLlmClient) {
         mock.enqueue(r#"{"paragraphs": ["A grounded paragraph drawn from the resume."]}"#);
         mock.enqueue(r#"{"paragraphs": [{"status": "grounded", "unbacked": ""}]}"#);
@@ -1763,6 +1799,10 @@ mod tests {
     #[tokio::test]
     async fn an_exhausted_queue_at_the_leading_question_abandons_before_any_slot_is_reached() {
         let mock = MockLlmClient::default();
+        // The scratch draft is generated before the leading question is ever
+        // asked, so it still goes out to the model here even though the
+        // interview abandons at that very next step.
+        mock.enqueue(r#"{"paragraphs": ["A grounded paragraph drawn from the resume."]}"#);
         let user = ScriptedUser::new();
         // No answers queued at all: the leading question's `ask` fails
         // immediately, the same degrade contract as an ask failure
@@ -1774,10 +1814,67 @@ mod tests {
             .unwrap();
 
         assert_eq!(brief, CoverBrief::default());
-        assert!(
-            mock.requests().is_empty(),
-            "the leading question costs no model call, and no slot is ever reached"
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "the scratch draft costs one model call even though the interview abandons \
+             at the leading question and no slot is ever reached"
         );
+    }
+
+    #[tokio::test]
+    async fn the_scratch_draft_is_generated_before_the_leading_question_is_asked() {
+        // Proves the reordering directly: at the moment the leading question
+        // (the first and only thing this test's user is ever asked) is put to
+        // the user, the scratch draft's `write_cover_letter` call must
+        // already have gone out to the model - not after.
+        struct AssertsDraftAlreadySent<'a> {
+            inner: ScriptedUser,
+            mock: &'a MockLlmClient,
+            asked: std::sync::atomic::AtomicBool,
+        }
+
+        #[async_trait]
+        impl UserHandle for AssertsDraftAlreadySent<'_> {
+            async fn ask(&self, question: Question) -> Result<Answer, AskError> {
+                if !self.asked.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    assert_eq!(
+                        self.mock.requests().len(),
+                        1,
+                        "the scratch draft must be generated before the leading question is asked"
+                    );
+                }
+                self.inner.ask(question).await
+            }
+            async fn confirm(&self, prompt: &str, default: bool) -> Result<bool, AskError> {
+                self.inner.confirm(prompt, default).await
+            }
+            fn notify(&self, message: &str) {
+                self.inner.notify(message);
+            }
+            fn is_interactive(&self) -> bool {
+                true
+            }
+        }
+
+        let mock = MockLlmClient::default();
+        // Only the scratch draft is queued. If the leading question were
+        // asked first, no model call would have happened yet and the
+        // assertion above would fail before this reply is even consumed.
+        mock.enqueue(r#"{"paragraphs": ["A grounded paragraph drawn from the resume."]}"#);
+
+        let user = AssertsDraftAlreadySent {
+            inner: ScriptedUser::new(),
+            mock: &mock,
+            asked: std::sync::atomic::AtomicBool::new(false),
+        };
+        user.inner.answer(Answer::Text("".into())); // decline the leading open question
+
+        // The provenance check that follows finds the mock exhausted and the
+        // session degrades from there (falling toward the fixed-topic loop,
+        // which also finds nothing queued) - none of that matters here; the
+        // ordering assertion above already ran by the time this returns.
+        let _ = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock)).await;
     }
 
     // --- the draft-first, gap-driven flow ---------------------------------
