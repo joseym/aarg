@@ -118,7 +118,11 @@ pub async fn import(source: String) -> Result<(), CliError> {
     match repoimport::detect_source(&source) {
         SourceKind::Local(path) => {
             let name = folder_name(&path);
-            match repoimport::read_repo(&path, &name, None)? {
+            // Best-effort: if the folder is a git checkout of a GitHub repo,
+            // carry its remote URL through so the recorded project links back to
+            // it (a plain non-git folder just imports with no url, as before).
+            let url = repoimport::detect_git_remote_url(&path);
+            match repoimport::read_repo(&path, &name, url)? {
                 Some(material) => run_import(vec![material], user.as_ref()).await,
                 None => {
                     eprintln!(

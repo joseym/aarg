@@ -186,6 +186,42 @@ pub fn clone_url(owner: &str, repo: &str) -> String {
     format!("https://github.com/{owner}/{repo}.git")
 }
 
+/// Normalize any GitHub remote form to a clean browsable `https://github.com/owner/repo`,
+/// or `None` if it isn't a GitHub repo URL. Reuses the same shape detection the
+/// `<source>` argument goes through (`parse_github`), so the SSH remote
+/// (`git@github.com:owner/repo.git`), the `.git` suffix, an `http://` scheme, and
+/// a `www.` prefix all collapse to one canonical https form; a profile-only URL
+/// (no repo segment) or a non-github host returns `None`.
+pub fn normalize_github_url(remote: &str) -> Option<String> {
+    match parse_github(remote.trim()) {
+        Some(SourceKind::Repo { owner, repo }) => {
+            Some(format!("https://github.com/{owner}/{repo}"))
+        }
+        _ => None,
+    }
+}
+
+/// Best-effort detection of a local checkout's GitHub URL: shell out to the
+/// user's own `git` for the `origin` remote (the same "use the real tool"
+/// pattern as `git_clone`) and normalize whatever it returns. Any failure — not
+/// a git repo, no `origin` remote, `git` missing, or a remote that isn't a
+/// GitHub URL — yields `None`, never an error: detecting a URL is a bonus on a
+/// local import, never a requirement, and must not break importing a plain
+/// non-git folder.
+pub fn detect_git_remote_url(path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    normalize_github_url(&remote)
+}
+
 // ---------------------------------------------------------------------
 // The material read from a repo
 // ---------------------------------------------------------------------
@@ -826,9 +862,20 @@ pub async fn apply_import(
         .map(|(_, s)| s.name.clone())
         .collect();
 
-    // Everything is decided; now write. The project id is fixed first so
-    // minted skills can cite it as their evidence.
-    let project_id = next_project_id(dataset);
+    // Everything is decided; now write. Re-importing a project already recorded
+    // (matched by exact, case-sensitive name — projects are named after their
+    // folder/repo, themselves case-sensitive identifiers) updates that entry in
+    // place rather than pushing a duplicate. The project id is fixed first, and
+    // reuses the existing project's id when updating, so minted skills cite the
+    // right project as their evidence either way.
+    let existing_project_index = dataset
+        .projects
+        .iter()
+        .position(|p| p.name == analysis.name);
+    let project_id = match existing_project_index {
+        Some(index) => dataset.projects[index].id.clone(),
+        None => next_project_id(dataset),
+    };
     let mut skill_ids: Vec<SkillId> = existing.iter().map(|(id, _)| id.clone()).collect();
     let mut minted = Vec::new();
 
@@ -860,13 +907,32 @@ pub async fn apply_import(
         minted.push(skill.name.clone());
     }
 
-    dataset.projects.push(Project {
-        id: project_id.clone(),
-        name: analysis.name.clone(),
-        summary: analysis.summary,
-        url,
-        skill_ids,
-    });
+    match existing_project_index {
+        // Re-import: refresh summary, adopt a freshly-detected url (but keep the
+        // one already recorded when this import found none, so a re-import that
+        // couldn't detect a remote doesn't erase a good url), and union the
+        // skill links so a skill the first import minted survives even if this
+        // pass didn't re-propose it.
+        Some(index) => {
+            let project = &mut dataset.projects[index];
+            project.summary = analysis.summary;
+            if url.is_some() {
+                project.url = url;
+            }
+            for sid in skill_ids {
+                if !project.skill_ids.contains(&sid) {
+                    project.skill_ids.push(sid);
+                }
+            }
+        }
+        None => dataset.projects.push(Project {
+            id: project_id.clone(),
+            name: analysis.name.clone(),
+            summary: analysis.summary,
+            url,
+            skill_ids,
+        }),
+    }
 
     // Link the already-recorded skills (minted ones already carry the evidence).
     let existing_ids: Vec<SkillId> = existing.iter().map(|(id, _)| id.clone()).collect();
@@ -1247,6 +1313,86 @@ mod tests {
     fn ex_020_an_unsupported_host_is_a_clear_error_not_a_silent_local_path() {
         let unsupported_hosts_get_a_clear_error = false;
         assert!(unsupported_hosts_get_a_clear_error);
+    }
+
+    // ----- local-folder git remote detection (Fix 1) -----
+
+    #[test]
+    fn normalize_github_url_canonicalizes_every_remote_form() {
+        for remote in [
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner/repo",
+            "git@github.com:owner/repo.git",
+            "http://github.com/owner/repo",
+            "https://www.github.com/owner/repo/",
+        ] {
+            assert_eq!(
+                normalize_github_url(remote).as_deref(),
+                Some("https://github.com/owner/repo"),
+                "{remote:?} should normalize to the canonical https form"
+            );
+        }
+        // A non-github host, a profile-only url, and an empty string are not a
+        // GitHub repo url, so detection stays best-effort and returns None.
+        assert_eq!(normalize_github_url("https://gitlab.com/owner/repo"), None);
+        assert_eq!(normalize_github_url("git@example.com:owner/repo.git"), None);
+        assert_eq!(normalize_github_url("https://github.com/owner"), None);
+        assert_eq!(normalize_github_url(""), None);
+    }
+
+    /// Run a git subcommand in `dir`, asserting it succeeded. Used to construct
+    /// a tiny real checkout so the detection is exercised against actual git,
+    /// not a hand-parsed `.git/config`.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success(), "git {args:?} should succeed");
+    }
+
+    #[test]
+    fn detect_git_remote_url_reads_and_normalizes_a_checkout_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // A plain folder with no .git: nothing to detect, and importantly no
+        // error — a non-git folder must still import cleanly.
+        assert_eq!(detect_git_remote_url(root), None);
+
+        // A real git repo whose origin is the SSH remote form: detected and
+        // normalized to the browsable https form.
+        git(root, &["init"]);
+        git(
+            root,
+            &["remote", "add", "origin", "git@github.com:owner/repo.git"],
+        );
+        assert_eq!(
+            detect_git_remote_url(root).as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+
+        // Repoint origin at the https `.git` form: same canonical result.
+        git(
+            root,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        );
+        assert_eq!(
+            detect_git_remote_url(root).as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+
+        // A git repo with no origin remote: nothing to detect, still no error.
+        git(root, &["remote", "remove", "origin"]);
+        assert_eq!(detect_git_remote_url(root), None);
     }
 
     // ----- manifest parsing -----
@@ -1681,6 +1827,80 @@ mod tests {
             dataset.projects[0].skill_ids,
             vec![SkillId("skill-1".into())]
         );
+    }
+
+    #[tokio::test]
+    async fn re_importing_a_project_updates_in_place_instead_of_duplicating() {
+        let mut dataset = base_dataset();
+        let user = ScriptedUser::new();
+
+        // First import: mints Rust, records the project with a url and Rust linked.
+        user.answer(Answer::Choice(0)); // "Add all new skills"
+        let first = ProjectAnalysis {
+            name: "Engine".into(),
+            summary: "First summary.".into(),
+            skills: vec![ProposedSkill {
+                name: "Rust".into(),
+                reason: "language breakdown".into(),
+                category: SkillCategory::Language,
+            }],
+        };
+        apply_import(
+            &mut dataset,
+            first,
+            Some("https://github.com/ada/engine".into()),
+            &user,
+        )
+        .await
+        .unwrap();
+        assert_eq!(dataset.projects.len(), 1);
+        let rust_id = dataset.projects[0].skill_ids[0].clone();
+
+        // Second import of the SAME project name (a re-import after a code
+        // change or a url fix): a changed summary, a different url, and a
+        // different proposed skill set (Typst, not Rust).
+        user.answer(Answer::Choice(0)); // "Add all new skills"
+        let second = ProjectAnalysis {
+            name: "Engine".into(),
+            summary: "Updated summary.".into(),
+            skills: vec![ProposedSkill {
+                name: "Typst".into(),
+                reason: "language breakdown".into(),
+                category: SkillCategory::Tool,
+            }],
+        };
+        apply_import(
+            &mut dataset,
+            second,
+            Some("https://github.com/ada/engine-renamed".into()),
+            &user,
+        )
+        .await
+        .unwrap();
+
+        // Exactly ONE project entry, updated in place with the second import's
+        // summary and url.
+        assert_eq!(dataset.projects.len(), 1);
+        let project = &dataset.projects[0];
+        assert_eq!(project.name, "Engine");
+        assert_eq!(project.summary, "Updated summary.");
+        assert_eq!(
+            project.url.as_deref(),
+            Some("https://github.com/ada/engine-renamed")
+        );
+
+        // skill_ids are the UNION: Rust (the first import's minted skill, not
+        // re-proposed the second time) survives alongside the newly-minted Typst.
+        let typst_id = dataset.skills.aliases.get("typst").unwrap().clone();
+        assert!(
+            project.skill_ids.contains(&rust_id),
+            "the first import's skill survives the re-import"
+        );
+        assert!(
+            project.skill_ids.contains(&typst_id),
+            "the second import's skill is added"
+        );
+        assert_eq!(project.skill_ids.len(), 2);
     }
 
     // ----- GitHub profile JSON mapping (no network) -----
