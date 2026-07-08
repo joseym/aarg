@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{Agent, AgentContext, ModelTier};
+use crate::cover_interview::CoverBrief;
 use crate::dataset::types::Contact;
 use crate::jd::JobRequirements;
 use crate::llm::{LlmError, TokenUsage};
@@ -46,14 +47,24 @@ pub enum CoverLetterError {
 }
 
 /// Everything one cover-letter run works from: the canonical tailored
-/// resume (already evidence-gated), the job it targets, and optional
-/// writing samples to anchor tone. Owned, like every agent input, and
-/// `Serialize` so the trace records it.
+/// resume (already evidence-gated), the job it targets, optional writing
+/// samples to anchor tone, and an optional [`CoverBrief`] from a prior
+/// cover-letter interview. Owned, like every agent input, and `Serialize`
+/// so the trace records it.
 #[derive(Serialize)]
 pub struct CoverLetterInput {
     pub resume: TailoredResume,
     pub jd: JobRequirements,
     pub voice_samples: Vec<String>,
+    /// What the candidate said in a `run_cover_interview` session about the
+    /// letter's angle, emphasis, tone, motivation, and constraints. `None`
+    /// for a one-shot draft with no interview — every existing caller (`aarg
+    /// cover` without `--interactive`, `aarg tailor --cover`, and the browser
+    /// generate-cover route) passes `None` and drafts exactly as before.
+    /// Every string a brief carries already passed the interview's own
+    /// never-fabricate guard (see `cover_interview`'s module doc), so it is
+    /// safe to hand to the model as grounding.
+    pub brief: Option<CoverBrief>,
 }
 
 /// The lenient shape the model replies in: just the body paragraphs. The
@@ -119,18 +130,22 @@ impl Agent for CoverLetterAgent {
 }
 
 /// Draft a cover letter for `jd` from the already-tailored `resume`,
-/// matching tone to the `voice_samples` when any are given. Returns the
-/// letter, any never-fabricate warnings, and the tokens it cost.
+/// matching tone to the `voice_samples` when any are given and grounding the
+/// draft in `brief` (a prior cover-letter interview's answers) when given.
+/// `brief: None` behaves exactly as before the interview existed. Returns
+/// the letter, any never-fabricate warnings, and the tokens it cost.
 pub async fn write_cover_letter(
     ctx: &AgentContext<'_>,
     resume: &TailoredResume,
     jd: &JobRequirements,
     voice_samples: &[String],
+    brief: Option<&CoverBrief>,
 ) -> Result<(CoverLetter, Vec<String>, TokenUsage), CoverLetterError> {
     let input = CoverLetterInput {
         resume: resume.clone(),
         jd: jd.clone(),
         voice_samples: voice_samples.to_vec(),
+        brief: brief.cloned(),
     };
     let run = CoverLetterAgent.run(ctx, input).await?;
     let (mut letter, warnings) = run.output;
@@ -195,6 +210,10 @@ fn build_user_message(input: &CoverLetterInput) -> String {
         }
     }
 
+    if let Some(block) = brief_block(input.brief.as_ref()) {
+        text.push_str(&block);
+    }
+
     if !input.voice_samples.is_empty() {
         text.push_str("\nWRITING SAMPLES (match this voice; do not reuse their content)\n");
         for (i, sample) in input.voice_samples.iter().enumerate().take(3) {
@@ -206,16 +225,112 @@ fn build_user_message(input: &CoverLetterInput) -> String {
     text
 }
 
+/// The additive grounding block for a cover-letter interview's answers, or
+/// `None` when there is no brief or it came back empty (a skipped or fully
+/// declined interview) — in either case `build_user_message` stays byte-
+/// identical to before the interview existed.
+fn brief_block(brief: Option<&CoverBrief>) -> Option<String> {
+    let brief = brief?;
+    let mut block = String::new();
+    if let Some(angle) = &brief.angle {
+        block.push_str(&format!("Angle: {angle}\n"));
+    }
+    if !brief.emphasis.is_empty() {
+        block.push_str("Emphasize:\n");
+        for item in brief.emphasis.iter().take(8) {
+            block.push_str(&format!("  - {item}\n"));
+        }
+    }
+    if let Some(tone) = &brief.tone {
+        block.push_str(&format!("Tone: {tone}\n"));
+    }
+    if let Some(motivation) = &brief.motivation {
+        block.push_str(&format!("Motivation: {motivation}\n"));
+    }
+    if !brief.constraints.is_empty() {
+        block.push_str("Constraints:\n");
+        for item in brief.constraints.iter().take(8) {
+            block.push_str(&format!("  - {item}\n"));
+        }
+    }
+    if block.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\nWHAT THE CANDIDATE WANTS THIS LETTER TO DO\n{block}"
+    ))
+}
+
+/// The structural half of the cover-letter never-fabricate guard, as one
+/// predicate: a paragraph may stand only when every number it states is in
+/// `allowed` (the figures the resume and brief carry). Both the generation
+/// path ([`assemble`]) and the hand-edit save path
+/// ([`guard_edited_paragraphs`]) call this one function, so the rule the two
+/// enforce can never drift apart.
+fn paragraph_digits_are_backed(para: &str, allowed: &HashSet<String>) -> bool {
+    digit_runs(para).is_subset(allowed)
+}
+
+/// Re-run [`assemble`]'s digit guard over a set of hand-edited `paragraphs` —
+/// the same structural never-fabricate check a fresh draft passes, applied to
+/// a candidate's own edit. A paragraph that introduces a number neither
+/// `resume` nor `brief` states is dropped (not rewritten), exactly as
+/// generation drops one; an empty paragraph is skipped; every survivor is
+/// trimmed and em-dash-normalized the way [`write_cover_letter`] normalizes a
+/// generated letter. Returns the surviving paragraphs and a warning naming
+/// each one dropped.
+///
+/// This is the hard gate the browser's "save edited paragraphs" route (and any
+/// future CLI edit) shares with generation, so a hand-edit can never smuggle in
+/// a fabricated figure the generator itself would have refused. Unlike the
+/// informational per-paragraph provenance status (see [`crate::cover_provenance`]),
+/// this one rejects.
+pub fn guard_edited_paragraphs(
+    resume: &TailoredResume,
+    brief: Option<&CoverBrief>,
+    paragraphs: &[String],
+) -> GuardedParagraphs {
+    let allowed = allowed_digits(resume, brief);
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for para in paragraphs {
+        let para = crate::tailor::normalize_dashes(para.trim());
+        if para.is_empty() {
+            continue;
+        }
+        if paragraph_digits_are_backed(&para, &allowed) {
+            kept.push(para);
+        } else {
+            dropped.push(format!(
+                "dropped a paragraph that introduced a figure your evidence doesn't state: {:?}",
+                snippet(&para)
+            ));
+        }
+    }
+    GuardedParagraphs { kept, dropped }
+}
+
+/// The result of re-applying the digit guard to hand-edited paragraphs: the
+/// ones that passed (trimmed, em-dash-normalized, in order) and a human
+/// warning for each one dropped because it stated a figure the evidence
+/// doesn't back.
+#[derive(Debug, Clone)]
+pub struct GuardedParagraphs {
+    pub kept: Vec<String>,
+    pub dropped: Vec<String>,
+}
+
 /// Assemble the model's paragraphs into a finished letter, enforcing
-/// never-fabricate structurally: a paragraph that introduces a number the
-/// resume doesn't state is dropped (there is no source paragraph to revert
-/// to, the way a bullet has), with a warning. Empty paragraphs are skipped;
-/// a reply that leaves nothing usable is a typed error.
+/// never-fabricate structurally: a paragraph that introduces a number
+/// neither the resume nor the interview brief states is dropped (there is
+/// no source paragraph to revert to, the way a bullet has), with a warning.
+/// Empty paragraphs are skipped; a reply that leaves nothing usable is a
+/// typed error.
 fn assemble(
     wire: RawCoverLetter,
     input: CoverLetterInput,
 ) -> Result<(CoverLetter, Vec<String>), CoverLetterError> {
-    let allowed = allowed_digits(&input.resume);
+    let allowed = allowed_digits(&input.resume, input.brief.as_ref());
     let mut warnings = Vec::new();
     let mut paragraphs = Vec::new();
     for para in wire.paragraphs {
@@ -223,7 +338,7 @@ fn assemble(
         if para.is_empty() {
             continue;
         }
-        if digit_runs(&para).is_subset(&allowed) {
+        if paragraph_digits_are_backed(&para, &allowed) {
             paragraphs.push(para);
         } else {
             warnings.push(format!(
@@ -254,9 +369,14 @@ fn assemble(
 }
 
 /// Every number the resume states, gathered from the summary, the role
-/// titles and companies, the bullets, and the skills. A letter may only use
-/// figures from this set.
-fn allowed_digits(resume: &TailoredResume) -> HashSet<String> {
+/// titles and companies, the bullets, and the skills, plus every number the
+/// candidate typed into an interview `brief` (a real figure they recalled in
+/// their own words is not an invented one, so it must not be reverted as
+/// unsupported). A letter may only use figures from this combined set.
+pub(crate) fn allowed_digits(
+    resume: &TailoredResume,
+    brief: Option<&CoverBrief>,
+) -> HashSet<String> {
     let mut text = String::new();
     text.push_str(&resume.summary);
     if let Some(title) = &resume.target_title {
@@ -276,6 +396,28 @@ fn allowed_digits(resume: &TailoredResume) -> HashSet<String> {
     for skill in &resume.skills_section.skills {
         text.push(' ');
         text.push_str(skill);
+    }
+    if let Some(brief) = brief {
+        if let Some(angle) = &brief.angle {
+            text.push(' ');
+            text.push_str(angle);
+        }
+        for item in brief.emphasis.iter().take(8) {
+            text.push(' ');
+            text.push_str(item);
+        }
+        if let Some(tone) = &brief.tone {
+            text.push(' ');
+            text.push_str(tone);
+        }
+        if let Some(motivation) = &brief.motivation {
+            text.push(' ');
+            text.push_str(motivation);
+        }
+        for item in brief.constraints.iter().take(8) {
+            text.push(' ');
+            text.push_str(item);
+        }
     }
     digit_runs(&text)
 }
@@ -365,7 +507,7 @@ mod tests {
     async fn run(reply: &str) -> Result<(CoverLetter, Vec<String>, TokenUsage), CoverLetterError> {
         let mock = MockLlmClient::default();
         mock.enqueue(reply);
-        write_cover_letter(&test_ctx(&mock), &resume(), &jd(), &[]).await
+        write_cover_letter(&test_ctx(&mock), &resume(), &jd(), &[], None).await
     }
 
     #[tokio::test]
@@ -435,7 +577,7 @@ mod tests {
     async fn the_prompt_carries_the_candidate_role_and_work_history() {
         let mock = MockLlmClient::default();
         mock.enqueue(r#"{"paragraphs": ["A solid paragraph with no numbers at all."]}"#);
-        write_cover_letter(&test_ctx(&mock), &resume(), &jd(), &[])
+        write_cover_letter(&test_ctx(&mock), &resume(), &jd(), &[], None)
             .await
             .unwrap();
 
@@ -444,5 +586,193 @@ mod tests {
         assert!(sent.contains("Staff Engineer at Acme"));
         assert!(sent.contains("Led a team of 12 engineers"));
         assert!(sent.contains("Lead the platform team"));
+    }
+
+    fn sample_brief() -> CoverBrief {
+        CoverBrief {
+            angle: Some("lead with the reliability angle".into()),
+            emphasis: vec!["the incident response program".into()],
+            tone: Some("direct and a little informal".into()),
+            motivation: Some("used their product for years".into()),
+            constraints: vec!["don't mention my current employer".into()],
+        }
+    }
+
+    #[test]
+    fn a_brief_grounds_the_user_message_with_what_the_candidate_wants() {
+        let input = CoverLetterInput {
+            resume: resume(),
+            jd: jd(),
+            voice_samples: Vec::new(),
+            brief: Some(sample_brief()),
+        };
+        let message = build_user_message(&input);
+
+        assert!(message.contains("WHAT THE CANDIDATE WANTS THIS LETTER TO DO"));
+        assert!(message.contains("lead with the reliability angle"));
+        assert!(message.contains("the incident response program"));
+        assert!(message.contains("direct and a little informal"));
+        assert!(message.contains("used their product for years"));
+        assert!(message.contains("don't mention my current employer"));
+    }
+
+    #[test]
+    fn a_brief_less_message_is_unchanged_from_before_the_interview() {
+        // Regression: `brief: None` must produce byte-identical prompt text to
+        // the pre-interview behavior — no new heading, no empty section.
+        let input = CoverLetterInput {
+            resume: resume(),
+            jd: jd(),
+            voice_samples: Vec::new(),
+            brief: None,
+        };
+        let message = build_user_message(&input);
+
+        assert!(!message.contains("WHAT THE CANDIDATE WANTS THIS LETTER TO DO"));
+    }
+
+    #[test]
+    fn an_empty_brief_also_omits_the_grounding_block() {
+        // A skipped or fully declined interview yields `CoverBrief::default()`,
+        // which must ground nothing rather than printing an empty heading.
+        let input = CoverLetterInput {
+            resume: resume(),
+            jd: jd(),
+            voice_samples: Vec::new(),
+            brief: Some(CoverBrief::default()),
+        };
+        let message = build_user_message(&input);
+
+        assert!(!message.contains("WHAT THE CANDIDATE WANTS THIS LETTER TO DO"));
+    }
+
+    #[test]
+    fn a_long_brief_list_is_capped_the_same_way_jd_responsibilities_are() {
+        // A hand-edited or reused cover_brief.json isn't bounded by the live
+        // interview's MAX_QUESTIONS the way a fresh session is, so emphasis
+        // and constraints get the same take(8) cap this file already applies
+        // to JD responsibilities and voice samples.
+        let brief = CoverBrief {
+            emphasis: (1..=12).map(|n| format!("item {n}")).collect(),
+            constraints: (1..=12).map(|n| format!("rule {n}")).collect(),
+            ..CoverBrief::default()
+        };
+        let input = CoverLetterInput {
+            resume: resume(),
+            jd: jd(),
+            voice_samples: Vec::new(),
+            brief: Some(brief.clone()),
+        };
+        let message = build_user_message(&input);
+        assert!(message.contains("item 8"));
+        assert!(!message.contains("item 9"));
+        assert!(message.contains("rule 8"));
+        assert!(!message.contains("rule 9"));
+
+        // The guard mirrors the same cap: a number that only appears in a
+        // truncated (never-shown-to-the-model) item is not allowed either.
+        let capped = CoverBrief {
+            emphasis: vec!["item 8".to_string()],
+            ..CoverBrief::default()
+        };
+        let uncapped_extra = CoverBrief {
+            emphasis: (1..=12)
+                .map(|n| {
+                    if n == 9 {
+                        "figure 4001".to_string()
+                    } else {
+                        format!("item {n}")
+                    }
+                })
+                .collect(),
+            ..CoverBrief::default()
+        };
+        let allowed_capped = allowed_digits(&resume(), Some(&capped));
+        let allowed_uncapped = allowed_digits(&resume(), Some(&uncapped_extra));
+        assert!(!allowed_capped.contains("4001"));
+        assert!(
+            !allowed_uncapped.contains("4001"),
+            "the 9th item is past the cap and must not widen the allowed set"
+        );
+    }
+
+    #[test]
+    fn guard_edited_paragraphs_drops_an_invented_number_and_keeps_a_backed_one() {
+        // The hand-edit save path enforces the exact same digit guard generation
+        // does: a paragraph stating a figure the résumé and brief don't carry is
+        // dropped; one whose only figure ("12") is a résumé number survives.
+        let paras = vec![
+            "I led a team of 12 engineers at Analytical Engines.".to_string(),
+            "I cut costs by 40% in a role nobody recorded.".to_string(),
+        ];
+        let guarded = guard_edited_paragraphs(&resume(), None, &paras);
+        assert_eq!(guarded.kept.len(), 1);
+        assert!(guarded.kept[0].contains("12 engineers"));
+        assert_eq!(guarded.dropped.len(), 1);
+        assert!(
+            guarded.dropped[0].contains("introduced a figure"),
+            "got: {:?}",
+            guarded.dropped
+        );
+    }
+
+    #[test]
+    fn guard_edited_paragraphs_skips_blanks_and_normalizes_dashes() {
+        // Empty paragraphs are dropped silently (no warning), and a survivor's
+        // em-dash is normalized the way a generated letter's is — so a hand-edit
+        // can't reintroduce the AI-writing tell generation strips.
+        let paras = vec![
+            "   ".to_string(),
+            "I led the reliability work — and shipped it.".to_string(),
+        ];
+        let guarded = guard_edited_paragraphs(&resume(), None, &paras);
+        assert_eq!(guarded.kept.len(), 1);
+        assert!(!guarded.kept[0].contains('—'), "got: {:?}", guarded.kept);
+        assert!(guarded.dropped.is_empty());
+    }
+
+    #[test]
+    fn guard_edited_paragraphs_allows_a_brief_number() {
+        // A figure the candidate recorded in the interview brief is not invented,
+        // so an edited paragraph using it stands — the same widening `assemble`
+        // and the provenance check give the brief.
+        let brief = CoverBrief {
+            emphasis: vec!["a 25% cut in incident response time".into()],
+            ..CoverBrief::default()
+        };
+        let paras = vec!["I drove a 25% cut in incident response time.".to_string()];
+        let guarded = guard_edited_paragraphs(&resume(), Some(&brief), &paras);
+        assert_eq!(guarded.kept.len(), 1);
+        assert!(guarded.dropped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_number_from_the_brief_is_allowed_but_an_invented_one_still_is_not() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(
+            r#"{"paragraphs": [
+                "I helped drive a 25% cut in incident response time, which we discussed.",
+                "I also cut costs by 40% in a role nobody mentioned."
+            ]}"#,
+        );
+        let brief = CoverBrief {
+            emphasis: vec!["a 25% cut in incident response time".into()],
+            ..CoverBrief::default()
+        };
+
+        let (letter, warnings, _usage) =
+            write_cover_letter(&test_ctx(&mock), &resume(), &jd(), &[], Some(&brief))
+                .await
+                .unwrap();
+
+        // "25" traces to the brief, so that paragraph survives; "40" traces to
+        // neither the resume nor the brief, so it's dropped like any other
+        // invented figure.
+        assert_eq!(letter.paragraphs.len(), 1);
+        assert!(letter.paragraphs[0].contains("25%"));
+        assert!(
+            warnings.iter().any(|w| w.contains("introduced a figure")),
+            "got: {warnings:?}"
+        );
     }
 }

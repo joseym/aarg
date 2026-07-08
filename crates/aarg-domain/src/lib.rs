@@ -22,7 +22,9 @@
 // way).
 pub use aarg_core::{agent, llm, trace, user};
 
+pub mod cover;
 pub mod cover_interview;
+pub mod cover_provenance;
 pub mod dataset;
 pub mod enrich;
 pub mod gap;

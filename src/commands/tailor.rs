@@ -883,7 +883,8 @@ pub async fn run(
             .collect();
         let sp = Spinner::start("drafting a cover letter");
         let (letter, cover_warnings, cover_usage) =
-            crate::cover::write_cover_letter(&ctx, &best.resume, &requirements, &samples).await?;
+            crate::cover::write_cover_letter(&ctx, &best.resume, &requirements, &samples, None)
+                .await?;
         add_usage(&mut total, cover_usage);
         let pdf = render::render_cover(&build.dir, &letter, &render::Template::cover())?;
         sp.finish(style::done("cover letter drafted"));

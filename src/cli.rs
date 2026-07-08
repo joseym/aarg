@@ -106,6 +106,10 @@ pub enum Command {
     Cover {
         /// Build id to write a letter for (e.g. 029); omit to pick one interactively
         build: Option<String>,
+        /// Walk through a short interview (angle, emphasis, tone, motivation,
+        /// constraints) before drafting; needs a terminal
+        #[arg(long)]
+        interactive: bool,
     },
     /// Copy a build's PDFs to a folder with friendly names (company.ats.pdf, ...)
     Export {
@@ -599,7 +603,10 @@ mod tests {
             .command
             .unwrap()
         {
-            Command::Cover { build } => assert_eq!(build.as_deref(), Some("029")),
+            Command::Cover { build, interactive } => {
+                assert_eq!(build.as_deref(), Some("029"));
+                assert!(!interactive);
+            }
             other => panic!("expected cover, got {other:?}"),
         }
         // The build id is optional — omitting it means "pick interactively".
@@ -608,7 +615,16 @@ mod tests {
             .command
             .unwrap()
         {
-            Command::Cover { build } => assert_eq!(build, None),
+            Command::Cover { build, .. } => assert_eq!(build, None),
+            other => panic!("expected cover, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cover_interactive_flag_parses() {
+        let cli = Cli::try_parse_from(["aarg", "cover", "029", "--interactive"]).unwrap();
+        match cli.command.unwrap() {
+            Command::Cover { interactive, .. } => assert!(interactive),
             other => panic!("expected cover, got {other:?}"),
         }
     }

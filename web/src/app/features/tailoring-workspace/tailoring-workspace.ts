@@ -133,9 +133,6 @@ type ClaimState = 'ok' | 'checking' | 'flag';
       >
         Retailor ↻
       </button>
-      <button class="btn" type="button" (click)="downloadPdf()" [disabled]="downloading()">
-        {{ downloading() ? 'Rendering…' : 'Download PDF' }}
-      </button>
       <a class="btn btn-primary" routerLink="/new">New Build</a>
     </div>
 
@@ -244,6 +241,11 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                   {{ pixelDownloading() ? 'Rendering…' : 'Download PDF' }}
                 </button>
               }
+              @if (previewMode() === 'editing') {
+                <button class="btn btn-sm" type="button" (click)="downloadPdf()" [disabled]="downloading()">
+                  {{ downloading() ? 'Rendering…' : 'Download PDF' }}
+                </button>
+              }
             </div>
 
             <!-- TWO pdf-preview instances, one per variant, each mounted lazily
@@ -306,19 +308,33 @@ type ClaimState = 'ok' | 'checking' | 'flag';
                 <div class="panel muted">This build has no résumé payload to preview.</div>
               }
             }
-          } @else if (view() === 'cover') {
-            <app-cover-view
-              [buildId]="id()"
-              [hasCover]="hasCover()"
-              [canonicalPresent]="canonicalPresent()"
-              (generated)="onCoverGenerated()"
-              (notify)="onCoverNotify($event)"
-            />
-          } @else {
+          } @else if (view() === 'coverage') {
             <app-coverage-map
               [jd]="jd()"
               [gap]="bundle()?.gap_report ?? null"
               (act)="onCovAct($event)"
+            />
+          }
+
+          <!-- The Cover Letter view mounts lazily on its own first entry and
+               then stays mounted, hidden rather than destroyed, on a flip
+               away — mirrors the pdf-preview instances above. A structural
+               @if/@else here would tear the component down on every switch to
+               Resume or Coverage and rebuild it on return, silently losing any
+               local paragraph edit the constructor's seeding effect can't
+               distinguish from a fresh build. -->
+          @if (coverSeen()) {
+            <app-cover-view
+              [class.hide]="view() !== 'cover'"
+              [buildId]="id()"
+              [hasCover]="hasCover()"
+              [canonicalPresent]="canonicalPresent()"
+              [jd]="jd()"
+              [canonical]="bundle()?.canonical ?? null"
+              [coverPayload]="bundle()?.cover_payload ?? null"
+              [coverBrief]="bundle()?.cover_brief ?? null"
+              (generated)="onCoverGenerated()"
+              (notify)="onCoverNotify($event)"
             />
           }
         </section>
@@ -434,6 +450,9 @@ type ClaimState = 'ok' | 'checking' | 'flag';
     /* Hides the still-mounted PDF preview in Editing mode. Must out-specify the
        child's own \`:host { display: block }\` (0,1,0) — element+class is (0,1,1). */
     app-pdf-preview.hide { display: none; }
+    /* Hides the still-mounted Cover Letter view outside the Cover view, same
+       specificity reason as app-pdf-preview.hide above. */
+    app-cover-view.hide { display: none; }
 
     .fidelity { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
     .fidelity .tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; }
@@ -499,6 +518,12 @@ export class TailoringWorkspace implements OnDestroy {
    *  both Editing↔Pixel toggles and switching to the other variant. */
   protected readonly pixelSeenHuman = signal(false);
   protected readonly pixelSeenAts = signal(false);
+  /** Latch true the first time the Cover Letter view is entered (per build),
+   *  mirroring {@link pixelSeenHuman}/{@link pixelSeenAts}: the view mounts
+   *  lazily on its own first entry, then stays mounted and is merely hidden on
+   *  a flip away, so a local paragraph edit (and its live-rechecked provenance)
+   *  survives switching to another workspace view and back. */
+  protected readonly coverSeen = signal(false);
   /** Which variant the pixel-perfect preview (and its own Download button)
    *  shows: `human` is the default and pre-existing behavior; `ats` swaps in
    *  the build's ATS payload. Reset to `human` per build in {@link reset}. */
@@ -849,6 +874,11 @@ export class TailoringWorkspace implements OnDestroy {
       else this.pixelSeenHuman.set(true);
     });
 
+    // Latch the lazy Cover Letter mount on its first entry (see coverSeen).
+    effect(() => {
+      if (this.view() === 'cover') this.coverSeen.set(true);
+    });
+
     // Default the pixel preview's ATS template to whatever that payload was
     // stamped with, whenever the build's ATS payload changes (a fresh build).
     // Mirrors the chosenTemplate effect above, scoped to the ATS branch only —
@@ -946,6 +976,11 @@ export class TailoringWorkspace implements OnDestroy {
     // next pixel entry.
     this.pixelSeenHuman.set(false);
     this.pixelSeenAts.set(false);
+    // Unmount the Cover Letter view too, so the incoming build's cover-view
+    // instance starts fresh (its own constructor effects reseed paragraphs
+    // from the new build's payload) rather than inheriting the outgoing
+    // build's working copy for an instant before its inputs catch up.
+    this.coverSeen.set(false);
     // Human is the default pixel-preview variant for every build — the
     // pre-existing default, unchanged. Corrected to 'ats' once the bundle
     // loads if this build turns out to have no human payload (see the
@@ -1898,10 +1933,10 @@ export class TailoringWorkspace implements OnDestroy {
 
   /** Download exactly what the pixel-perfect preview is currently showing —
    *  the selected variant (Human or ATS) at its selected template. Independent
-   *  of {@link downloadPdf} (the header's own button), which keeps its
-   *  existing human-default behavior untouched. Filenames are
-   *  `resume.human.pdf` / `resume.ats.pdf` so the two variants never collide
-   *  on disk. */
+   *  of {@link downloadPdf} (the editing-mode download in the same toolbar
+   *  row), which keeps its existing human-default behavior untouched.
+   *  Filenames are `resume.human.pdf` / `resume.ats.pdf` so the two variants
+   *  never collide on disk. */
   protected downloadPixelPdf(): void {
     const payload = this.pixelPayload();
     if (!payload) return;

@@ -16,6 +16,8 @@ import type {
   AdversarialReport,
   TokenUsage,
   GenerateCoverResponse,
+  SaveCoverPayloadResponse,
+  CoverBrief,
 } from '../models';
 
 /** The `POST /api/builds` body: everything the browser's wasm tailor loop
@@ -102,13 +104,47 @@ export class ApiService {
    *  build server-side: the same `CoverLetterAgent` the CLI's `aarg cover` runs.
    *  It grounds the letter in the build's canonical résumé and JD, renders
    *  `cover_letter.pdf` into the build, and returns the letter plus any
-   *  never-fabricate warnings. The body is empty, but the JSON content-type
-   *  header is mandatory (the route sits behind the same content-type gate the
-   *  paid `/api/llm` route does). */
-  generateCover(id: string): Observable<GenerateCoverResponse> {
+   *  never-fabricate warnings. `brief` is optional — the result of a prior
+   *  `cover_interview_interactive` session (the "Draft with copilot" flow);
+   *  omitted, it drafts plainly, exactly as before that copilot existed. The
+   *  JSON content-type header is mandatory either way (the route sits behind
+   *  the same content-type gate the paid `/api/llm` route does). */
+  generateCover(id: string, brief?: CoverBrief): Observable<GenerateCoverResponse> {
     return this.http.post<GenerateCoverResponse>(
       `${this.base}/builds/${encodeURIComponent(id)}/cover`,
-      {},
+      brief ? { brief } : {},
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  /** `POST /api/builds/:id/cover-brief` — the Cover Letter Editing view's
+   *  "confirm as evidence" action: append one paragraph's own text to this
+   *  build's `CoverBrief.emphasis` and persist `cover_brief.json`. Returns the
+   *  brief as saved, so the caller can re-run `checkCoverProvenance`
+   *  against it immediately, without a second round trip to re-fetch the
+   *  build. Idempotent by exact text — confirming the same paragraph twice
+   *  appends it once. */
+  confirmCoverEvidence(id: string, text: string): Observable<{ brief: CoverBrief }> {
+    return this.http.post<{ brief: CoverBrief }>(
+      `${this.base}/builds/${encodeURIComponent(id)}/cover-brief`,
+      { text },
+    );
+  }
+
+  /** `PUT /api/builds/:id/cover-payload` — persist the Cover Letter Editing
+   *  view's hand-edited paragraphs into the stored build and re-render the PDF.
+   *  The server re-runs the same digit guard generation does: a paragraph
+   *  introducing a figure the résumé and brief don't state is dropped (returned
+   *  in `dropped`), never silently saved. Returns the letter as saved (surviving
+   *  paragraphs only) so the caller can sync its local state, and the PDF
+   *  filename to refetch for the pixel preview. The greeting and sign-off are
+   *  code-filled and never sent — they carry over from the stored payload. The
+   *  JSON content-type header is mandatory (the route sits behind the same gate
+   *  the other body-taking build routes do). */
+  saveCoverPayload(id: string, paragraphs: string[]): Observable<SaveCoverPayloadResponse> {
+    return this.http.put<SaveCoverPayloadResponse>(
+      `${this.base}/builds/${encodeURIComponent(id)}/cover-payload`,
+      { paragraphs },
       { headers: { 'Content-Type': 'application/json' } },
     );
   }

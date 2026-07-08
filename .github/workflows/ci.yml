@@ -27,3 +27,9 @@ jobs:
           echo "$PWD/typst-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
       - name: Test
         run: cargo test --workspace
+      - name: Scan the demo fixture for leaked personal data
+        env:
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+        run: |
+          pip install --quiet pypdf
+          python3 scripts/pii-scan.py docs/demo/

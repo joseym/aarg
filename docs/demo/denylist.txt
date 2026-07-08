@@ -1,0 +1,7 @@
+# Placeholder. Real terms (name, contact info, employer names) are never
+# committed here -- they live in a GitHub Actions secret (PII_DENYLIST) for
+# CI, and in docs/demo/denylist.local.txt (git-excluded, .git/info/exclude)
+# for the local pre-commit hook. See scripts/pii-scan.py.
+#
+# To set up your own local copy: create docs/demo/denylist.local.txt with
+# one term per line, blank lines and lines starting with # are ignored.

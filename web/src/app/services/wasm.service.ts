@@ -7,9 +7,12 @@ import type {
   VariantPayload,
   AdversarialReport,
   ProvenanceReport,
+  CoverProvenanceReport,
   WeightedCoverage,
   Objection,
   Models,
+  CoverBrief,
+  CoverLetter,
 } from '../models';
 
 /** A JS callback the core hands one JSON string and awaits a JSON string from.
@@ -148,6 +151,14 @@ interface WasmExports {
     modelsJson: string,
     llm: StringCallback,
   ): Promise<string>;
+  check_cover_provenance(
+    letterJson: string,
+    resumeJson: string,
+    jdJson: string,
+    briefJson: string,
+    modelsJson: string,
+    llm: StringCallback,
+  ): Promise<string>;
   chat_reply(
     datasetJson: string,
     jdJson: string,
@@ -238,6 +249,13 @@ interface WasmExports {
     datasetJson: string,
     jdJson: string,
     keyword: string,
+    modelsJson: string,
+    llm: StringCallback,
+    user: StringCallback,
+  ): Promise<string>;
+  cover_interview_interactive(
+    canonicalJson: string,
+    jdJson: string,
     modelsJson: string,
     llm: StringCallback,
     user: StringCallback,
@@ -618,6 +636,33 @@ export class WasmService {
     );
   }
 
+  /** The cover-letter analog of {@link checkProvenance}: classify every body
+   *  paragraph of a drafted `letter` by whether its claims trace back to the
+   *  `resume`, the `jd`, and an optional prior cover-letter interview `brief`
+   *  (omit or pass `null` when there was none). Now a real model call — the
+   *  claim judgment runs a cheap-tier agent over the `/api/llm` proxy so it can
+   *  see paraphrase (a paragraph's "payments" grounds against a résumé's
+   *  "billing"); the number check stays deterministic inside the same export.
+   *  Real latency, so callers debounce it. */
+  async checkCoverProvenance(
+    letter: CoverLetter,
+    resume: unknown,
+    jd: JobRequirements,
+    brief?: CoverBrief | null,
+  ): Promise<CoverProvenanceReport> {
+    const m = await this.load();
+    return JSON.parse(
+      await m.check_cover_provenance(
+        JSON.stringify(letter),
+        JSON.stringify(resume),
+        JSON.stringify(jd),
+        JSON.stringify(brief ?? null),
+        this.modelsJson(),
+        this.llm,
+      ),
+    );
+  }
+
   /** One grounded chat turn about a build (Phase B). Runs the wasm `chat_reply`
    *  engine, which drives a streaming, tools-empty Smart-tier request; `onText`
    *  receives the running reply text as it streams from `/api/llm`, and the
@@ -834,6 +879,26 @@ export class WasmService {
         JSON.stringify(dataset),
         JSON.stringify(jd),
         keyword,
+        this.modelsJson(),
+        this.llm,
+        (json) => this.userHandler(json),
+      ),
+    );
+  }
+
+  /** The cover-letter interview (the Cover Letter view's "Draft with copilot"):
+   *  a short, adaptive Q&A over the letter's angle, emphasis, tone, motivation,
+   *  and constraints, each offering a guarded suggestion first. Unlike the
+   *  other interactive copilots this neither reads nor mutates the dataset, so
+   *  it returns the bare `CoverBrief` — no `{dataset, ..., aborted}` envelope
+   *  (see `cover_interview_interactive`'s doc comment: an empty brief already
+   *  reads as "no grounding", so the caller never needs a separate abort flag). */
+  async coverInterview(canonical: unknown, jd: JobRequirements): Promise<CoverBrief> {
+    const m = await this.load();
+    return JSON.parse(
+      await m.cover_interview_interactive(
+        JSON.stringify(canonical),
+        JSON.stringify(jd),
         this.modelsJson(),
         this.llm,
         (json) => this.userHandler(json),

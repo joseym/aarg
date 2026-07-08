@@ -28,3 +28,29 @@ export interface GenerateCoverResponse {
   model: string;
   usage: TokenUsage;
 }
+
+/** The `PUT /api/builds/:id/cover-payload` success body: the letter as saved
+ *  (surviving paragraphs only) after the server re-ran the digit guard, a
+ *  warning for each paragraph the guard dropped (a hand-edited figure the
+ *  evidence doesn't back), and the re-rendered PDF filename. `dropped` is the
+ *  server's hard rejection, distinct from the browser's informational
+ *  "still unrecorded" flag, which never blocks a save. */
+export interface SaveCoverPayloadResponse {
+  letter: CoverLetter;
+  dropped: string[];
+  pdf: string;
+}
+
+/** What a cover-letter interview (`cover_interview_interactive`) recorded:
+ *  the letter's angle, what to emphasize, its tone, why this role and
+ *  company, and any constraints — every field optional or empty, so a
+ *  partial or skipped interview still yields a usable brief. Mirrors
+ *  `aarg-domain`'s `CoverBrief` exactly; passed straight through to
+ *  `POST /api/builds/:id/cover` as grounding, never edited in the browser. */
+export interface CoverBrief {
+  angle?: string | null;
+  emphasis: string[];
+  tone?: string | null;
+  motivation?: string | null;
+  constraints: string[];
+}

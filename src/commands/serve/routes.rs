@@ -31,6 +31,7 @@ use crate::commands::configured_client;
 use crate::commands::tailor::{resolve_ats_template, resolve_human_template};
 use crate::config::Config;
 use crate::cover::CoverLetter;
+use crate::cover_interview::CoverBrief;
 use crate::dataset::store;
 use crate::dataset::types::ResumeDataset;
 use crate::dataset::validate;
@@ -641,12 +642,19 @@ pub(super) async fn list_builds() -> Resp {
 /// `GET /api/builds/:id/files/:name`). A non-numeric id, or a build with no
 /// artifacts at all, is a `404`.
 pub(super) async fn get_build(id: &str) -> Resp {
-    if !is_numeric_id(id) {
-        return error_response(404, "not_found", format!("no build {id:?}"));
-    }
     let Ok(root) = crate::builds::builds_root() else {
         return error_response(500, "internal", "could not locate the builds directory");
     };
+    get_build_in(&root, id)
+}
+
+/// The disk-touching half of [`get_build`], with the builds root injected so a
+/// test can drive it against a tempdir — the same split [`delete_build_in`]
+/// uses for the same reason.
+fn get_build_in(root: &Path, id: &str) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
     let dir = root.join(id);
     if !dir.is_dir() {
         return error_response(404, "not_found", format!("no build {id:?}"));
@@ -672,6 +680,18 @@ pub(super) async fn get_build(id: &str) -> Resp {
         // only once at least one edit has been saved; the browser reads it to
         // render the cross-session undo history near the fidelity bar.
         ("edit_log", "edit_log.json"),
+        // The parsed cover letter (not just its rendered PDF, which the browser
+        // already reaches via `GET .../files/cover_letter.pdf`). Present only
+        // once a cover letter has been drafted for this build — a build can be
+        // a résumé alone — so a later editing view has the structured data to
+        // feed the provenance checker without re-parsing the PDF.
+        ("cover_payload", "cover_payload.json"),
+        // The persisted cover-letter interview brief, when either surface saved
+        // one for this build (the CLI's `aarg cover --interactive`, the
+        // browser's "Draft with copilot", or a paragraph confirmed as evidence
+        // via `POST .../cover-brief`). Feeds the Editing view's local
+        // provenance re-check as grounding, the same way it grounds a draft.
+        ("cover_brief", "cover_brief.json"),
     ] {
         if let Some(value) = read_json_artifact(&dir.join(file)) {
             obj.insert(key.into(), value);
@@ -1484,6 +1504,103 @@ struct GenerateCoverResponse {
     usage: TokenUsage,
 }
 
+/// The `POST /api/builds/:id/cover` request body — entirely optional. An absent
+/// `brief` (or an absent/empty body) means a plain draft with no interview
+/// grounding, exactly as before this field existed.
+#[derive(Deserialize, Default)]
+struct GenerateCoverRequest {
+    #[serde(default)]
+    brief: Option<CoverBrief>,
+}
+
+/// Whether a `CoverBrief` carries nothing at all — every scalar blank, both
+/// lists empty. Mirrors the browser's own `isEmptyBrief` exactly (see
+/// `cover-view.ts`), so an interview the person backed out of before answering
+/// anything is never written to disk as a brief with nothing in it.
+fn cover_brief_is_empty(brief: &CoverBrief) -> bool {
+    fn blank(value: &Option<String>) -> bool {
+        value.as_deref().map(str::trim).unwrap_or("").is_empty()
+    }
+    blank(&brief.angle)
+        && brief.emphasis.is_empty()
+        && blank(&brief.tone)
+        && blank(&brief.motivation)
+        && brief.constraints.is_empty()
+}
+
+/// Merge a freshly-drafted interview brief into whatever brief is already on
+/// disk, rather than letting one replace the other outright — the fix for a
+/// silent-erasure bug: the browser's "Draft with copilot" runs a fresh
+/// interview every time (unlike the CLI's `interview_brief`, which offers to
+/// reuse a saved brief first), so an unconditional overwrite discarded any
+/// entry a prior "confirm as evidence" action had appended.
+///
+/// `emphasis`/`constraints` are unioned: every existing entry survives, then
+/// any `new` entry not already present (compared with [`normalize_for_dedup`],
+/// the same near-duplicate-safe comparison [`confirm_cover_evidence_in`]
+/// uses) is appended after it. `angle`/`tone`/`motivation` prefer `new`'s
+/// value when the new interview actually answered that question (a non-blank
+/// string); otherwise the existing value survives — so a fresh interview run
+/// that skipped a topic can never silently blank out what an earlier session
+/// recorded for it.
+fn merge_cover_briefs(existing: CoverBrief, new: CoverBrief) -> CoverBrief {
+    fn merge_scalar(existing: Option<String>, new: Option<String>) -> Option<String> {
+        match new {
+            Some(value) if !value.trim().is_empty() => Some(value),
+            _ => existing,
+        }
+    }
+    fn merge_list(existing: Vec<String>, new: Vec<String>) -> Vec<String> {
+        let mut merged = existing;
+        for text in new {
+            let normalized = normalize_for_dedup(&text);
+            if !merged
+                .iter()
+                .any(|entry| normalize_for_dedup(entry) == normalized)
+            {
+                merged.push(text);
+            }
+        }
+        merged
+    }
+    CoverBrief {
+        angle: merge_scalar(existing.angle, new.angle),
+        emphasis: merge_list(existing.emphasis, new.emphasis),
+        tone: merge_scalar(existing.tone, new.tone),
+        motivation: merge_scalar(existing.motivation, new.motivation),
+        constraints: merge_list(existing.constraints, new.constraints),
+    }
+}
+
+/// Persist a non-empty interview brief to `cover_brief.json` in `dir`, the
+/// piece `generate_build_cover` was missing: it drafted from a request-body
+/// `brief` but never saved it, so a browser-drafted letter had no saved brief
+/// to recover later, and a fact recorded only in the "Draft with copilot"
+/// interview could never ground a later provenance re-check (it had nothing to
+/// read). Mirrors the CLI's own save (`commands::cover::interview_brief`,
+/// which writes `cover_brief.json` next to a build's other artifacts) so a
+/// build carries the same recoverable brief regardless of which surface drafted
+/// it. An absent or empty brief is left unwritten — nothing to recover.
+///
+/// Merges with whatever brief is already on disk ([`merge_cover_briefs`])
+/// rather than overwriting it, so a paragraph confirmed as evidence earlier
+/// (via `confirm_cover_evidence`) survives a later "Draft with copilot" run.
+fn persist_cover_brief_if_present(
+    dir: &std::path::Path,
+    brief: Option<&CoverBrief>,
+) -> Result<(), BuildError> {
+    match brief {
+        Some(brief) if !cover_brief_is_empty(brief) => {
+            let existing: CoverBrief = read_json_artifact(&dir.join("cover_brief.json"))
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or_default();
+            let merged = merge_cover_briefs(existing, brief.clone());
+            builds::write_json(dir, "cover_brief.json", &merged)
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `POST /api/builds/:id/cover` — draft a cover letter for an existing build and
 /// render it into the build directory: the browser's way into the same
 /// [`CoverLetterAgent`](crate::cover::CoverLetterAgent) the CLI's `aarg cover`
@@ -1497,11 +1614,44 @@ struct GenerateCoverResponse {
 /// Because it spends the key, this route sits behind the same content-type gate
 /// `/api/llm` does (see `serve::requires_json_body`), which is what keeps a
 /// drive-by cross-origin POST from triggering a paid draft. The request body is
-/// ignored — the build id is the whole input.
-pub(super) async fn generate_build_cover(id: &str, state: &AppState) -> Resp {
+/// optional JSON, `{"brief"?: CoverBrief}` — an absent field, an absent `brief`
+/// key, or an empty body all mean "no interview", the same as `aarg cover`
+/// without `--interactive`. When present, `brief` is the result of a prior
+/// `cover_interview_interactive` session (the browser's cover-letter copilot)
+/// and is handed straight to `write_cover_letter` as grounding; every string it
+/// carries already passed that interview's own never-fabricate guard (see
+/// `cover_interview`'s module doc), so this route adds no new claim path. A
+/// non-empty `brief` is also persisted to the build's `cover_brief.json`
+/// ([`persist_cover_brief_if_present`]) before the draft is spent, so the
+/// interview survives the request regardless of how the draft itself turns out.
+pub(super) async fn generate_build_cover(
+    req: Request<Incoming>,
+    id: &str,
+    state: &AppState,
+) -> Resp {
+    // Checked before touching the body, like every other id-guarded route: a
+    // traversal-shaped id is refused before any bytes are read off the wire.
     if !is_numeric_id(id) {
         return error_response(404, "not_found", format!("no build {id:?}"));
     }
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let brief: Option<CoverBrief> = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<GenerateCoverRequest>(&body) {
+            Ok(request) => request.brief,
+            Err(error) => {
+                return error_response(
+                    400,
+                    "bad_request",
+                    format!("invalid cover request: {error}"),
+                );
+            }
+        }
+    };
     // Fail fast with the install message if typst is absent, before spending the
     // key on a draft that could never render — the same gate create_build uses.
     if let Err(error) = render::ensure_available() {
@@ -1514,6 +1664,12 @@ pub(super) async fn generate_build_cover(id: &str, state: &AppState) -> Resp {
     let dir = root.join(id);
     if !dir.is_dir() {
         return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    // Save a non-empty brief before spending the key: the interview it came
+    // from is worth recovering even if the draft below fails.
+    if let Err(error) = persist_cover_brief_if_present(&dir, brief.as_ref()) {
+        return error_response(500, "build_error", error.to_string());
     }
 
     // The resume and JD the letter is grounded in come straight off the build; a
@@ -1568,11 +1724,18 @@ pub(super) async fn generate_build_cover(id: &str, state: &AppState) -> Resp {
         tracer: &tracer,
         sink: None,
     };
-    let (letter, warnings, usage) =
-        match crate::cover::write_cover_letter(&ctx, &resume, &jd, &samples).await {
-            Ok(triple) => triple,
-            Err(error) => return cover_error_response(error, base_url.as_deref()),
-        };
+    let (letter, warnings, usage) = match crate::cover::write_cover_letter(
+        &ctx,
+        &resume,
+        &jd,
+        &samples,
+        brief.as_ref(),
+    )
+    .await
+    {
+        Ok(triple) => triple,
+        Err(error) => return cover_error_response(error, base_url.as_deref()),
+    };
 
     // Render + persist off the async worker (the `typst` subprocess and file
     // writes are blocking), serialized through the build-write mutex so it can't
@@ -1622,6 +1785,321 @@ fn cover_error_response(error: crate::cover::CoverLetterError, base_url: Option<
     match error {
         crate::cover::CoverLetterError::Llm(error) => llm_error_response(error, base_url),
         other => error_response(502, "cover_failed", other.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------
+// POST /api/builds/:id/cover-brief — confirm a paragraph as evidence
+// ---------------------------------------------------------------------
+
+/// The `POST /api/builds/:id/cover-brief` body: the exact text the candidate is
+/// confirming as their own — a cover-letter paragraph's live text, verbatim,
+/// from the Editing view. Never anything a model authors at confirm time; see
+/// [`confirm_cover_evidence`]'s doc for why that boundary matters here.
+#[derive(Deserialize)]
+struct ConfirmCoverEvidenceRequest {
+    text: String,
+}
+
+/// The `POST /api/builds/:id/cover-brief` success body: the brief as saved, so
+/// the browser can re-run `check_cover_provenance` against it right away (the
+/// claim half of that check is a cheap-tier model call over `/api/llm`),
+/// without a second round trip to re-fetch the build.
+#[derive(Serialize)]
+struct ConfirmCoverEvidenceResponse {
+    brief: CoverBrief,
+}
+
+/// `POST /api/builds/:id/cover-brief` — the Cover Letter Editing view's
+/// "confirm as evidence" action: append one paragraph's own text to this
+/// build's `CoverBrief.emphasis` and persist `cover_brief.json`, the same file
+/// [`persist_cover_brief_if_present`] writes and [`get_build_in`] serves back as
+/// `cover_brief`. This does not regenerate the letter — it only widens the
+/// grounding a *later* draft (or the immediate local re-check) can trace to; see
+/// the module-level `cover_provenance` doc for why the flag it clears is
+/// informational, never an enforcement gate.
+///
+/// Honesty: this route never calls a model. It takes exactly the string the
+/// client sends and appends it verbatim — nothing here paraphrases, summarizes,
+/// or otherwise authors new text from it. What lands in `emphasis` is always
+/// the candidate's own words, already shown to and editable by them in the
+/// Editing view before this request was ever sent; the same posture the
+/// interview's own evidence-scoped suggestion flow (`within_evidence`) exists to
+/// guard, just with no model call here to guard *against*.
+///
+/// Idempotent by exact (trimmed) text: confirming the same paragraph twice
+/// appends it once, so a doubled click (or a retried request) never doubles the
+/// emphasis list — a resubmitted confirmation is a no-op past the first.
+pub(super) async fn confirm_cover_evidence(
+    req: Request<Incoming>,
+    id: &str,
+    state: &AppState,
+) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let request: ConfirmCoverEvidenceRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return error_response(
+                400,
+                "bad_request",
+                format!("invalid confirm request: {error}"),
+            );
+        }
+    };
+    let text = request.text.trim();
+    if text.is_empty() {
+        return error_response(400, "bad_request", "text must not be empty");
+    }
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    // Serialized like every other build write: a tiny JSON read+write with no
+    // render, so it runs inline under the guard (the same shape
+    // `save_build_triage` uses) rather than on a blocking thread.
+    let _guard = state.build_write.lock().await;
+    match confirm_cover_evidence_in(&dir, text) {
+        Ok(brief) => json_response(200, &ConfirmCoverEvidenceResponse { brief }),
+        Err(error) => error_response(500, "build_error", error.to_string()),
+    }
+}
+
+/// Collapse a string to its whitespace-normalized form for near-duplicate
+/// comparison only: trim the ends, then collapse every internal run of
+/// whitespace (extra spaces, tabs, doubled spaces from a sloppy paste) down
+/// to a single space. Two texts that read as the same sentence but differ
+/// only in incidental whitespace normalize to the same value, so dedup
+/// catches them even though outer-`trim`-only equality would not. Never used
+/// to decide what gets *stored* — only what counts as "already have this."
+fn normalize_for_dedup(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The disk-touching half of [`confirm_cover_evidence`], with the build
+/// directory injected so a test can drive it against a tempdir: read the
+/// build's stored brief (defaulting to empty, the same best-effort read
+/// [`read_triage`] uses for its own file), append `text` to `emphasis` unless
+/// an entry already matches it under [`normalize_for_dedup`] (whitespace
+/// collapsed on both sides, so a doubled internal space doesn't slip past
+/// dedup as a "new" entry), then persist and return the updated brief.
+fn confirm_cover_evidence_in(dir: &std::path::Path, text: &str) -> Result<CoverBrief, BuildError> {
+    let mut brief: CoverBrief = read_json_artifact(&dir.join("cover_brief.json"))
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let normalized_text = normalize_for_dedup(text);
+    if !brief
+        .emphasis
+        .iter()
+        .any(|entry| normalize_for_dedup(entry) == normalized_text)
+    {
+        brief.emphasis.push(text.to_string());
+    }
+    builds::write_json(dir, "cover_brief.json", &brief)?;
+    Ok(brief)
+}
+
+// ---------------------------------------------------------------------
+// PUT /api/builds/:id/cover-payload — persist hand-edited cover paragraphs
+// ---------------------------------------------------------------------
+
+/// The `PUT /api/builds/:id/cover-payload` request body: the edited body
+/// paragraphs, a full replacement of the letter's editable content. The
+/// greeting, sign-off, contact block, company, and title are code-filled and
+/// never editable in the Editing view, so they are not in the body — they carry
+/// over from the build's stored cover payload unchanged.
+#[derive(Deserialize)]
+struct SaveCoverPayloadRequest {
+    paragraphs: Vec<String>,
+}
+
+/// The `PUT /api/builds/:id/cover-payload` success body: the letter as saved
+/// (surviving paragraphs only), a warning for each paragraph the digit guard
+/// dropped (with the reason), and the persisted PDF filename the pixel preview
+/// refetches. `dropped` is the one hard rejection this route makes — a
+/// paragraph that stated a figure the evidence doesn't back — distinct from the
+/// browser's informational "still unrecorded" flag, which never blocks a save.
+#[derive(Debug, Serialize)]
+struct SaveCoverPayloadResponse {
+    letter: CoverLetter,
+    dropped: Vec<String>,
+    pdf: String,
+}
+
+/// Everything persisting an edited cover payload can fail with, one typed enum
+/// so the blocking worker propagates with `?` and the async half maps each
+/// variant to its status in one place ([`save_cover_error_response`]).
+#[derive(Debug, thiserror::Error)]
+enum SaveCoverError {
+    #[error("this build is missing {0} and cannot have its cover letter edited")]
+    MissingArtifact(&'static str),
+    #[error("the edited cover letter has no paragraphs left to save")]
+    Empty,
+    #[error("could not read {path}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Render(#[from] RenderError),
+}
+
+/// `PUT /api/builds/:id/cover-payload` — persist a candidate's hand-edited cover
+/// letter paragraphs and re-render the PDF. The browser's Editing view holds its
+/// edits in memory until this call; before this route existed, they were lost on
+/// reload. The digit guard runs server-side: a paragraph introducing a figure
+/// the résumé and brief don't state is dropped (see [`save_cover_payload_in`]),
+/// the same structural never-fabricate check generation enforces, so a hand-edit
+/// can't smuggle in a fabricated number.
+///
+/// No model is called (this only re-renders edited prose), but the route still
+/// sits behind the JSON content-type gate the other body-taking routes use, and
+/// serializes writes through `AppState.build_write` so a save can't race a
+/// concurrent edit or delete of the same build. The `typst` presence check
+/// fails fast with the install message before any disk work.
+pub(super) async fn save_build_cover_payload(
+    req: Request<Incoming>,
+    id: &str,
+    state: &AppState,
+) -> Resp {
+    if !is_numeric_id(id) {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+    let body = match read_body(req).await {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let request: SaveCoverPayloadRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return error_response(
+                400,
+                "bad_request",
+                format!("invalid cover-payload request: {error}"),
+            );
+        }
+    };
+    // Fail fast with the install message if typst is absent, before touching
+    // disk — the same gate save_build_edits and create_build use.
+    if let Err(error) = render::ensure_available() {
+        return render_error_response(error);
+    }
+    let Ok(root) = crate::builds::builds_root() else {
+        return error_response(500, "internal", "could not locate the builds directory");
+    };
+    let dir = root.join(id);
+    if !dir.is_dir() {
+        return error_response(404, "not_found", format!("no build {id:?}"));
+    }
+
+    // The render (typst subprocess + file writes) is blocking, so run it off the
+    // async worker, serialized through the build-write mutex the edit and cover
+    // routes share.
+    let _guard = state.build_write.lock().await;
+    let result = tokio::task::spawn_blocking(move || save_cover_payload_in(&dir, request)).await;
+    match result {
+        Ok(Ok(response)) => json_response(200, &response),
+        Ok(Err(error)) => save_cover_error_response(error),
+        Err(join) => error_response(
+            500,
+            "internal",
+            format!("the cover save task did not complete: {join}"),
+        ),
+    }
+}
+
+/// The disk-touching half of [`save_build_cover_payload`], with the build
+/// directory injected so a test can drive it against a tempdir. Reads the
+/// build's stored cover payload (for the code-filled greeting/sign-off/contact
+/// this edit never touches), its canonical résumé, and its interview brief (the
+/// digit guard's evidence corpus), runs [`crate::cover::guard_edited_paragraphs`]
+/// over the incoming paragraphs, then re-renders — which writes both
+/// `cover_payload.json` (survivors only) and `cover_letter.pdf`, so the payload
+/// on disk and the rendered PDF always agree. An edit that leaves no paragraph
+/// standing is rejected rather than written as an empty letter.
+fn save_cover_payload_in(
+    dir: &std::path::Path,
+    request: SaveCoverPayloadRequest,
+) -> Result<SaveCoverPayloadResponse, SaveCoverError> {
+    // The existing payload carries the code-filled fields (greeting, sign-off,
+    // contact, company, title) an edit never touches; a build with no cover
+    // payload has nothing to edit here (the Editing view only exposes Save once
+    // a payload is present).
+    let mut letter: CoverLetter = read_cover_json(&dir.join("cover_payload.json"))?
+        .ok_or(SaveCoverError::MissingArtifact("cover_payload.json"))?;
+    // The résumé and brief are the digit guard's evidence corpus, exactly as
+    // generation reads them. A build always has a canonical; the brief is
+    // optional (never interviewed, or drafted plainly).
+    let resume: TailoredResume = read_cover_json(&dir.join("canonical.json"))?
+        .ok_or(SaveCoverError::MissingArtifact("canonical.json"))?;
+    let brief: Option<CoverBrief> = read_json_artifact(&dir.join("cover_brief.json"))
+        .and_then(|value| serde_json::from_value(value).ok());
+
+    // The hard gate: the exact digit guard `cover::assemble` runs at generation
+    // time, applied to the hand-edit. A paragraph stating an unbacked figure is
+    // dropped, not rewritten.
+    let guarded =
+        crate::cover::guard_edited_paragraphs(&resume, brief.as_ref(), &request.paragraphs);
+    if guarded.kept.is_empty() {
+        return Err(SaveCoverError::Empty);
+    }
+    letter.paragraphs = guarded.kept;
+
+    // `render_cover` stages `cover_payload.json` (the surviving paragraphs) and
+    // compiles `cover_letter.pdf` from it in one step.
+    let pdf = render::render_cover(dir, &letter, &render::Template::cover())?;
+    let pdf = pdf
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cover_letter.pdf")
+        .to_string();
+    Ok(SaveCoverPayloadResponse {
+        letter,
+        dropped: guarded.dropped,
+        pdf,
+    })
+}
+
+/// Read a required cover artifact as a typed value: `Ok(None)` when the file is
+/// absent (mapped to a 404 at the call site), `Ok(Some(_))` when it parses, and
+/// an error only when it exists but won't read or parse. Mirrors
+/// [`read_build_json`], kept local so [`SaveCoverError`] stays self-contained.
+fn read_cover_json<T: DeserializeOwned>(
+    path: &std::path::Path,
+) -> Result<Option<T>, SaveCoverError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(serde_json::from_str(&text)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(SaveCoverError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+/// Map a [`SaveCoverError`] to a response: a missing required artifact is a 404,
+/// an edit that guards down to nothing a 422, a render failure keeps the CLI's
+/// 503/500 split, and a read/parse fault a 500. No message carries secrets.
+fn save_cover_error_response(error: SaveCoverError) -> Resp {
+    match error {
+        SaveCoverError::MissingArtifact(_) => error_response(404, "not_found", error.to_string()),
+        SaveCoverError::Empty => error_response(422, "empty_cover", error.to_string()),
+        SaveCoverError::Render(error) => render_error_response(error),
+        SaveCoverError::Json(_) | SaveCoverError::Io { .. } => {
+            error_response(500, "internal", error.to_string())
+        }
     }
 }
 
@@ -2194,34 +2672,392 @@ mod tests {
         assert_eq!(resp.status(), 404);
     }
 
+    /// `cover_payload` follows the exact best-effort convention as
+    /// `human_payload`/`ats_payload`: present (and parsed) when
+    /// `cover_payload.json` is on disk, quietly absent for a build that has
+    /// only a résumé and no cover letter yet — never an error either way.
+    #[tokio::test]
+    async fn get_build_includes_cover_payload_when_present_and_omits_it_when_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A build needs at least one artifact to read as present at all.
+        builds::write_json(&dir, "jd.json", &json!({})).unwrap();
+
+        // No cover letter drafted yet: the key is simply missing.
+        let resp = get_build_in(root.path(), "001");
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body.get("cover_payload").is_none(),
+            "unexpected cover_payload: {body:?}"
+        );
+
+        // Draft one, write it the same way `POST .../cover` does, and it
+        // shows up parsed, not as an opaque blob.
+        let letter = CoverLetter {
+            contact: crate::dataset::types::Contact {
+                full_name: "Ada Lovelace".into(),
+                email: "ada@example.com".into(),
+                phone: None,
+                location: None,
+                links: Vec::new(),
+            },
+            company: "Acme".into(),
+            title: "Engineer".into(),
+            greeting: "Dear Hiring Manager,".into(),
+            paragraphs: vec!["I would love to build things.".into()],
+            signoff: "Sincerely,".into(),
+        };
+        builds::write_json(&dir, "cover_payload.json", &letter).unwrap();
+
+        let resp = get_build_in(root.path(), "001");
+        assert_eq!(resp.status(), 200);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["cover_payload"]["company"], "Acme");
+        assert_eq!(
+            body["cover_payload"]["paragraphs"][0],
+            "I would love to build things."
+        );
+    }
+
+    /// A non-empty brief is written verbatim; an empty one (every field blank,
+    /// both lists empty — the shape an abandoned interview yields) and an
+    /// absent one are both left unwritten. This is the disk-touching core of
+    /// the brief-persistence fix `generate_build_cover` was missing.
+    #[test]
+    fn persist_cover_brief_if_present_writes_only_a_non_empty_brief() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover_brief.json");
+
+        // No brief at all: nothing written.
+        persist_cover_brief_if_present(&dir, None).unwrap();
+        assert!(!path.exists());
+
+        // An entirely empty brief (an abandoned interview): still nothing.
+        persist_cover_brief_if_present(&dir, Some(&CoverBrief::default())).unwrap();
+        assert!(!path.exists());
+
+        // A brief with even one answer is written verbatim.
+        let brief = CoverBrief {
+            angle: Some("position me as a builder, not just an IC".into()),
+            ..CoverBrief::default()
+        };
+        persist_cover_brief_if_present(&dir, Some(&brief)).unwrap();
+        let stored: CoverBrief =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored, brief);
+    }
+
+    /// The silent-erasure bug: a paragraph confirmed as evidence (simulating
+    /// `confirm_cover_evidence`'s append) must survive a later "Draft with
+    /// copilot" run, whose fresh interview brief is persisted through the same
+    /// `persist_cover_brief_if_present` path. Confirms the merge, not an
+    /// overwrite: the first interview's `emphasis` entry is still present
+    /// alongside the second interview's own answers, and the second
+    /// interview's `angle` updates the field the first left blank.
+    #[test]
+    fn persist_cover_brief_if_present_merges_with_a_previously_confirmed_brief() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Simulates the "confirm as evidence" flow: an entry already on disk
+        // before any copilot interview runs.
+        let confirmed = CoverBrief {
+            emphasis: vec!["shipped ChessCoach, a chess training app".into()],
+            ..CoverBrief::default()
+        };
+        builds::write_json(&dir, "cover_brief.json", &confirmed).unwrap();
+
+        // A second, distinct copilot interview drafts and persists its own
+        // brief, unaware of the confirmed entry.
+        let second_interview = CoverBrief {
+            angle: Some("lead with reliability work".into()),
+            emphasis: vec!["led the incident response program".into()],
+            ..CoverBrief::default()
+        };
+        persist_cover_brief_if_present(&dir, Some(&second_interview)).unwrap();
+
+        let stored: CoverBrief =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("cover_brief.json")).unwrap())
+                .unwrap();
+        // The first entry survives...
+        assert!(
+            stored
+                .emphasis
+                .contains(&"shipped ChessCoach, a chess training app".to_string())
+        );
+        // ...alongside the second interview's own emphasis entry...
+        assert!(
+            stored
+                .emphasis
+                .contains(&"led the incident response program".to_string())
+        );
+        assert_eq!(stored.emphasis.len(), 2);
+        // ...and a singular field the first interview never answered is
+        // updated by the second.
+        assert_eq!(stored.angle.as_deref(), Some("lead with reliability work"));
+    }
+
+    /// A build with a canonical whose one bullet states the figure 12 and a
+    /// prior cover payload — the fixture the save-route tests below drive.
+    #[cfg(test)]
+    fn seed_cover_build(dir: &std::path::Path) {
+        let canonical = json!({
+            "build_id": "001", "jd_id": "acme",
+            "generated_at": "2026-07-01T00:00:00Z",
+            "contact": {
+                "full_name": "Ada Lovelace", "email": "ada@example.com",
+                "phone": null, "location": null, "links": []
+            },
+            "target_title": "Engineer",
+            "summary": "Engineering leader.",
+            "roles": [{
+                "id": "role-1", "company": "Contoso", "title": "Director",
+                "start": "2020-01", "end": null, "location": null,
+                "bullets": [{ "source_id": "b1", "text": "Led a team of 12 engineers" }]
+            }],
+            "education": [], "skills_section": { "skills": [] },
+            "projects": [], "achievements": [], "certifications": []
+        });
+        builds::write_json(dir, "canonical.json", &canonical).unwrap();
+
+        let letter = CoverLetter {
+            contact: crate::dataset::types::Contact {
+                full_name: "Ada Lovelace".into(),
+                email: "ada@example.com".into(),
+                phone: None,
+                location: None,
+                links: Vec::new(),
+            },
+            company: "Acme".into(),
+            title: "Engineer".into(),
+            greeting: "Dear Acme hiring team,".into(),
+            paragraphs: vec!["A placeholder first draft paragraph.".into()],
+            signoff: "Ada Lovelace".into(),
+        };
+        builds::write_json(dir, "cover_payload.json", &letter).unwrap();
+    }
+
+    /// The save route runs the exact digit guard generation does: a hand-edited
+    /// paragraph introducing a figure the résumé and brief don't state is
+    /// dropped server-side (reported in `dropped`), while a clean edit is kept
+    /// and written to `cover_payload.json` — the durable change that survives a
+    /// reload. The payload write happens during render staging, so it lands
+    /// whether or not typst is present; the re-rendered PDF (and the returned
+    /// response) is gated behind a real typst.
+    #[test]
+    fn save_cover_payload_drops_an_unbacked_digit_and_persists_the_clean_edit() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_cover_build(&dir);
+
+        let request = SaveCoverPayloadRequest {
+            paragraphs: vec![
+                // "12" is a résumé figure, so this paragraph stands.
+                "I led a team of 12 engineers at Contoso.".into(),
+                // "40" is in neither the résumé nor a brief: an invented number.
+                "I cut costs by 40% in a role nobody recorded.".into(),
+            ],
+        };
+        let result = save_cover_payload_in(&dir, request);
+
+        // The payload on disk reflects only the surviving paragraph, and the
+        // code-filled greeting/sign-off carried over from the prior payload —
+        // asserted whether or not typst was there to render the PDF.
+        let stored: CoverLetter =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("cover_payload.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            stored.paragraphs.len(),
+            1,
+            "the invented-number paragraph must be dropped"
+        );
+        assert!(stored.paragraphs[0].contains("12 engineers"));
+        assert_eq!(stored.greeting, "Dear Acme hiring team,");
+        assert_eq!(stored.signoff, "Ada Lovelace");
+
+        if render::ensure_available().is_ok() {
+            let response = result.unwrap();
+            assert_eq!(response.letter.paragraphs.len(), 1);
+            assert_eq!(response.dropped.len(), 1);
+            assert!(
+                response.dropped[0].contains("introduced a figure"),
+                "got: {:?}",
+                response.dropped
+            );
+            // The PDF exists only because typst was invoked — staging writes the
+            // payload JSON, never the PDF, so its presence proves the re-render.
+            assert!(dir.join("cover_letter.pdf").is_file());
+        } else {
+            assert!(result.is_err());
+        }
+    }
+
+    /// An edit whose every paragraph guards down to nothing (all invented
+    /// figures, or all blank) is refused, not written as an empty letter — the
+    /// same `Empty` outcome generation's `assemble` reaches, surfaced as a 422.
+    #[test]
+    fn save_cover_payload_refuses_an_edit_that_guards_down_to_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        seed_cover_build(&dir);
+
+        let request = SaveCoverPayloadRequest {
+            paragraphs: vec![
+                "I saved the company 40 million dollars.".into(),
+                "   ".into(),
+            ],
+        };
+        let error = save_cover_payload_in(&dir, request).unwrap_err();
+        assert!(matches!(error, SaveCoverError::Empty));
+        assert_eq!(save_cover_error_response(error).status(), 422);
+
+        // The prior payload is untouched: a rejected save never half-lands.
+        let stored: CoverLetter =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("cover_payload.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            stored.paragraphs,
+            vec!["A placeholder first draft paragraph."]
+        );
+    }
+
+    /// A build with no stored cover payload has nothing to edit: the save route
+    /// answers 404 rather than inventing a letter from the edit alone.
+    #[test]
+    fn save_cover_payload_404s_a_build_with_no_cover() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A canonical but no cover_payload.json.
+        builds::write_json(
+            &dir,
+            "canonical.json",
+            &minimal_create_build_request().canonical,
+        )
+        .unwrap();
+
+        let request = SaveCoverPayloadRequest {
+            paragraphs: vec!["Any paragraph.".into()],
+        };
+        let error = save_cover_payload_in(&dir, request).unwrap_err();
+        assert!(matches!(
+            error,
+            SaveCoverError::MissingArtifact("cover_payload.json")
+        ));
+        assert_eq!(save_cover_error_response(error).status(), 404);
+    }
+
+    /// `cover_brief` follows the same best-effort convention `cover_payload`
+    /// does: present when `cover_brief.json` is on disk (whether the CLI, the
+    /// copilot interview, or a "confirm as evidence" action wrote it), quietly
+    /// absent otherwise — so the Editing view's re-check can thread it in as
+    /// grounding the moment a build has one.
+    #[tokio::test]
+    async fn get_build_includes_cover_brief_when_present_and_omits_it_when_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+        builds::write_json(&dir, "jd.json", &json!({})).unwrap();
+
+        let resp = get_build_in(root.path(), "001");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body.get("cover_brief").is_none(),
+            "unexpected cover_brief: {body:?}"
+        );
+
+        let brief = CoverBrief {
+            emphasis: vec!["shipped ChessCoach, a chess training app".into()],
+            ..CoverBrief::default()
+        };
+        builds::write_json(&dir, "cover_brief.json", &brief).unwrap();
+
+        let resp = get_build_in(root.path(), "001");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["cover_brief"]["emphasis"][0],
+            "shipped ChessCoach, a chess training app"
+        );
+    }
+
+    /// The confirm-evidence core: a fresh build gets an `emphasis` entry; the
+    /// same text confirmed a second time does not duplicate it (idempotent by
+    /// exact, trimmed text); a genuinely different confirmation still appends
+    /// as a second entry. Every call persists to disk.
+    #[test]
+    fn confirm_cover_evidence_appends_once_per_distinct_text() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let brief = confirm_cover_evidence_in(&dir, "I rebuilt the deployment pipeline.").unwrap();
+        assert_eq!(brief.emphasis, vec!["I rebuilt the deployment pipeline."]);
+
+        // The same confirmation again: no duplicate.
+        let brief = confirm_cover_evidence_in(&dir, "I rebuilt the deployment pipeline.").unwrap();
+        assert_eq!(brief.emphasis, vec!["I rebuilt the deployment pipeline."]);
+
+        // A different paragraph's text: a second, distinct entry.
+        let brief =
+            confirm_cover_evidence_in(&dir, "I led reliability work for 12 services.").unwrap();
+        assert_eq!(
+            brief.emphasis,
+            vec![
+                "I rebuilt the deployment pipeline.".to_string(),
+                "I led reliability work for 12 services.".to_string(),
+            ]
+        );
+
+        // It's actually on disk, not just returned.
+        let stored: CoverBrief =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("cover_brief.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored, brief);
+    }
+
+    /// A near-duplicate that differs only by a doubled internal space (e.g.
+    /// pasted text with an extra space between two words) must still dedup —
+    /// outer-`trim`-only comparison missed this class of near-duplicate.
+    #[test]
+    fn confirm_cover_evidence_dedups_a_doubled_internal_space_near_duplicate() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("001");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let brief = confirm_cover_evidence_in(&dir, "I led the team").unwrap();
+        assert_eq!(brief.emphasis, vec!["I led the team"]);
+
+        // Same sentence, one doubled internal space: still counts as the same
+        // entry, so it must not be appended again.
+        let brief = confirm_cover_evidence_in(&dir, "I  led the team").unwrap();
+        assert_eq!(brief.emphasis, vec!["I led the team"]);
+    }
+
     #[tokio::test]
     async fn get_build_file_rejects_a_bad_filename_before_touching_disk() {
         let resp = get_build_file("041", "../../secret").await;
         assert_eq!(resp.status(), 400);
     }
 
-    /// A throwaway `AppState` for a handler test that never touches the static
-    /// source or a real socket — only the write mutexes and the bound port are
-    /// ever read on these paths.
-    fn test_state() -> AppState {
-        use std::sync::Arc;
-        AppState {
-            source: super::super::StaticSource::None,
-            dataset_write: Arc::new(tokio::sync::Mutex::new(())),
-            build_write: Arc::new(tokio::sync::Mutex::new(())),
-            bound_port: 0,
-            allowed_hosts: Arc::new(Vec::new()),
-        }
-    }
-
-    /// The cover route guards its id exactly like the other build routes: a
-    /// traversal-shaped id is a 404 raised before any disk read, any keychain
-    /// touch, or any key spend — the same gate that protects `get_build`.
-    #[tokio::test]
-    async fn generate_build_cover_rejects_a_non_numeric_id() {
-        let resp = generate_build_cover("../etc", &test_state()).await;
-        assert_eq!(resp.status(), 404);
-    }
+    // `generate_build_cover` now takes a `Request<Incoming>` (the optional
+    // `brief` body), so it joins every other body-taking route in this file
+    // (`put_dataset`, `save_build_edits`, `save_build_triage`, `create_build`,
+    // `render`, `llm`, `fetch_jd`) in having no direct handler-level test —
+    // `hyper::body::Incoming` isn't constructible outside a real connection.
+    // Its id guard is still the same `is_numeric_id` call (see the function
+    // body, checked before the body is ever read) covered by
+    // `the_build_id_gate_accepts_only_plain_digits` above.
 
     /// An LLM failure from the cover agent is mapped to the same status the
     /// `/api/llm` route would give it (a missing key is a 503), so the browser's

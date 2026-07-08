@@ -14,8 +14,8 @@ pub use aarg_core::{agent, llm, trace, user};
 // `crate::gap::...` path in this crate working unchanged. `dataset` is a local
 // shim (it adds on-disk persistence to the re-exported model).
 pub use aarg_domain::{
-    enrich, gap, guide, jd, keywords, metric, mirror, review, strengthen, summary, tailor, tune,
-    variant, verify, voice,
+    cover, cover_interview, cover_provenance, enrich, gap, guide, jd, keywords, metric, mirror,
+    review, strengthen, summary, tailor, tune, variant, verify, voice,
 };
 
 pub mod ats;
@@ -23,7 +23,6 @@ pub mod builds;
 pub mod cli;
 pub mod commands;
 pub mod config;
-pub mod cover;
 pub mod dataset;
 pub mod evals;
 pub mod fetch;

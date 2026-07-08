@@ -23,7 +23,7 @@
 // (or `npm i playwright` first). It is dependency-light on purpose: one
 // dynamic import, no config, no test runner.
 
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 async function loadChromium() {
@@ -49,14 +49,29 @@ const BASE = process.env.AARG_URL ?? 'http://127.0.0.1:8799';
 const SHOTS = process.env.SHOTS_DIR ?? 'docs/screenshots';
 
 // If any of these ever appear in the rendered DOM, the fixture leaked real
-// data — fail loudly rather than commit a screenshot with PII. Keep this in
-// sync with the fixture denylist grep in the record-demos skill.
-const DENYLIST = [
-  'josey', 'morton', 'joseymorton', 'claremore', 'prometheum', 'scoutgroup',
-  'consumeraffairs', 'cloudload', 'octobear', 'coreweave', 'sambanova',
-  'pantheon', 'hightouch', 'thumbtack', 'mainstay', 'syndio', 'finra',
-  'broker-dealer', 'spbd',
-];
+// data — fail loudly rather than commit a screenshot with PII. Same source
+// as scripts/pii-scan.py (which also checks the fixture's PDFs, which this
+// DOM-text check cannot see into): the PII_DENYLIST env var, or the
+// git-excluded denylist.local.txt next to this script. The tracked
+// denylist.txt is a placeholder — real terms are never committed.
+function parseDenylist(text) {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'));
+}
+async function loadDenylist() {
+  if (process.env.PII_DENYLIST) return parseDenylist(process.env.PII_DENYLIST);
+  try {
+    const text = await readFile(new URL('denylist.local.txt', import.meta.url), 'utf8');
+    return parseDenylist(text);
+  } catch {
+    throw new Error(
+      'no denylist available — set PII_DENYLIST or create docs/demo/denylist.local.txt',
+    );
+  }
+}
+const DENYLIST = await loadDenylist();
 
 /** Attach a console/pageerror collector to a page; returns the error array. */
 function watchErrors(page, label) {
