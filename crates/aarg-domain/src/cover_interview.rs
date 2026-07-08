@@ -9,18 +9,30 @@
 //! reads as generic enthusiasm dressed up in facts. None of that traces
 //! to the candidate.
 //!
-//! So this module only ever asks. [`CoverInterviewAgent`] poses one
-//! grounded question at a time — specific to the actual posting and the
-//! candidate's tailored résumé, never a generic prompt — and
-//! [`run_cover_interview`] drives a short, adaptive session across a
-//! handful of fixed topics: the letter's overall angle, what to
-//! emphasize, its tone, why this role and company, and any constraints.
-//! Which [`CoverBrief`] field an answer fills is decided entirely by
-//! code — whichever topic is live when the user answers — never by
-//! parsing the model's own words, so nothing the model writes can end up
-//! recorded as a candidate fact. A skipped or partial interview degrades
-//! to an empty or partial brief rather than blocking whatever generates
-//! the letter later.
+//! So this module only ever asks. [`run_cover_interview`] runs draft-first:
+//! it generates a naive preliminary letter from the résumé and JD alone
+//! (reusing [`write_cover_letter`](crate::cover::write_cover_letter) with no
+//! brief), then reads its own honesty check
+//! ([`check_cover_provenance`](crate::cover_provenance)) to see which
+//! paragraphs make a claim the candidate's evidence doesn't back. Those
+//! flagged paragraphs are the interview: for each one,
+//! [`CoverGapQuestionAgent`] phrases a single, specific question that puts the
+//! claim back to the candidate to confirm, expand, or drop — a better use of
+//! their attention than a fixed list of generic questions asked before anyone
+//! knows what the draft actually needs. When the preliminary draft has no such
+//! gaps (every paragraph grounded or exempt), or when the draft or its check
+//! can't be produced, the session falls back to the original fixed walk-through
+//! across a handful of topics: the letter's overall angle, what to emphasize,
+//! its tone, why this role and company, and any constraints, each
+//! [`CoverInterviewAgent`] question grounded in the posting and the résumé.
+//! Either way, which [`CoverBrief`] field an answer fills is decided entirely
+//! by code — a gap answer always lands in `emphasis`, and a fixed-topic answer
+//! in whichever topic is live — never by parsing the model's own words, so
+//! nothing the model writes can end up recorded as a candidate fact. The
+//! preliminary draft is scratch: it is never shown as final and never
+//! persisted; the caller always re-drafts the real letter from the finished
+//! brief. A skipped or partial interview degrades to an empty or partial brief
+//! rather than blocking whatever generates the letter later.
 //!
 //! For four of the five topics, the interview also offers a guarded,
 //! evidence-grounded suggestion first — the same "propose one draft, the
@@ -38,6 +50,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{Agent, AgentContext};
+use crate::cover::write_cover_letter;
+use crate::cover_provenance::{CoverParagraphStatus, check_cover_provenance};
 use crate::jd::JobRequirements;
 use crate::llm::LlmError;
 use crate::tailor::{TailoredResume, within_evidence};
@@ -659,18 +673,195 @@ async fn cover_suggest_flow(
 }
 
 // ---------------------------------------------------------------------
+// Agent 3: turn one flagged draft paragraph into a single question
+// ---------------------------------------------------------------------
+
+/// What the gap-question agent works from: the posting for light grounding,
+/// the one flagged draft paragraph, and the honesty check's plain-language
+/// note on what the résumé and posting don't support. It is deliberately not
+/// given the résumé's facts to answer from — its only job is to phrase a
+/// question that puts the flagged claim back to the candidate.
+#[derive(Serialize)]
+pub struct CoverGapQuestionInput {
+    pub jd_title: String,
+    pub jd_company: String,
+    pub paragraph: String,
+    pub unbacked: String,
+}
+
+/// Phrases ONE question about a single paragraph the preliminary draft's
+/// provenance check flagged as unsupported, inviting the candidate to confirm
+/// the claim, add the detail that backs it, or say to drop it. Like
+/// [`CoverInterviewAgent`], it only ever asks — its `Output` is a question and
+/// it has no field to supply an answer or a rewrite, so nothing it produces
+/// can become a recorded fact. It takes the default (mid) tier, the same the
+/// other question-asking agents in this module use: phrasing a warm, specific
+/// question is judgment work, not the cheap-tier classification the provenance
+/// judge ([`CoverClaimAgent`](crate::cover_provenance::CoverClaimAgent)) does.
+pub struct CoverGapQuestionAgent;
+
+#[async_trait]
+impl Agent for CoverGapQuestionAgent {
+    type Input = CoverGapQuestionInput;
+    type Wire = RawQuestion;
+    type Output = String;
+    type Error = CoverInterviewError;
+
+    fn id(&self) -> &'static str {
+        "cover_gap_question_v1"
+    }
+    fn system_prompt(&self) -> &str {
+        GAP_QUESTION_PROMPT
+    }
+    fn reply_budget(&self) -> u32 {
+        REPLY_BUDGET
+    }
+    fn user_message(&self, input: &CoverGapQuestionInput) -> String {
+        format!(
+            "The posting: {} at {}\n\nA paragraph from the draft cover letter:\n\"{}\"\n\n\
+             What the honesty check flagged as unsupported:\n{}\n\n\
+             Ask your one question about this paragraph.",
+            input.jd_title, input.jd_company, input.paragraph, input.unbacked
+        )
+    }
+    fn bad_reply(&self, snippet: String, source: serde_json::Error) -> CoverInterviewError {
+        CoverInterviewError::BadReply { snippet, source }
+    }
+    fn assemble(
+        &self,
+        wire: RawQuestion,
+        _input: CoverGapQuestionInput,
+    ) -> Result<String, CoverInterviewError> {
+        Ok(wire.question)
+    }
+}
+
+const GAP_QUESTION_PROMPT: &str = r#"You help a job candidate review a draft cover letter, one paragraph at a time. A draft was written from their resume and the job posting, and an honesty check flagged one paragraph for making a claim the resume and posting don't clearly support. You are given that paragraph and a short note on what isn't supported.
+
+Ask ONE short, warm, specific question that puts the flagged claim back to the candidate and lets them confirm it, add the detail that backs it up, or tell you to cut it. Point at the actual thing the paragraph claims, in plain words: "The draft says you led the migration to a new payments platform - is that accurate, and is there anything you'd add, or should it come out?"
+
+Rules that always hold:
+- You do NOT know whether the claim is true; only the candidate does. Ask; never assert, guess, or imply the answer.
+- NEVER rewrite the paragraph or propose replacement wording. You only ask one question.
+- Never invent a fact about the candidate or the company. Refer only to what the flagged paragraph already says.
+- One question, one or two sentences, concrete and easy to answer.
+
+Reply with exactly one JSON object and nothing else - no markdown fences:
+{"question": "your one question"}"#;
+
+/// One paragraph a preliminary draft's provenance check flagged, paired with
+/// the reason the candidate should react to. Draft order is preserved from the
+/// report, so when there are more gaps than the budget allows, the earliest
+/// (top-of-letter) paragraphs are the ones asked about — the plainest ranking,
+/// and the one a reader's eye reaches first.
+struct GapParagraph {
+    text: String,
+    reason: String,
+}
+
+/// The plain-language reason to put a flagged paragraph back to the candidate:
+/// the model's own claim description when it flagged one, otherwise a
+/// deterministic note built from the unbacked number(s) the digit guard found.
+/// An `Unrecorded` paragraph always fired on at least one of those two axes
+/// (see [`check_cover_provenance`](crate::cover_provenance)), so this is always
+/// `Some` for the paragraphs [`gather_gaps`] keeps.
+fn gap_reason(p: &crate::cover_provenance::ParagraphProvenance) -> Option<String> {
+    if let Some(claim) = &p.unbacked_claim {
+        return Some(claim.clone());
+    }
+    if !p.unbacked_digits.is_empty() {
+        return Some(format!(
+            "states the figure(s) {} that your evidence doesn't record",
+            p.unbacked_digits.join(", ")
+        ));
+    }
+    None
+}
+
+/// A plain fallback question for one flagged paragraph, used only when the
+/// gap-question agent can't be reached — mirrors [`Slot::fallback_question`]
+/// so a transient model error surfaces the gap plainly rather than skipping
+/// it. Quotes only the draft's own words, never a fact from elsewhere.
+fn gap_fallback_question(gap: &GapParagraph) -> String {
+    format!(
+        "Your draft says: \"{}\" Is that accurate, and is there anything you'd add, \
+         or should it come out?",
+        gap_snippet(&gap.text)
+    )
+}
+
+/// The first stretch of a flagged paragraph, for a fallback question — kept
+/// short so the prompt stays readable.
+fn gap_snippet(text: &str) -> String {
+    let snippet: String = text.chars().take(160).collect();
+    if snippet.len() < text.len() {
+        format!("{}…", snippet.trim_end())
+    } else {
+        snippet
+    }
+}
+
+/// Draft-first gap discovery: generate a naive preliminary letter from the
+/// résumé and JD alone (no brief), then run the provenance check over it —
+/// giving that check the `brief` gathered so far, so a claim the candidate
+/// already grounded with the leading open question doesn't read as a gap.
+/// Returns the flagged paragraphs in draft order.
+///
+/// Every failure mode collapses to "no gaps": a model error drafting the
+/// scratch letter, a draft that assembles to nothing, or a failed provenance
+/// call all return an empty list, and the caller falls back to the fixed-topic
+/// walk-through. The preliminary letter is never returned or persisted — only
+/// the list of gaps it revealed leaves this function.
+async fn gather_gaps(
+    ctx: &AgentContext<'_>,
+    resume: &TailoredResume,
+    jd: &JobRequirements,
+    brief: &CoverBrief,
+) -> Vec<GapParagraph> {
+    let Ok((letter, _warnings, _usage)) = write_cover_letter(ctx, resume, jd, &[], None).await
+    else {
+        return Vec::new();
+    };
+    let Ok(report) = check_cover_provenance(ctx, &letter, resume, jd, Some(brief)).await else {
+        return Vec::new();
+    };
+    report
+        .paragraphs
+        .into_iter()
+        .filter(|p| p.status == CoverParagraphStatus::Unrecorded)
+        .filter_map(|p| {
+            gap_reason(&p).map(|reason| GapParagraph {
+                text: p.text,
+                reason,
+            })
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------
 // The interview loop
 // ---------------------------------------------------------------------
 
-/// Walk the candidate through a short, adaptive interview about the
-/// cover letter's angle, emphasis, tone, motivation, and constraints, and
-/// return what they said as a [`CoverBrief`]. Opens with one free-form
-/// question — anything they already know they want said — before the
-/// guided topics, for a candidate who would rather say it once than answer
-/// several separate questions; every field comes from the user's own typed
-/// answers either way, whether typed directly or accepted from a
-/// suggestion — the agents only ever ask or propose (see [`CoverBrief`]'s
-/// doc comment for how that's enforced structurally).
+/// Interview the candidate about the cover letter and return what they said
+/// as a [`CoverBrief`]. Opens with one free-form question — anything they
+/// already know they want said — which costs no model call and lands in
+/// `emphasis`. Then it runs draft-first (see the module doc): a naive
+/// preliminary letter is drafted from the résumé and JD alone, its honesty
+/// check ([`check_cover_provenance`](crate::cover_provenance)) finds the
+/// paragraphs that claim something the evidence doesn't back, and each such gap
+/// becomes one targeted question ([`CoverGapQuestionAgent`]) whose answer lands
+/// in `emphasis` verbatim. When the preliminary draft has no gaps — or can't be
+/// drafted or checked — the session falls back to the original fixed
+/// walk-through over the letter's angle, emphasis, tone, motivation, and
+/// constraints, each with an optional guarded suggestion first. Every field
+/// comes from the user's own typed answers either way, whether typed directly
+/// or accepted from a suggestion — the agents only ever ask or propose (see
+/// [`CoverBrief`]'s doc comment for how that's enforced structurally).
+///
+/// The preliminary draft is scratch: it is neither returned nor persisted, and
+/// only the list of gaps it revealed shapes the questions. The caller always
+/// re-drafts the real letter from the finished brief, so nothing from the
+/// scratch draft's own wording can reach the final letter unchanged.
 ///
 /// Degrades rather than blocking: a non-interactive user, or any `ask`
 /// failure partway through, returns whatever partial brief was gathered
@@ -713,6 +904,63 @@ pub async fn run_cover_interview(
     }
 
     let mut asked = 0usize;
+
+    // Draft-first: draft a naive scratch letter, then let its own honesty
+    // check tell us which paragraphs need the candidate's word. Passing the
+    // brief-so-far means the leading answer can already have grounded a claim
+    // that would otherwise read as a gap.
+    let gaps = gather_gaps(ctx, resume, jd, &brief).await;
+
+    // The gap-driven interview: one targeted question per flagged paragraph,
+    // up to the shared MAX_QUESTIONS budget (the free leading question doesn't
+    // count against it, exactly as before). Draft order ranks them, so the
+    // top-of-letter gaps win the budget. Each answer is the candidate's own
+    // words, appended verbatim to `emphasis` the same way the leading
+    // question's answer is — the model only ever supplied the question's
+    // phrasing.
+    if !gaps.is_empty() {
+        for gap in gaps {
+            if asked >= MAX_QUESTIONS {
+                break;
+            }
+            let question = match CoverGapQuestionAgent
+                .run(
+                    ctx,
+                    CoverGapQuestionInput {
+                        jd_title: jd.title.clone(),
+                        jd_company: jd.company.clone(),
+                        paragraph: gap.text.clone(),
+                        unbacked: gap.reason.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(run) => {
+                    let text = run.output.trim().to_string();
+                    if text.is_empty() {
+                        gap_fallback_question(&gap)
+                    } else {
+                        text
+                    }
+                }
+                // The agent couldn't phrase it; surface the gap plainly rather
+                // than skipping the paragraph outright.
+                Err(_) => gap_fallback_question(&gap),
+            };
+            asked += 1;
+            match user.ask(Question::Text { prompt: question }).await {
+                Ok(Answer::Text(t)) if !t.trim().is_empty() => {
+                    brief.emphasis.push(t.trim().to_string());
+                }
+                Ok(_) => continue,          // blank: leave this gap, move on
+                Err(_) => return Ok(brief), // abandoned: keep what's gathered
+            }
+        }
+        return Ok(brief);
+    }
+
+    // Fallback: no gaps (every paragraph grounded or exempt) or no usable
+    // draft — run the original fixed-topic walk-through exactly as before.
     for slot in Slot::ALL {
         if asked >= MAX_QUESTIONS {
             break;
@@ -875,6 +1123,19 @@ mod tests {
         mock.enqueue(r#"{"question": ""}"#);
     }
 
+    /// Enqueue the two model replies the draft-first flow makes before it can
+    /// ever reach the fixed-topic fallback: a one-paragraph preliminary letter
+    /// (no digits, so it survives the digit guard against the sample résumé)
+    /// and a `grounded` verdict for it. With no gap found, `gather_gaps`
+    /// returns empty and the session falls back to the fixed walk-through the
+    /// rest of a script exercises. Prepend this to any test that drives the
+    /// fixed topics, since the leading question is asked first (no model call)
+    /// and these two calls come next.
+    fn enqueue_grounded_preliminary(mock: &MockLlmClient) {
+        mock.enqueue(r#"{"paragraphs": ["A grounded paragraph drawn from the resume."]}"#);
+        mock.enqueue(r#"{"paragraphs": [{"status": "grounded", "unbacked": ""}]}"#);
+    }
+
     /// A `UserHandle` standing in for a non-interactive run (CI, a piped
     /// command): never interactive, and any `ask` would fail — matching
     /// the real `NonInteractiveUser` in the binary crate, which this
@@ -964,6 +1225,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_interview_records_only_the_users_answers() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         // A declined suggestion, then one real question, then an empty
         // "done" reply, for each of the four suggestible topics; the
         // fifth (constraints) skips the suggestion step entirely.
@@ -1019,6 +1281,7 @@ mod tests {
     #[tokio::test]
     async fn a_follow_up_answer_on_a_scalar_slot_is_preserved_alongside_the_first() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": ""}"#); // angle: no suggestion offered
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#); // opening
         mock.enqueue(r#"{"question": "Anything else about the angle?"}"#); // thin answer -> follow-up
@@ -1049,6 +1312,7 @@ mod tests {
     #[tokio::test]
     async fn a_blank_answer_leaves_its_slot_empty_without_crashing() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Tell me more?"}"#);
         mock.enqueue(r#"{"suggestion": ""}"#);
@@ -1079,6 +1343,7 @@ mod tests {
     #[tokio::test]
     async fn the_max_questions_cap_terminates_the_loop() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         // The interviewer never says "done" and the user never goes
         // blank, so without a cap this would run all five topics to
         // their two-turn-each ceiling. Each of angle/emphasis/tone also
@@ -1146,6 +1411,7 @@ mod tests {
         // `ask` fails, and the loop must return what it already gathered
         // rather than erroring the whole flow.
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
         let user = ScriptedUser::new();
@@ -1175,6 +1441,7 @@ mod tests {
         // recorded something - proving the fix keeps angle's answer instead
         // of losing it to a propagated error.
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": ""}"#);
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
         mock.enqueue(r#"{"question": ""}"#);
@@ -1201,6 +1468,7 @@ mod tests {
     #[tokio::test]
     async fn a_guard_clean_suggestion_can_be_accepted() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(
             r#"{"suggestion": "you might lead with your reliability platform work, since the posting's top ask is platform reliability"}"#,
         );
@@ -1225,12 +1493,15 @@ mod tests {
                 "you might lead with your reliability platform work, since the posting's top ask is platform reliability"
             )
         );
-        assert_eq!(mock.requests().len(), 8);
+        // The two draft-first calls (preliminary draft + provenance) plus the
+        // eight fixed-topic calls the script queues.
+        assert_eq!(mock.requests().len(), 10);
     }
 
     #[tokio::test]
     async fn a_declined_suggestion_falls_through_silently_with_no_menu() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         enqueue_skip(&mock, Slot::Angle);
         // Emphasis declines a suggestion, then the interview asks and gets
         // an answer directly - proven by there being only ONE queued
@@ -1261,6 +1532,7 @@ mod tests {
     #[tokio::test]
     async fn a_suggestion_that_invents_a_fact_is_rejected_and_falls_back_to_the_interview() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         // Neither the JD nor the resume mentions a percentage; the model
         // invents "40%". The guard rejects it before any menu is shown.
         mock.enqueue(r#"{"suggestion": "lead with the 40% reliability improvement"}"#);
@@ -1289,6 +1561,7 @@ mod tests {
     #[tokio::test]
     async fn tweaking_a_suggestion_revises_then_accepts() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
         mock.enqueue(r#"{"suggestion": "you might lead with your incident response leadership"}"#);
         enqueue_skip(&mock, Slot::Emphasis);
@@ -1315,6 +1588,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_tweak_keeps_the_prior_suggestion() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
         mock.enqueue(r#"{"suggestion": ""}"#); // the tweak declines
         enqueue_skip(&mock, Slot::Emphasis);
@@ -1341,6 +1615,7 @@ mod tests {
     #[tokio::test]
     async fn choosing_own_words_falls_through_to_the_plain_interview() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
         mock.enqueue(r#"{"question": "What angle would you rather take?"}"#);
         mock.enqueue(r#"{"question": ""}"#);
@@ -1368,6 +1643,7 @@ mod tests {
     #[tokio::test]
     async fn skipping_a_suggestion_leaves_the_slot_empty_with_no_interview() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": "you might lead with your platform reliability work"}"#);
         enqueue_skip(&mock, Slot::Emphasis);
         enqueue_skip(&mock, Slot::Tone);
@@ -1383,14 +1659,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(brief.angle, None);
-        // Exactly the scripted calls happened - no extra interview
-        // question was asked for the skipped slot.
-        assert_eq!(mock.requests().len(), 8);
+        // Exactly the scripted calls happened - the two draft-first calls
+        // plus the eight fixed-topic ones; no extra interview question was
+        // asked for the skipped slot.
+        assert_eq!(mock.requests().len(), 10);
     }
 
     #[tokio::test]
     async fn constraints_never_triggers_a_suggestion_attempt() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         enqueue_skip(&mock, Slot::Angle);
         enqueue_skip(&mock, Slot::Emphasis);
         enqueue_skip(&mock, Slot::Tone);
@@ -1424,6 +1702,7 @@ mod tests {
     #[tokio::test]
     async fn the_leading_question_records_a_real_answer_as_the_first_emphasis_entry() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         // Every guided slot declines its suggestion and gets an
         // immediate "done" from the interviewer, so nothing but the
         // leading question ever reaches the user.
@@ -1455,6 +1734,7 @@ mod tests {
     #[tokio::test]
     async fn a_blank_leading_answer_pushes_nothing_and_the_guided_slots_proceed_normally() {
         let mock = MockLlmClient::default();
+        enqueue_grounded_preliminary(&mock); // no gaps -> the fixed loop runs
         mock.enqueue(r#"{"suggestion": ""}"#); // angle: no suggestion offered
         mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
         mock.enqueue(r#"{"question": ""}"#);
@@ -1497,6 +1777,229 @@ mod tests {
         assert!(
             mock.requests().is_empty(),
             "the leading question costs no model call, and no slot is ever reached"
+        );
+    }
+
+    // --- the draft-first, gap-driven flow ---------------------------------
+
+    #[tokio::test]
+    async fn a_gap_in_the_preliminary_draft_drives_a_targeted_question_not_the_fixed_loop() {
+        let mock = MockLlmClient::default();
+        // The preliminary draft (résumé + JD alone) makes one claim the
+        // evidence doesn't back...
+        mock.enqueue(r#"{"paragraphs": ["I led the migration to a new payments platform."]}"#);
+        // ...and the provenance check flags exactly that paragraph.
+        mock.enqueue(
+            r#"{"paragraphs": [{"status": "unrecorded", "unbacked": "claims payments-platform experience the resume and posting don't mention"}]}"#,
+        );
+        // The gap-question agent phrases one question about it.
+        mock.enqueue(
+            r#"{"question": "The draft says you led the migration to a new payments platform - is that accurate, and is there anything you'd add, or should it come out?"}"#,
+        );
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
+        user.answer(Answer::Text(
+            "yes, I led that migration end to end at my last job".into(),
+        ));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // The candidate's own words about the gap landed in emphasis...
+        assert_eq!(
+            brief.emphasis,
+            vec!["yes, I led that migration end to end at my last job".to_string()]
+        );
+        // ...and none of the fixed-topic loop ran: no suggestion call, no
+        // fixed interview question, and exactly one gap-question call.
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| r.system.as_deref() == Some(SUGGEST_PROMPT))
+                .count(),
+            0,
+            "the fixed-topic suggestion flow must not run when there are gaps"
+        );
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| r.system.as_deref() == Some(QUESTION_PROMPT))
+                .count(),
+            0,
+            "the fixed-topic interview must not run when there are gaps"
+        );
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| r.system.as_deref() == Some(GAP_QUESTION_PROMPT))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fully_grounded_preliminary_draft_falls_back_to_the_fixed_topic_loop() {
+        let mock = MockLlmClient::default();
+        // A two-paragraph preliminary draft: one grounded, one exempt -> no
+        // gaps at all.
+        mock.enqueue(r#"{"paragraphs": ["A grounded paragraph.", "A connective sentence."]}"#);
+        mock.enqueue(
+            r#"{"paragraphs": [{"status": "grounded", "unbacked": ""}, {"status": "exempt", "unbacked": ""}]}"#,
+        );
+        // The fixed walk-through then runs exactly as before: angle asks and
+        // records, the rest skip.
+        mock.enqueue(r#"{"suggestion": ""}"#);
+        mock.enqueue(r#"{"question": "Lead with scale, or with reliability?"}"#);
+        mock.enqueue(r#"{"question": ""}"#);
+        enqueue_skip(&mock, Slot::Emphasis);
+        enqueue_skip(&mock, Slot::Tone);
+        enqueue_skip(&mock, Slot::Motivation);
+        enqueue_skip(&mock, Slot::Constraints);
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
+        user.answer(Answer::Text("lead with the reliability angle".into()));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // The fixed loop ran and recorded the angle...
+        assert_eq!(
+            brief.angle.as_deref(),
+            Some("lead with the reliability angle")
+        );
+        // ...and the gap-question agent was never called.
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| r.system.as_deref() == Some(GAP_QUESTION_PROMPT))
+                .count(),
+            0,
+            "no gaps means no gap questions"
+        );
+    }
+
+    #[tokio::test]
+    async fn gap_answers_are_appended_to_emphasis_after_the_leading_answer() {
+        let mock = MockLlmClient::default();
+        mock.enqueue(r#"{"paragraphs": ["I shipped a fraud-detection service."]}"#);
+        mock.enqueue(
+            r#"{"paragraphs": [{"status": "unrecorded", "unbacked": "claims fraud-detection work the evidence doesn't mention"}]}"#,
+        );
+        mock.enqueue(
+            r#"{"question": "Did you build a fraud-detection service, and should it stay in the letter?"}"#,
+        );
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("emphasize my on-call leadership".into())); // leading answer
+        user.answer(Answer::Text("yes, I built the fraud service".into())); // gap answer
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // Both the leading answer and the gap answer accumulate in emphasis,
+        // in order — the gap answer is appended, never an overwrite, and lands
+        // in the same field every free-form answer in this module does.
+        assert_eq!(
+            brief.emphasis,
+            vec![
+                "emphasize my on-call leadership".to_string(),
+                "yes, I built the fraud service".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn only_max_questions_gap_questions_are_asked_when_there_are_more_gaps() {
+        let mock = MockLlmClient::default();
+        // Eight digit-free paragraphs (digits would be dropped by the draft's
+        // guard against the sample résumé), all flagged -> eight gaps, but only
+        // MAX_QUESTIONS of them get asked, in draft order.
+        let labels = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+        ];
+        let paras: Vec<String> = labels
+            .iter()
+            .map(|l| format!(r#""An unbacked claim about {l}.""#))
+            .collect();
+        mock.enqueue(format!(r#"{{"paragraphs": [{}]}}"#, paras.join(", ")));
+        let verdicts: Vec<String> = labels
+            .iter()
+            .map(|l| {
+                format!(
+                    r#"{{"status": "unrecorded", "unbacked": "claims {l} the evidence lacks"}}"#
+                )
+            })
+            .collect();
+        mock.enqueue(format!(r#"{{"paragraphs": [{}]}}"#, verdicts.join(", ")));
+        for l in labels.iter().take(MAX_QUESTIONS) {
+            mock.enqueue(format!(r#"{{"question": "About {l}?"}}"#));
+        }
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
+        for l in labels.iter().take(MAX_QUESTIONS) {
+            user.answer(Answer::Text(format!("my answer about {l}")));
+        }
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // Exactly MAX_QUESTIONS gap questions were asked (the last two gaps
+        // never reached the user), and each answer was recorded.
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| r.system.as_deref() == Some(GAP_QUESTION_PROMPT))
+                .count(),
+            MAX_QUESTIONS
+        );
+        assert_eq!(brief.emphasis.len(), MAX_QUESTIONS);
+        // The budget spent the earliest (draft-order) gaps first.
+        assert_eq!(brief.emphasis[0], "my answer about alpha");
+    }
+
+    #[tokio::test]
+    async fn the_preliminary_scratch_draft_never_leaks_into_the_returned_brief() {
+        let mock = MockLlmClient::default();
+        // The scratch draft overstates a claim in distinctive words...
+        mock.enqueue(
+            r#"{"paragraphs": ["I architected the Zephyr trading engine single-handedly."]}"#,
+        );
+        mock.enqueue(
+            r#"{"paragraphs": [{"status": "unrecorded", "unbacked": "claims sole authorship of a trading engine the evidence doesn't mention"}]}"#,
+        );
+        mock.enqueue(
+            r#"{"question": "Did you build the Zephyr trading engine, and should the letter keep that?"}"#,
+        );
+
+        let user = ScriptedUser::new();
+        user.answer(Answer::Text("".into())); // decline the leading open question
+        // The candidate corrects the scratch draft's overstatement.
+        user.answer(Answer::Text(
+            "no, I was one of four engineers on it - please soften that".into(),
+        ));
+
+        let brief = run_cover_interview(&sample_resume(), &sample_jd(), &user, &ctx(&mock))
+            .await
+            .unwrap();
+
+        // Only the candidate's correction is recorded. The scratch draft is
+        // never returned or persisted; the caller re-drafts the real letter
+        // from this brief, so the overstated wording ("single-handedly") can't
+        // reach the final letter unchanged.
+        assert_eq!(
+            brief.emphasis,
+            vec!["no, I was one of four engineers on it - please soften that".to_string()]
+        );
+        assert!(
+            !brief.emphasis.iter().any(|e| e.contains("single-handedly")),
+            "the scratch draft's wording must not leak into the brief"
         );
     }
 }
