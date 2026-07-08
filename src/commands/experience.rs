@@ -1,5 +1,5 @@
-//! `aarg experience add|list|remove` — record projects, open-source, or
-//! other experience that isn't a job, and link the skills it demonstrates.
+//! `aarg experience add|import|list|remove` — record projects, open-source,
+//! or other experience that isn't a job, and link the skills it demonstrates.
 //!
 //! Roles are the spine of a resume, but plenty of real evidence lives
 //! outside them: a side project, an open-source contribution, founding
@@ -9,10 +9,13 @@
 //! appeared on an ingested resume. This is that way. Thin glue: load,
 //! interview (or take flags for a scripted run), save once.
 //!
-//! Never-fabricate holds the same as everywhere else: the user names the
-//! project, writes its summary, and chooses which of *their own* recorded
-//! skills it backs. Linking only ever adds a real project as evidence to a
-//! skill that already exists; it mints no skills and invents no claims.
+//! Never-fabricate holds the same as everywhere else, though `add` and
+//! `import` draw the line in different places. `add` only ever links a
+//! project as evidence to a skill the user already recorded; it mints no
+//! skills and invents no claims. `import` (`repoimport.rs`) reads a real
+//! project (a local folder or a GitHub repo/profile) and proposes new
+//! skills an LLM found evidence for there, but never adds one without the
+//! user confirming it first — the model proposes, the person decides.
 
 use crate::agent::{Agent, AgentContext, ModelTier};
 use crate::commands::{CliError, configured_client};
