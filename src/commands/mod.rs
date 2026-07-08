@@ -835,6 +835,9 @@ pub enum CliError {
     #[diagnostic(help("save the posting text to a file and pass that path (or pipe it with `-`)"))]
     Fetch(#[from] FetchError),
 
+    #[error(transparent)]
+    Import(#[from] crate::repoimport::ImportError),
+
     #[error("no writing sample was provided")]
     #[diagnostic(help(
         "pipe a file (`aarg voice add < sample.txt`) or type the text and press Ctrl-D"
@@ -1095,6 +1098,9 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
                     skills,
                 },
         } => experience::add(name, summary, url, skills).await?,
+        Command::Experience {
+            command: ExperienceCommand::Import { source },
+        } => experience::import(source).await?,
         Command::Experience {
             command: ExperienceCommand::List,
         } => experience::list().await?,

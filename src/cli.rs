@@ -345,6 +345,11 @@ pub enum ExperienceCommand {
         #[arg(long = "skill", value_name = "NAME")]
         skills: Vec<String>,
     },
+    /// Read a real project and propose skills from it (a local folder, a GitHub repo URL, or a GitHub profile URL)
+    Import {
+        /// A local folder path, a github.com/owner/repo URL, or a github.com/owner profile URL
+        source: String,
+    },
     /// List the recorded projects / experience
     List,
     /// Remove an entry by id (see `aarg experience list`)

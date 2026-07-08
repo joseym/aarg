@@ -14,9 +14,11 @@
 //! skills it backs. Linking only ever adds a real project as evidence to a
 //! skill that already exists; it mints no skills and invents no claims.
 
-use crate::commands::CliError;
+use crate::agent::{Agent, AgentContext, ModelTier};
+use crate::commands::{CliError, configured_client};
 use crate::dataset::store;
 use crate::dataset::types::{EvidenceRef, Project, ProjectId, ResumeDataset, SkillId};
+use crate::repoimport::{self, ImportSummary, RepoMaterial, SourceKind};
 use crate::style;
 use crate::terminal::auto_user;
 use crate::user::{Answer, Question, UserHandle};
@@ -98,6 +100,253 @@ pub async fn add(
         ))
     );
     Ok(())
+}
+
+/// `aarg experience import <source>` — read a real project and propose the
+/// skills it demonstrates. The source auto-detects: a github.com/owner/repo URL
+/// is shallow-cloned, a github.com/owner profile URL lists its public repos for
+/// the user to pick from, and anything else is read as a local folder. Unlike
+/// `ingest`, nothing lands in the dataset until the user confirms which
+/// newly-proposed skills to add — minting a skill is the one new claim here, so
+/// it is always gated. Existing skills the project also demonstrates are linked
+/// as evidence with no ceremony. The dataset is saved once, at the end.
+pub async fn import(source: String) -> Result<(), CliError> {
+    let user = auto_user();
+    match repoimport::detect_source(&source) {
+        SourceKind::Local(path) => {
+            let name = folder_name(&path);
+            match repoimport::read_repo(&path, &name, None)? {
+                Some(material) => run_import(vec![material], user.as_ref()).await,
+                None => {
+                    eprintln!(
+                        "{}",
+                        style::info(format!(
+                            "found nothing to analyze in {} · nothing added",
+                            path.display()
+                        ))
+                    );
+                    Ok(())
+                }
+            }
+        }
+        SourceKind::Repo { owner, repo } => {
+            eprintln!(
+                "{}",
+                style::dim(format!("cloning github.com/{owner}/{repo}"))
+            );
+            match repoimport::fetch_repo_material(&owner, &repo)? {
+                Some(material) => run_import(vec![material], user.as_ref()).await,
+                None => {
+                    eprintln!(
+                        "{}",
+                        style::info(format!(
+                            "found nothing to analyze in {repo} · nothing added"
+                        ))
+                    );
+                    Ok(())
+                }
+            }
+        }
+        SourceKind::Profile { user: gh_user } => import_profile(gh_user, user.as_ref()).await,
+    }
+}
+
+/// List a GitHub profile's public repos, let the user pick which to import,
+/// and clone and analyze each chosen one. The pick needs a terminal: a
+/// non-interactive run surfaces a typed "needs a terminal" error naming the
+/// prompt, rather than guessing which repos to pull.
+async fn import_profile(gh_user: String, user: &dyn UserHandle) -> Result<(), CliError> {
+    eprintln!(
+        "{}",
+        style::dim(format!("listing public repos for github.com/{gh_user}"))
+    );
+    let repos = repoimport::fetch_profile_repos(&gh_user).await?;
+    if repos.is_empty() {
+        eprintln!(
+            "{}",
+            style::info(format!(
+                "no public repos found for {gh_user} · nothing added"
+            ))
+        );
+        return Ok(());
+    }
+
+    let options: Vec<String> = repos.iter().map(repoimport::RepoRef::label).collect();
+    let answer = user
+        .ask(Question::MultiSelect {
+            prompt: "which repos should I import? (space toggles, enter confirms)".into(),
+            options,
+        })
+        .await?;
+    let Answer::Choices(indexes) = answer else {
+        eprintln!("{}", style::info("nothing selected · nothing added"));
+        return Ok(());
+    };
+    if indexes.is_empty() {
+        eprintln!("{}", style::info("nothing selected · nothing added"));
+        return Ok(());
+    }
+
+    let mut materials = Vec::new();
+    for index in indexes {
+        let Some(repo) = repos.get(index) else {
+            continue;
+        };
+        eprintln!(
+            "{}",
+            style::dim(format!("cloning github.com/{}/{}", repo.owner, repo.name))
+        );
+        match repoimport::fetch_repo_material(&repo.owner, &repo.name)? {
+            Some(material) => materials.push(material),
+            None => eprintln!(
+                "{}",
+                style::info(format!(
+                    "found nothing to analyze in {} · skipping",
+                    repo.name
+                ))
+            ),
+        }
+    }
+    run_import(materials, user).await
+}
+
+/// Analyze each gathered project, run the confirm step, and save once. Loads
+/// the dataset a single time and mutates it in memory across every project, so
+/// a multi-repo import is one atomic save rather than a write per project.
+async fn run_import(materials: Vec<RepoMaterial>, user: &dyn UserHandle) -> Result<(), CliError> {
+    if materials.is_empty() {
+        eprintln!("{}", style::info("nothing to import · nothing added"));
+        return Ok(());
+    }
+
+    let (client, config) = configured_client().await?;
+    let tracer = super::default_tracer()?;
+    let ctx = AgentContext {
+        llm: &*client,
+        model: config.active_resolver(),
+        tracer: &tracer,
+        sink: None,
+    };
+
+    let mut dataset = store::load()?;
+    let mut summaries = Vec::new();
+    for material in materials {
+        let name = material.name.clone();
+        let url = material.url.clone();
+        eprintln!(
+            "{}",
+            style::info(format!(
+                "analyzing {name} with {}",
+                ctx.model.resolve("project_analysis_v1", ModelTier::Cheap)
+            ))
+        );
+        let analysis = repoimport::ProjectAnalysisAgent
+            .run(&ctx, material)
+            .await?
+            .output;
+
+        // Show what was found before anything is written.
+        eprintln!(
+            "{}",
+            style::section(format!("{} · proposed", analysis.name))
+        );
+        if !analysis.summary.is_empty() {
+            eprintln!("  {}", style::dim(&analysis.summary));
+        }
+        if analysis.skills.is_empty() {
+            eprintln!(
+                "  {}",
+                style::dim("no skills could be grounded in the material")
+            );
+        } else {
+            for skill in &analysis.skills {
+                let reason = if skill.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", skill.reason)
+                };
+                eprintln!("  {}", style::bullet(format!("{}{reason}", skill.name)));
+            }
+        }
+
+        let summary = repoimport::apply_import(&mut dataset, analysis, url, user).await?;
+        summaries.push(summary);
+    }
+
+    dataset.metadata.updated_at = chrono::Utc::now();
+    store::save(&dataset)?;
+
+    let mut any_skipped = false;
+    for summary in &summaries {
+        any_skipped |= !summary.skipped_new.is_empty();
+        report_summary(summary);
+    }
+    if any_skipped && !user.is_interactive() {
+        eprintln!(
+            "{}",
+            style::suggest(
+                "new skills were not added because no terminal was available · re-run interactively to add them"
+            )
+        );
+    }
+    eprintln!(
+        "{}",
+        style::success(format!(
+            "dataset saved (previous version backed up) · {} project(s) recorded",
+            summaries.len()
+        ))
+    );
+    Ok(())
+}
+
+/// One line summarizing what an import wrote for a project.
+fn report_summary(summary: &ImportSummary) {
+    let mut parts = Vec::new();
+    if !summary.minted.is_empty() {
+        parts.push(format!(
+            "minted {} new: {}",
+            summary.minted.len(),
+            summary.minted.join(", ")
+        ));
+    }
+    if !summary.linked.is_empty() {
+        parts.push(format!(
+            "linked {} existing: {}",
+            summary.linked.len(),
+            summary.linked.join(", ")
+        ));
+    }
+    if !summary.skipped_new.is_empty() {
+        parts.push(format!(
+            "skipped {} new: {}",
+            summary.skipped_new.len(),
+            summary.skipped_new.join(", ")
+        ));
+    }
+    let detail = if parts.is_empty() {
+        "no skills attached".to_string()
+    } else {
+        parts.join(" · ")
+    };
+    eprintln!(
+        "  {}",
+        style::done(format!(
+            "{} ({}) · {detail}",
+            summary.project_name, summary.project_id.0
+        ))
+    );
+}
+
+/// A display name for a local folder: its final path component, resolving `.`
+/// and relative paths to the real directory name, falling back to "project".
+fn folder_name(path: &std::path::Path) -> String {
+    path.canonicalize()
+        .ok()
+        .as_deref()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "project".to_string())
 }
 
 /// `aarg experience list` — show the recorded projects / non-job experience.
