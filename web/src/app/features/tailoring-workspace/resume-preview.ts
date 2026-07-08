@@ -65,6 +65,24 @@ import type { LineStatus, PreviewLine, PreviewModel } from './workspace.model';
           >{{ s.text }}</span>
         }
       </div>
+
+      @if (m.projects.length) {
+        <h4>Projects</h4>
+        @for (proj of m.projects; track proj.id) {
+          <div class="p-role">
+            <b>{{ proj.name }}</b>
+            @if (proj.url) {
+              <a class="p-proj-link" [href]="proj.url" target="_blank" rel="noopener">{{ proj.url }}</a>
+            }
+          </div>
+          <p class="p-proj-summary">
+            <ng-container
+              [ngTemplateOutlet]="lineTpl"
+              [ngTemplateOutletContext]="{ $implicit: proj.summary, tag: proj.name + ' summary' }"
+            />
+          </p>
+        }
+      }
     </div>
 
     <ng-template #lineTpl let-line let-tag="tag">
@@ -123,6 +141,9 @@ import type { LineStatus, PreviewLine, PreviewModel } from './workspace.model';
     .paper ul { margin: 0; padding-left: 17px; font-family: var(--font-body); font-size: 13.5px; line-height: 1.55; }
     .paper li { margin-bottom: 6px; }
     .p-skills { margin-top: 2px; }
+    .p-proj-link { font-family: var(--font-mono); font-size: 11px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+    .p-proj-link:hover { text-decoration: underline; }
+    .p-proj-summary { font-family: var(--font-body); font-size: 13px; color: var(--muted); margin: 2px 0 0; line-height: 1.55; }
 
     /* editable + provenance-marked lines */
     .prov { border-bottom: 1px dotted color-mix(in oklch, var(--accent) 45%, var(--border)); cursor: text; }

@@ -708,6 +708,12 @@ export class TailoringWorkspace implements OnDestroy {
         if (!Number.isInteger(index) || index < 0) continue;
         const skills = next.skills_section?.skills;
         if (skills && index < skills.length) skills[index] = text;
+      } else if (key.startsWith('project:')) {
+        // project:<id> — the summary line is editable; keep the projection in
+        // sync so the pixel-PDF render reflects the edit too.
+        const id = key.slice('project:'.length);
+        const project = next.projects?.find((p) => p.id === id);
+        if (project) project.summary = text;
       }
       // any other key shape → skipped silently
     }
