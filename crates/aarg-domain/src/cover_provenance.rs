@@ -631,7 +631,7 @@ mod tests {
         // test proves the plumbing carries the paragraph and the evidence to
         // the model and reads the verdict back correctly.
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("grounded", "")]));
+        mock.enqueue(claims_reply(&[("grounded", "")]));
         let letter = letter(&["I owned the payments platform end to end at Contoso."]);
 
         let report = check_cover_provenance(&test_ctx(&mock), &letter, &resume(), &jd(), None)
@@ -662,7 +662,7 @@ mod tests {
         // model's judgment; the test proves an "unrecorded" verdict and its
         // reason are surfaced verbatim into the report.
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[(
+        mock.enqueue(claims_reply(&[(
             "unrecorded",
             "claims settlement-systems work at Globex the evidence never mentions",
         )]));
@@ -684,7 +684,7 @@ mod tests {
     #[tokio::test]
     async fn a_connective_paragraph_is_exempt() {
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("exempt", "")]));
+        mock.enqueue(claims_reply(&[("exempt", "")]));
         let letter = letter(&["I'd welcome the chance to discuss this further."]);
 
         let report = check_cover_provenance(&test_ctx(&mock), &letter, &resume(), &jd(), None)
@@ -706,7 +706,7 @@ mod tests {
         // figure 63 (nowhere in the résumé) still flags the paragraph, and it
         // is reported as a digit, not a claim.
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("grounded", "")]));
+        mock.enqueue(claims_reply(&[("grounded", "")]));
         let letter = letter(&["I cut incidents by 63 percent across the 12 services at Contoso."]);
 
         let report = check_cover_provenance(&test_ctx(&mock), &letter, &resume(), &jd(), None)
@@ -734,7 +734,7 @@ mod tests {
         // so a paragraph asserting "5 years" as personal history still flags on
         // the digit axis even when the model calls the wording grounded.
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("grounded", "")]));
+        mock.enqueue(claims_reply(&[("grounded", "")]));
         let mut jd = jd();
         jd.responsibilities = vec!["Bring 5+ years of platform engineering experience".into()];
         let letter = letter(&["I have 5 years of experience with Kubernetes."]);
@@ -754,7 +754,7 @@ mod tests {
         // invented, so it must widen the allowed digit set exactly as
         // generation's guard does.
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("grounded", "")]));
+        mock.enqueue(claims_reply(&[("grounded", "")]));
         let brief = CoverBrief {
             emphasis: vec!["a 25% cut in incident response time".into()],
             ..CoverBrief::default()
@@ -776,7 +776,7 @@ mod tests {
     #[tokio::test]
     async fn the_evidence_carries_resume_posting_and_brief_but_not_voice_samples() {
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("grounded", "")]));
+        mock.enqueue(claims_reply(&[("grounded", "")]));
         let brief = CoverBrief {
             emphasis: vec!["my side project ChessCoach".into()],
             ..CoverBrief::default()
@@ -813,7 +813,7 @@ mod tests {
     #[tokio::test]
     async fn only_body_paragraphs_are_classified_and_numbered_in_order() {
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("grounded", ""), ("exempt", "")]));
+        mock.enqueue(claims_reply(&[("grounded", ""), ("exempt", "")]));
         let letter = letter(&["First body paragraph.", "Second body paragraph."]);
 
         let report = check_cover_provenance(&test_ctx(&mock), &letter, &resume(), &jd(), None)
@@ -836,7 +836,7 @@ mod tests {
         // missing verdict must be treated as "couldn't verify" (flagged), never
         // silently grounded — the safe direction for an informational check.
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[("grounded", "")]));
+        mock.enqueue(claims_reply(&[("grounded", "")]));
         let letter = letter(&["A backed paragraph.", "An unjudged paragraph."]);
 
         let report = check_cover_provenance(&test_ctx(&mock), &letter, &resume(), &jd(), None)
@@ -889,10 +889,7 @@ mod tests {
     #[tokio::test]
     async fn the_report_round_trips_through_json() {
         let mock = MockLlmClient::default();
-        mock.enqueue(&claims_reply(&[(
-            "unrecorded",
-            "claims something unbacked",
-        )]));
+        mock.enqueue(claims_reply(&[("unrecorded", "claims something unbacked")]));
         let letter = letter(&["I used Zig on the settlement rail."]);
 
         let report = check_cover_provenance(&test_ctx(&mock), &letter, &resume(), &jd(), None)
