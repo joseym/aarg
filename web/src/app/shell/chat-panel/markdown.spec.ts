@@ -24,4 +24,9 @@ describe('renderChatMarkdown', () => {
     const html = renderChatMarkdown('first line\nsecond line');
     expect(html).not.toContain('</p><p>');
   });
+
+  it('keeps a single typed newline as a line break within the paragraph', () => {
+    const html = renderChatMarkdown('first line\nsecond line');
+    expect(html).toContain('<br>');
+  });
 });

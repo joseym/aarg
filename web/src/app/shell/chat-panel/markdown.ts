@@ -1,24 +1,25 @@
-/** Renders an advisor reply's markdown (bold, lists, links, inline code — the
- *  model writes plain GFM prose, unprompted) to HTML for the chat bubble.
- *  Angular's `[innerHTML]` binding sanitizes the result, so this only needs
- *  to produce well-formed HTML, not defend against injection itself.
- *
- *  User turns are never passed through this — they render as the literal
- *  text the person typed. */
+/** Renders a chat message's markdown (bold, lists, links, inline code) to
+ *  HTML for a chat bubble — used for both the advisor's reply (plain GFM
+ *  prose, unprompted) and what the person typed. Angular's `[innerHTML]`
+ *  binding sanitizes the result, so this only needs to produce well-formed
+ *  HTML, not defend against injection itself. `breaks: true` turns a single
+ *  typed newline (Shift+Enter in the compose box) into a `<br>`, matching
+ *  what the bubble showed before markdown rendering replaced a plain
+ *  `white-space: pre-wrap` text node. */
 
 import { Marked } from 'marked';
 
 const renderer = {
-  // Every model-emitted link opens in a new tab without handing the target
-  // page a `window.opener` back into this one (the same convention the
-  // resume preview uses for project URLs).
+  // Every rendered link opens in a new tab without handing the target page a
+  // `window.opener` back into this one (the same convention the resume
+  // preview uses for project URLs).
   link({ href, title, text }: { href: string; title?: string | null; text: string }): string {
     const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
     return `<a href="${escapeAttr(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
   },
 };
 
-const marked = new Marked({ gfm: true, breaks: false });
+const marked = new Marked({ gfm: true, breaks: true });
 marked.use({ renderer });
 
 function escapeAttr(value: string): string {

@@ -32,9 +32,10 @@ const MIN_WIDTH = 300;
 const MAX_WIDTH = 640;
 
 /** One rendered line of the conversation.
- *  - `user`/`error` carry plain `text`. `error` is a failed turn's message,
- *    shown in the transcript but never sent back as history, so the wire never
- *    ends on an orphaned user turn.
+ *  - `user`/`error` carry plain `text`. `user` renders it as markdown (what
+ *    the person typed, styled the same as a reply); `error` is a failed
+ *    turn's message and stays literal. Neither is sent back as history for
+ *    an errored turn, so the wire never ends on an orphaned user turn.
  *  - `assistant` carries `segments`: the reply parsed into prose runs and any
  *    artifact cards the model attached with a marker, in order.
  *  - `card` is a standalone artifact a slash command inserted client-side (no
@@ -111,7 +112,7 @@ interface ChatMessage {
                   }
                   @default {
                     <div class="ch-msg" data-kind="user">
-                      <div class="ch-bubble">{{ m.text }}</div>
+                      <div class="ch-bubble md" [innerHTML]="renderMarkdown(m.text!)"></div>
                     </div>
                   }
                 }
@@ -259,10 +260,13 @@ interface ChatMessage {
     }
     .ch-msg[data-kind='assistant'] .ch-bubble { border-bottom-left-radius: 5px; }
 
-    /* Markdown-rendered assistant prose: the base bubble's pre-wrap white-space
-     * is meant for a raw text node (the user bubble, the streaming placeholder)
-     * and would otherwise turn the whitespace between marked's block elements
-     * into visible blank lines, so real elements take over spacing via margins. */
+    /* Markdown-rendered prose (both user and assistant bubbles): the base
+     * bubble's pre-wrap white-space is meant for a raw text node (the
+     * streaming placeholder) and would otherwise turn the whitespace between
+     * marked's block elements into visible blank lines, so real elements take
+     * over spacing via margins. Tints use currentColor rather than a fixed
+     * color so they read against either bubble's background — the light text
+     * on the accent-colored user bubble, or the normal text on the rest. */
     .ch-bubble.md { white-space: normal; }
     .ch-bubble.md :is(p, ul, ol) { margin: 0 0 8px; }
     .ch-bubble.md :is(p, ul, ol):last-child { margin-bottom: 0; }
@@ -271,14 +275,15 @@ interface ChatMessage {
     .ch-bubble.md li > p { margin: 0; }
     .ch-bubble.md strong { font-weight: 600; }
     .ch-bubble.md a { color: var(--accent); text-decoration: underline; }
+    .ch-msg[data-kind='user'] .ch-bubble.md a { color: inherit; }
     .ch-bubble.md code {
       font-family: var(--font-mono); font-size: 0.9em;
-      background: color-mix(in oklch, var(--fg) 8%, transparent);
+      background: color-mix(in oklch, currentColor 15%, transparent);
       padding: 1px 4px; border-radius: 4px;
     }
     .ch-bubble.md pre {
       margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; overflow-x: auto;
-      background: color-mix(in oklch, var(--fg) 8%, transparent);
+      background: color-mix(in oklch, currentColor 15%, transparent);
     }
     .ch-bubble.md pre code { background: none; padding: 0; }
     .ch-bubble.md pre:last-child { margin-bottom: 0; }
@@ -499,11 +504,10 @@ export class ChatPanel {
     return (seg as { artifact: ArtifactKind }).artifact;
   }
 
-  /** A finalized assistant prose run as HTML. Bound via `[innerHTML]`, which
-   *  Angular sanitizes at bind time — this only needs to produce markup, not
-   *  defend against injection. Never used on the in-flight streamed text
-   *  (kept as plain text so a reply mid-markdown-token doesn't flash oddly
-   *  rendered). */
+  /** A finalized user or assistant message as HTML. Bound via `[innerHTML]`,
+   *  which Angular sanitizes at bind time — this only needs to produce markup,
+   *  not defend against injection. Never used on the in-flight streamed reply
+   *  (kept as plain text so it doesn't flash oddly rendered mid-token). */
   protected renderMarkdown(text: string): string {
     return renderChatMarkdown(text);
   }
