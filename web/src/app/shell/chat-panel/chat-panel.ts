@@ -24,6 +24,7 @@ import {
   slashSuggestions,
   stripMarkers,
 } from './artifacts';
+import { renderChatMarkdown } from './markdown';
 
 /** The min/max the resize handle clamps the panel width to (px). Below the min
  *  the transcript squishes; above the max it starves the workspace column. */
@@ -94,7 +95,7 @@ interface ChatMessage {
                     @for (seg of m.segments; track $index) {
                       @if (asText(seg); as t) {
                         <div class="ch-msg" data-kind="assistant">
-                          <div class="ch-bubble">{{ t }}</div>
+                          <div class="ch-bubble md" [innerHTML]="renderMarkdown(t)"></div>
                         </div>
                       } @else {
                         <div class="ch-msg" data-kind="artifact">
@@ -257,6 +258,30 @@ interface ChatMessage {
       border-bottom-right-radius: 5px;
     }
     .ch-msg[data-kind='assistant'] .ch-bubble { border-bottom-left-radius: 5px; }
+
+    /* Markdown-rendered assistant prose: the base bubble's pre-wrap white-space
+     * is meant for a raw text node (the user bubble, the streaming placeholder)
+     * and would otherwise turn the whitespace between marked's block elements
+     * into visible blank lines, so real elements take over spacing via margins. */
+    .ch-bubble.md { white-space: normal; }
+    .ch-bubble.md :is(p, ul, ol) { margin: 0 0 8px; }
+    .ch-bubble.md :is(p, ul, ol):last-child { margin-bottom: 0; }
+    .ch-bubble.md ul, .ch-bubble.md ol { padding-left: 20px; }
+    .ch-bubble.md li { margin: 2px 0; }
+    .ch-bubble.md li > p { margin: 0; }
+    .ch-bubble.md strong { font-weight: 600; }
+    .ch-bubble.md a { color: var(--accent); text-decoration: underline; }
+    .ch-bubble.md code {
+      font-family: var(--font-mono); font-size: 0.9em;
+      background: color-mix(in oklch, var(--fg) 8%, transparent);
+      padding: 1px 4px; border-radius: 4px;
+    }
+    .ch-bubble.md pre {
+      margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; overflow-x: auto;
+      background: color-mix(in oklch, var(--fg) 8%, transparent);
+    }
+    .ch-bubble.md pre code { background: none; padding: 0; }
+    .ch-bubble.md pre:last-child { margin-bottom: 0; }
     .ch-bubble.err {
       display: flex; flex-direction: column; gap: 4px;
       border-color: color-mix(in oklch, var(--danger) 45%, var(--border));
@@ -472,6 +497,15 @@ export class ChatPanel {
   /** The artifact of a card segment (only called when `asText` returned null). */
   protected asArtifact(seg: ReplySegment): ArtifactKind {
     return (seg as { artifact: ArtifactKind }).artifact;
+  }
+
+  /** A finalized assistant prose run as HTML. Bound via `[innerHTML]`, which
+   *  Angular sanitizes at bind time — this only needs to produce markup, not
+   *  defend against injection. Never used on the in-flight streamed text
+   *  (kept as plain text so a reply mid-markdown-token doesn't flash oddly
+   *  rendered). */
+  protected renderMarkdown(text: string): string {
+    return renderChatMarkdown(text);
   }
 
   /** Run the named slash command straight from the autocomplete list. */
