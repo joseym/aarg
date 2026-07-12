@@ -209,7 +209,7 @@ Rules — all of them matter:
 - ats_phrases are the exact multi-word phrases from the JD that a resume should mirror word-for-word (role title, key technologies, recurring domain terms) — typically 5 to 15.
 - domain_keywords are industry/domain terms, not technologies.
 - Enum values: seniority is one of "junior"|"mid"|"senior"|"staff"|"principal"|"manager"|"director"|"executive"|"unspecified". remote is one of "remote"|"hybrid"|"on_site"|"unspecified". category is one of "hard"|"soft"|"domain"|"tool"|"language"|"framework".
-- If the message contains only a link to a posting rather than the posting itself, and it is a Greenhouse or Lever URL, call the fetch_jd tool to get the text first.
+- If the message contains only a link to a posting rather than the posting itself, and it is a Greenhouse, Lever, LinkedIn, or Ashby URL, call the fetch_jd tool to get the text first.
 - Reply with exactly one JSON object and nothing else — no markdown fences, no commentary.
 
 The JSON object:

@@ -1,10 +1,13 @@
 //! Fetching job descriptions from supported job boards (FR-1.4).
 //!
-//! Only Greenhouse and Lever URLs are fetched — both publish documented,
-//! auth-free JSON APIs for public postings, which beats scraping HTML
-//! that can change shape any day. Any other URL is a typed error telling
-//! the user to paste the text; an allowlist that fails honestly is worth
-//! more than a generic fetcher that returns nav-bar soup.
+//! Greenhouse, Lever, and Ashby publish documented, auth-free JSON APIs
+//! for public postings, and LinkedIn serves a guest HTML fragment; those
+//! four are fetched. Reading a known shape beats scraping pages that can
+//! change any day. Any other URL is a typed error telling the user to
+//! paste the text; an allowlist that fails honestly is worth more than a
+//! generic fetcher that returns nav-bar soup. Indeed gets its own error:
+//! a Cloudflare challenge blocks every non-browser client, so aarg names
+//! the workaround instead of pretending the host is unknown.
 //!
 //! Fetched JDs are cached by URL hash (`~/.cache/aarg/jd_cache`), so
 //! re-running `gap` or `tailor` against the same posting is free and
@@ -23,9 +26,14 @@ use crate::agent::{Tool, ToolError};
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
     #[error(
-        "aarg can only fetch JDs from Greenhouse, Lever, or LinkedIn job boards; {url} is neither"
+        "aarg can only fetch JDs from Greenhouse, Lever, LinkedIn, or Ashby job boards; {url} is none of those"
     )]
     UnsupportedUrl { url: String },
+
+    #[error(
+        "Indeed blocks automated fetching; open {url} in your browser and paste the posting text instead"
+    )]
+    IndeedBlocked { url: String },
 
     #[error("could not determine this user's home directory")]
     NoHomeDir,
@@ -39,6 +47,11 @@ pub enum FetchError {
 
     #[error("aarg couldn't read LinkedIn's posting page at {url}; its layout may have changed")]
     LinkedIn { url: String },
+
+    #[error(
+        "Ashby's board for {org} no longer lists posting {job_id}; the posting may have been taken down"
+    )]
+    Ashby { org: String, job_id: String },
 
     #[error("could not reach {url}")]
     Http {
@@ -70,7 +83,7 @@ static FETCH_SCHEMA: LazyLock<serde_json::Value> = LazyLock::new(|| {
         "properties": {
             "url": {
                 "type": "string",
-                "description": "A Greenhouse (boards.greenhouse.io), Lever (jobs.lever.co), or LinkedIn (linkedin.com/jobs/view) posting URL"
+                "description": "A Greenhouse (boards.greenhouse.io), Lever (jobs.lever.co), LinkedIn (linkedin.com/jobs/view), or Ashby (jobs.ashbyhq.com) posting URL"
             }
         },
         "required": ["url"]
@@ -83,7 +96,7 @@ impl Tool for FetchJdTool {
         "fetch_jd"
     }
     fn description(&self) -> &'static str {
-        "Fetch the text of a job posting from a Greenhouse, Lever, or LinkedIn URL"
+        "Fetch the text of a job posting from a Greenhouse, Lever, LinkedIn, or Ashby URL"
     }
     fn input_schema(&self) -> &serde_json::Value {
         &FETCH_SCHEMA
@@ -109,6 +122,7 @@ enum Board {
     Greenhouse { company: String, job_id: String },
     Lever { company: String, posting_id: String },
     LinkedIn { job_id: String },
+    Ashby { org: String, job_id: String },
 }
 
 /// Fetch (or recall from cache) the text of a job posting.
@@ -138,6 +152,14 @@ async fn fetch_jd_with(
     cache_dir: &Path,
     url: &str,
 ) -> Result<String, FetchError> {
+    // Indeed is recognized but never fetched: its Cloudflare challenge
+    // blocks every non-browser client, so fail before any I/O and name
+    // the workaround.
+    if is_indeed(url) {
+        return Err(FetchError::IndeedBlocked {
+            url: url.to_string(),
+        });
+    }
     let board = classify(url).ok_or_else(|| FetchError::UnsupportedUrl {
         url: url.to_string(),
     })?;
@@ -178,8 +200,24 @@ async fn fetch_jd_with(
     Ok(text)
 }
 
+/// True when the URL points at Indeed: `indeed.com` or any subdomain
+/// (`www.`, `m.`, country hosts like `uk.`), any path. Indeed has no
+/// `Board` variant because there is nothing to fetch; this check exists
+/// only so `fetch_jd_with` can explain why instead of calling the host
+/// unknown.
+fn is_indeed(url: &str) -> bool {
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    host == "indeed.com" || host.ends_with(".indeed.com")
+}
+
 /// Recognize a posting URL. Hand-rolled rather than pulling a URL crate:
-/// the two accepted shapes are rigid enough that scheme-strip + segment
+/// the accepted shapes are rigid enough that scheme-strip + segment
 /// split is the whole job.
 ///
 /// - `https://boards.greenhouse.io/<company>/jobs/<id>`
@@ -188,7 +226,8 @@ async fn fetch_jd_with(
 /// - `https://www.linkedin.com/jobs/view/<slug-or-id>` where the last
 ///   path segment ends in the numeric posting id (a bare id, or a
 ///   hyphenated slug like `...-at-prepass-4395937732`)
-// EXERCISE(EX-013)
+/// - `https://jobs.ashbyhq.com/<org>/<posting-uuid>`
+// EXERCISE(EX-021)
 fn classify(url: &str) -> Option<Board> {
     let rest = url
         .strip_prefix("https://")
@@ -211,6 +250,13 @@ fn classify(url: &str) -> Option<Board> {
             [company, posting_id] => Some(Board::Lever {
                 company: (*company).to_string(),
                 posting_id: (*posting_id).to_string(),
+            }),
+            _ => None,
+        },
+        "jobs.ashbyhq.com" => match segments.as_slice() {
+            [org, job_id] => Some(Board::Ashby {
+                org: (*org).to_string(),
+                job_id: (*job_id).to_string(),
             }),
             _ => None,
         },
@@ -263,6 +309,11 @@ impl Board {
             } => format!("https://api.lever.co/v0/postings/{company}/{posting_id}"),
             Board::LinkedIn { job_id } => {
                 format!("https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}")
+            }
+            // Ashby has no single-posting endpoint; the board URL lists
+            // every open posting for the org, and extract picks by id.
+            Board::Ashby { org, .. } => {
+                format!("https://api.ashbyhq.com/posting-api/job-board/{org}")
             }
         }
     }
@@ -365,6 +416,27 @@ impl Board {
                 }
                 Ok(text)
             }
+            Board::Ashby { org, job_id } => {
+                let board: AshbyBoard = serde_json::from_str(body).map_err(parse_err)?;
+                // The response is the whole board, so search it for the
+                // posting the URL named. A miss means the posting is no
+                // longer listed, which deserves its own error.
+                let job = board
+                    .jobs
+                    .into_iter()
+                    .find(|job| job.id == *job_id)
+                    .ok_or_else(|| FetchError::Ashby {
+                        org: org.clone(),
+                        job_id: job_id.clone(),
+                    })?;
+                let mut text = format!("{org} - {}", job.title);
+                if !job.location.is_empty() {
+                    text.push_str(&format!(" ({})", job.location));
+                }
+                text.push_str("\n\n");
+                text.push_str(&job.description_plain);
+                Ok(text)
+            }
         }
     }
 }
@@ -460,6 +532,26 @@ struct LeverList {
     /// `<li>` items as an HTML fragment.
     #[serde(default)]
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AshbyBoard {
+    #[serde(default)]
+    jobs: Vec<AshbyJob>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AshbyJob {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    location: String,
+    /// Ashby ships the description already flattened to plain text, so
+    /// no HTML pass is needed.
+    #[serde(default, rename = "descriptionPlain")]
+    description_plain: String,
 }
 
 /// Strip HTML down to readable text: `<li>` becomes a bullet, block-end
@@ -634,7 +726,6 @@ mod tests {
     #[test]
     fn everything_else_is_unsupported() {
         for url in [
-            "https://jobs.ashbyhq.com/amplo/some-id",
             "https://example.com/careers/123",
             "https://boards.greenhouse.io/acme",
             "https://boards.greenhouse.io/acme/jobs/1/extra",
@@ -644,6 +735,9 @@ mod tests {
             "https://www.linkedin.com/feed/",
             "https://www.linkedin.com/jobs/view/software-engineer",
             "https://www.linkedin.com/in/someone",
+            // Ashby pages that aren't a single posting.
+            "https://jobs.ashbyhq.com/amplo",
+            "https://jobs.ashbyhq.com/amplo/some-id/application",
         ] {
             assert_eq!(classify(url), None, "{url:?} should not classify");
         }
@@ -772,12 +866,21 @@ mod tests {
 
     #[test]
     fn a_garbled_response_is_a_typed_parse_error() {
-        let board = Board::Greenhouse {
+        let greenhouse = Board::Greenhouse {
             company: "acme".into(),
             job_id: "1".into(),
         };
         assert!(matches!(
-            board.extract("<html>503 maintenance</html>"),
+            greenhouse.extract("<html>503 maintenance</html>"),
+            Err(FetchError::Parse { .. })
+        ));
+
+        let ashby = Board::Ashby {
+            org: "amplo".into(),
+            job_id: "1".into(),
+        };
+        assert!(matches!(
+            ashby.extract("<html>503 maintenance</html>"),
             Err(FetchError::Parse { .. })
         ));
     }
@@ -828,7 +931,10 @@ mod tests {
             .call(serde_json::json!({"url": "https://example.com/x"}))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("Greenhouse, Lever, or LinkedIn"));
+        assert!(
+            err.to_string()
+                .contains("Greenhouse, Lever, LinkedIn, or Ashby")
+        );
     }
 
     #[test]
@@ -838,12 +944,118 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "exercise: the amplo demo JD lives on Ashby (jobs.ashbyhq.com), which aarg can't fetch; add Ashby's posting API as a third board, then finish this test"]
     fn ex_013_ashby_urls_are_recognized() {
-        // Once Ashby support exists: classify a jobs.ashbyhq.com URL,
-        // assert the variant and its API URL, and extract a fixture
-        // response into text containing the title and description.
-        let ashby_implemented = false;
-        assert!(ashby_implemented);
+        // Plain, with a query string, and with a fragment: none of the
+        // decorations identify the posting.
+        for url in [
+            "https://jobs.ashbyhq.com/amplo/aabbccdd-1122-3344-5566-77889900aabb",
+            "https://jobs.ashbyhq.com/amplo/aabbccdd-1122-3344-5566-77889900aabb?utm_source=x",
+            "https://jobs.ashbyhq.com/amplo/aabbccdd-1122-3344-5566-77889900aabb#content",
+        ] {
+            assert_eq!(
+                classify(url),
+                Some(Board::Ashby {
+                    org: "amplo".into(),
+                    job_id: "aabbccdd-1122-3344-5566-77889900aabb".into()
+                }),
+                "{url:?} should classify as Ashby"
+            );
+        }
+    }
+
+    #[test]
+    fn ashby_api_url_is_the_org_board_endpoint() {
+        let board = Board::Ashby {
+            org: "amplo".into(),
+            job_id: "aabbccdd-1122-3344-5566-77889900aabb".into(),
+        };
+        assert_eq!(
+            board.api_url(),
+            "https://api.ashbyhq.com/posting-api/job-board/amplo"
+        );
+    }
+
+    // A trimmed board response: Ashby's posting API returns every open
+    // posting for the org, so the fixture carries two and extract must
+    // pick the one the URL named.
+    const ASHBY_FRAGMENT: &str = r#"{"jobs": [
+        {"id": "11111111-aaaa-bbbb-cccc-222222222222",
+         "title": "Platform Engineer",
+         "location": "Remote",
+         "descriptionPlain": "Run the platform.",
+         "descriptionHtml": "<p>Run the platform.</p>",
+         "jobUrl": "https://jobs.ashbyhq.com/amplo/11111111-aaaa-bbbb-cccc-222222222222"},
+        {"id": "33333333-dddd-eeee-ffff-444444444444",
+         "title": "Founding Engineer",
+         "location": "Utrecht",
+         "descriptionPlain": "Build the product end to end.",
+         "descriptionHtml": "<p>Build the product end to end.</p>",
+         "jobUrl": "https://jobs.ashbyhq.com/amplo/33333333-dddd-eeee-ffff-444444444444"}
+    ]}"#;
+
+    #[test]
+    fn ashby_responses_pick_the_posting_by_id() {
+        let board = Board::Ashby {
+            org: "amplo".into(),
+            job_id: "33333333-dddd-eeee-ffff-444444444444".into(),
+        };
+        let text = board.extract(ASHBY_FRAGMENT).unwrap();
+        assert_eq!(
+            text,
+            "amplo - Founding Engineer (Utrecht)\n\nBuild the product end to end."
+        );
+    }
+
+    #[test]
+    fn an_ashby_posting_missing_from_the_board_is_a_loud_error() {
+        // The URL was valid and the response parsed; the posting just
+        // isn't on the board anymore.
+        let board = Board::Ashby {
+            org: "amplo".into(),
+            job_id: "99999999-0000-1111-2222-333333333333".into(),
+        };
+        assert!(matches!(
+            board.extract(ASHBY_FRAGMENT),
+            Err(FetchError::Ashby { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn indeed_urls_fail_before_any_io_with_the_blocked_error() {
+        // No HTTP server exists and the cache is empty, so anything but
+        // an early typed error would surface as a connection failure.
+        let cache = tempfile::tempdir().unwrap();
+        let http = reqwest::Client::new();
+        for url in [
+            "https://www.indeed.com/viewjob?jk=abc123",
+            "https://m.indeed.com/viewjob?jk=abc123",
+            "https://uk.indeed.com/viewjob?jk=abc123",
+            "https://indeed.com/jobs?q=rust",
+            "http://de.indeed.com/rc/clk?jk=abc123",
+        ] {
+            let err = fetch_jd_with(&http, cache.path(), url).await.unwrap_err();
+            assert!(
+                matches!(err, FetchError::IndeedBlocked { .. }),
+                "{url:?} should be recognized as Indeed"
+            );
+            assert!(err.to_string().contains("paste the posting text"));
+        }
+
+        // A lookalike host is not Indeed and stays plainly unsupported.
+        let err = fetch_jd_with(&http, cache.path(), "https://notindeed.com/viewjob")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FetchError::UnsupportedUrl { .. }));
+    }
+
+    #[test]
+    #[ignore = "exercise: add SmartRecruiters (careers.smartrecruiters.com/{company}/{id-slug}, API https://api.smartrecruiters.com/v1/companies/{company}/postings/{id}) as a board, then finish this test"]
+    fn ex_021_smartrecruiters_urls_are_recognized() {
+        // Once SmartRecruiters support exists: classify a
+        // careers.smartrecruiters.com posting URL, assert the variant
+        // and its API URL, and extract a fixture response into text
+        // containing the title and description.
+        let smartrecruiters_implemented = false;
+        assert!(smartrecruiters_implemented);
     }
 }

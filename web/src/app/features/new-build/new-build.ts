@@ -256,7 +256,11 @@ export class NewBuild {
       },
       error: (err: unknown) => {
         this.fetching.set(false);
-        this.showToast(`Couldn’t fetch that URL: ${errMessage(err)}. Paste the text instead.`);
+        // Some server messages already end in "paste the posting text
+        // instead" (Indeed's does); don't tell the user twice.
+        const message = errMessage(err);
+        const suffix = /paste the/i.test(message) ? '' : ' Paste the text instead.';
+        this.showToast(`Couldn’t fetch that URL: ${message}.${suffix}`);
       },
     });
   }

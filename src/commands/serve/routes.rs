@@ -2113,9 +2113,11 @@ struct FetchJdRequest {
     url: String,
 }
 
-/// Fetch a job posting's text from a supported board (Greenhouse, Lever, or LinkedIn) — the
-/// thing a browser can't do itself (CORS). An unsupported URL is a `422` with
-/// the "paste the text instead" guidance; any other fetch failure is a `502`.
+/// Fetch a job posting's text from a supported board (Greenhouse, Lever,
+/// LinkedIn, or Ashby) — the thing a browser can't do itself (CORS). An
+/// unsupported URL is a `422` with the "paste the text instead" guidance,
+/// and an Indeed URL is a `422` explaining that Indeed blocks automated
+/// fetching; any other fetch failure is a `502`.
 pub(super) async fn fetch_jd(req: Request<Incoming>) -> Resp {
     let body = match read_body(req).await {
         Ok(body) => body,
@@ -2135,6 +2137,9 @@ pub(super) async fn fetch_jd(req: Request<Incoming>) -> Resp {
         Ok(text) => json_response(200, &json!({ "text": text })),
         Err(error @ FetchError::UnsupportedUrl { .. }) => {
             error_response(422, "unsupported_url", error.to_string())
+        }
+        Err(error @ FetchError::IndeedBlocked { .. }) => {
+            error_response(422, "indeed_blocked", error.to_string())
         }
         Err(error) => {
             // Same operator-visible line as the LLM proxy: an upstream fetch
