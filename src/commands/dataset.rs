@@ -76,7 +76,7 @@ pub async fn show() -> Result<(), CliError> {
         "{}",
         style::section(format!("Roles ({})", dataset.roles.len()))
     );
-    let width = style::term_width();
+    let term_width = style::term_width();
     for role in &dataset.roles {
         let end = role
             .end
@@ -88,7 +88,7 @@ pub async fn show() -> Result<(), CliError> {
         // one line when it fits, else fold the title onto its own indented
         // line so a long title never wraps mid-word past the count.
         let one_line = format!("  {}", style::bullet(format!("{span}  {who} {count}")));
-        if style::display_width(&one_line) <= width {
+        if style::display_width(&one_line) <= term_width {
             eprintln!("{one_line}");
         } else {
             eprintln!("  {}", style::bullet(format!("{span}  {count}")));

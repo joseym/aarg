@@ -46,6 +46,16 @@ export interface SkillsSection {
   skills: string[];
 }
 
+/** One project projected into a variant. Mirrors `aarg-domain`'s
+ *  `TailoredProject` — same facts as the canonical draft, presentation only.
+ *  The `id` traces back to the recorded dataset project. */
+export interface PayloadProject {
+  id: string;
+  name: string;
+  summary: string;
+  url: string | null;
+}
+
 export interface SkillGroup {
   label: string;
   skills: string[];
@@ -69,7 +79,7 @@ export interface VariantPayload {
   education: PayloadEducation[];
   skills_section: SkillsSection;
   skill_groups: SkillGroup[];
-  projects: unknown[];
+  projects: PayloadProject[];
   achievements: unknown[];
   certifications: unknown[];
   layout_hints: LayoutHints;

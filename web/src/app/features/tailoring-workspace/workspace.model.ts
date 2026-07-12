@@ -109,6 +109,15 @@ export interface PreviewRole {
   bullets: PreviewLine[];
 }
 
+/** One project as the preview renders it: a fixed heading (name), an optional
+ *  clickable source link, and the editable, provenance-aware summary line. */
+export interface PreviewProject {
+  id: string;
+  name: string;
+  url: string | null;
+  summary: PreviewLine;
+}
+
 export interface PreviewModel {
   name: string;
   targetTitle: string;
@@ -116,6 +125,7 @@ export interface PreviewModel {
   summary: PreviewLine;
   roles: PreviewRole[];
   skills: PreviewLine[];
+  projects: PreviewProject[];
 }
 
 /** Build the preview model from the human variant payload, overlaying the
@@ -151,6 +161,16 @@ export function buildPreviewModel(
       bullets: r.bullets.map((b, i) => line(`bullet:${r.id}:${i}`, b.text)),
     })),
     skills: (payload.skills_section?.skills ?? []).map((s, i) => line(`skill:${i}`, s)),
+    // Projects ride the same line() helper as roles/skills: the summary is
+    // editable and provenance-aware (keyed on the stable project id, so it
+    // survives reordering), while the name is a fixed heading and the url a
+    // link — the model chooses which projects belong, never their words.
+    projects: (payload.projects ?? []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      url: p.url ?? null,
+      summary: line(`project:${p.id}`, p.summary ?? ''),
+    })),
   };
 }
 

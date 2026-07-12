@@ -835,6 +835,17 @@ pub enum CliError {
     #[diagnostic(help("save the posting text to a file and pass that path (or pipe it with `-`)"))]
     Fetch(#[from] FetchError),
 
+    #[error(transparent)]
+    Import(#[from] crate::repoimport::ImportError),
+
+    #[error(
+        "all {attempted} project(s) in this import failed ({failed} error(s)); nothing was saved"
+    )]
+    #[diagnostic(help(
+        "see the per-project errors above; fix the source (a bad URL, a private repo, a rate limit) and re-run"
+    ))]
+    ImportBatchFailed { attempted: usize, failed: usize },
+
     #[error("no writing sample was provided")]
     #[diagnostic(help(
         "pipe a file (`aarg voice add < sample.txt`) or type the text and press Ctrl-D"
@@ -1095,6 +1106,9 @@ pub async fn dispatch(command: crate::cli::Command) -> Result<(), CliError> {
                     skills,
                 },
         } => experience::add(name, summary, url, skills).await?,
+        Command::Experience {
+            command: ExperienceCommand::Import { source },
+        } => experience::import(source).await?,
         Command::Experience {
             command: ExperienceCommand::List,
         } => experience::list().await?,
